@@ -17,6 +17,8 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+const maxRawInputBytes = 1 << 20
+
 // GRPCServer implements the vtr gRPC service.
 type GRPCServer struct {
 	proto.UnimplementedVTRServer
@@ -228,6 +230,9 @@ func (s *GRPCServer) SendKey(_ context.Context, req *proto.SendKeyRequest) (*pro
 func (s *GRPCServer) SendBytes(_ context.Context, req *proto.SendBytesRequest) (*proto.SendBytesResponse, error) {
 	if req == nil || req.Name == "" {
 		return nil, status.Error(codes.InvalidArgument, "session name is required")
+	}
+	if len(req.Data) > maxRawInputBytes {
+		return nil, status.Errorf(codes.InvalidArgument, "data exceeds %d bytes", maxRawInputBytes)
 	}
 	if err := s.coord.Send(req.Name, req.Data); err != nil {
 		return nil, mapCoordinatorErr(err)

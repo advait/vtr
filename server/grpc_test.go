@@ -279,3 +279,84 @@ func TestGRPCKillRemove(t *testing.T) {
 		t.Fatalf("expected NotFound after remove, got %v", err)
 	}
 }
+
+func TestGRPCErrors(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty tests not supported on windows")
+	}
+
+	client, cleanup := startGRPCTestServer(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	_, err := client.Spawn(ctx, &proto.SpawnRequest{Name: "bad-size", Cols: -1})
+	cancel()
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument for bad size, got %v", err)
+	}
+
+	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+	_, err = client.Spawn(ctx, &proto.SpawnRequest{
+		Name:    "grpc-errors",
+		Command: "printf 'ready\\n'; while true; do sleep 0.2; done",
+	})
+	cancel()
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	waitForScreenContains(t, client, "grpc-errors", "ready", 2*time.Second)
+
+	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+	_, err = client.Spawn(ctx, &proto.SpawnRequest{Name: "grpc-errors"})
+	cancel()
+	if status.Code(err) != codes.AlreadyExists {
+		t.Fatalf("expected AlreadyExists for duplicate spawn, got %v", err)
+	}
+
+	badText := string([]byte{0xff, 0xfe})
+	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+	_, err = client.SendText(ctx, &proto.SendTextRequest{Name: "grpc-errors", Text: badText})
+	cancel()
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument for bad utf-8, got %v", err)
+	}
+
+	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+	_, err = client.SendKey(ctx, &proto.SendKeyRequest{Name: "grpc-errors", Key: "not-a-key"})
+	cancel()
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument for bad key, got %v", err)
+	}
+
+	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+	_, err = client.SendText(ctx, &proto.SendTextRequest{Name: "missing", Text: "hi"})
+	cancel()
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("expected NotFound for missing session, got %v", err)
+	}
+
+	tooLarge := make([]byte, maxRawInputBytes+1)
+	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+	_, err = client.SendBytes(ctx, &proto.SendBytesRequest{Name: "grpc-errors", Data: tooLarge})
+	cancel()
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument for oversized data, got %v", err)
+	}
+
+	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+	_, err = client.Spawn(ctx, &proto.SpawnRequest{Name: "grpc-exit", Command: "exit 0"})
+	cancel()
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	waitForSessionStatus(t, client, "grpc-exit", proto.SessionStatus_SESSION_STATUS_EXITED, 2*time.Second)
+
+	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+	_, err = client.SendText(ctx, &proto.SendTextRequest{Name: "grpc-exit", Text: "hi"})
+	cancel()
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition for exited session, got %v", err)
+	}
+}

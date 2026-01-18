@@ -38,7 +38,7 @@ func main() {
 func usage() {
 	fmt.Printf("vtr %s\n", Version)
 	fmt.Println("Usage: vtr <command> [options]")
-	fmt.Println("Commands: serve, ls, spawn, screen, send, key, rm, kill, grep, wait, idle, attach")
+	fmt.Println("Commands: serve, version")
 }
 
 func serve(args []string) error {
