@@ -1,0 +1,112 @@
+# vtr Progress
+
+Milestones from initial setup to a fully working MVP. Each milestone ends in a
+functional, testable, and understandable state.
+
+Complexity scale: XS (hours), S (1-2 days), M (3-5 days), L (1-2 weeks), XL (2+ weeks).
+
+## M0 - Project Setup
+
+Goal: Establish repo scaffolding and build/test workflow.
+
+Deliverables:
+- `go.mod`/`go.sum` with baseline dependencies pinned.
+- `proto/vtr.proto` checked in with initial service/messages from spec.
+- Build scripts: `Makefile` or `taskfile` for `proto`, `build`, `test`.
+- Minimal `cmd/vtr` skeleton for future CLI/server split.
+- `docs/progress.md` created and referenced in `docs/agent-meta.md`.
+
+Success criteria:
+- `go test ./...` passes (even if only empty packages).
+- `make proto` (or equivalent) generates Go stubs locally without manual steps.
+- Repo layout matches `docs/spec.md` structure.
+
+Estimated complexity: S.
+
+## M1 - Ghostty Shim + Go Wrapper
+
+Goal: Prove VT engine integration and snapshot/dump access via go-ghostty.
+
+Deliverables:
+- `go-ghostty/shim` Zig build script producing `libvtr-ghostty-vt.a` and header.
+- C header defining `vtr_ghostty_*` API per `go-ghostty/README.md`.
+- Go package `go-ghostty` with `Terminal`, `Snapshot`, `Dump` APIs.
+- Unit tests feeding ANSI bytes and asserting snapshot and dump contents.
+
+Success criteria:
+- `go test ./go-ghostty/...` passes locally with Ghostty checkout configured.
+- A small demo or test shows cursor position and viewport cells are correct.
+- No memory leaks in snapshot/dump (validated by test harness or basic tooling).
+
+Estimated complexity: L.
+
+## M2 - Coordinator Core (No gRPC Yet)
+
+Goal: Build in-process session management and PTY plumbing around the VT engine.
+
+Deliverables:
+- `server/coordinator.go` session registry with spawn/kill/rm/info states.
+- `server/pty.go` for PTY lifecycle, resize, and I/O loops.
+- `server/vt.go` that adapts go-ghostty snapshots and scrollback dumps.
+- Tests for spawn/echo, exit codes, and basic screen capture.
+
+Success criteria:
+- Sessions can be spawned, accept input, and exit cleanly.
+- Screen snapshots reflect PTY output; scrollback grows as expected.
+- `go test ./server/...` covers spawn/kill/rm and exit transitions.
+
+Estimated complexity: L.
+
+## M3 - gRPC Server Core
+
+Goal: Expose core session management and screen/input operations over gRPC.
+
+Deliverables:
+- gRPC server on Unix socket with `Spawn`, `List`, `Info`, `Kill`, `Remove`.
+- Screen/input RPCs: `GetScreen`, `SendText`, `SendKey`, `Resize`.
+- `cmd/vtr serve` to run coordinator with config flags.
+- gRPC integration tests using a real PTY-backed session.
+
+Success criteria:
+- `vtr serve` starts and accepts client calls over a socket.
+- Core RPCs return correct state and enforce error codes from spec.
+- Tests validate screen contents after `SendText` and resizing behavior.
+
+Estimated complexity: M.
+
+## M4 - CLI Client Core
+
+Goal: Provide a usable CLI for core operations against a single coordinator.
+
+Deliverables:
+- CLI commands: `ls`, `spawn`, `info`, `screen`, `send`, `key`, `raw`,
+  `resize`, `kill`, `rm`.
+- Client config loader for `~/.config/vtr/config.toml`.
+- Human and JSON output formats for key commands.
+- Basic end-to-end test or script that spawns a session and reads output.
+
+Success criteria:
+- `vtr ls` and `vtr spawn` work against a running coordinator.
+- `vtr screen` renders a correct viewport in human mode.
+- CLI flags map cleanly to gRPC requests and errors surface clearly.
+
+Estimated complexity: M.
+
+## M5 - MVP: Advanced Operations + Multi-Coordinator
+
+Goal: Ship the agent-ready MVP with grep/wait/idle and coordinator discovery.
+
+Deliverables:
+- Server RPCs: `Grep`, `WaitFor`, `WaitForIdle` with timeout handling.
+- CLI commands: `grep`, `wait`, `idle`.
+- Multi-coordinator resolution (`vtr config resolve`, `coordinator:session`).
+- Tests for grep context, wait timeouts, and idle detection.
+- Updated docs describing MVP usage and limitations.
+
+Success criteria:
+- Agents can spawn, send input, and block on output/idle via CLI.
+- Grep returns correct line numbers and context slices.
+- Multi-coordinator ambiguity errors are deterministic and user-friendly.
+- `go test ./...` passes with core and advanced RPC coverage.
+
+Estimated complexity: M.
