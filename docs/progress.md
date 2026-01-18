@@ -46,6 +46,8 @@ Estimated complexity: L.
 
 Goal: Build in-process session management and PTY plumbing around the VT engine.
 
+Status: complete (2026-01-18).
+
 Deliverables:
 - `server/coordinator.go` session registry with spawn/kill/rm/info states.
 - `server/pty.go` for PTY lifecycle, resize, and I/O loops.
