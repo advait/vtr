@@ -47,32 +47,6 @@ func loadConfig(path string) (*clientConfig, error) {
 	return cfg, nil
 }
 
-func resolveSocketPath(cfg *clientConfig, explicit, configPath string) (string, error) {
-	if strings.TrimSpace(explicit) != "" {
-		return explicit, nil
-	}
-	if cfg == nil || len(cfg.Coordinators) == 0 {
-		return "/var/run/vtr.sock", nil
-	}
-	paths, err := resolveCoordinatorPaths(cfg)
-	if err != nil {
-		return "", err
-	}
-	if len(paths) == 1 {
-		return paths[0], nil
-	}
-	if len(paths) == 0 {
-		if configPath == "" {
-			return "", fmt.Errorf("no coordinator sockets found in config")
-		}
-		return "", fmt.Errorf("no coordinator sockets found in %s", configPath)
-	}
-	if configPath == "" {
-		return "", fmt.Errorf("multiple coordinators configured; use --socket to select one")
-	}
-	return "", fmt.Errorf("multiple coordinators configured in %s; use --socket to select one", configPath)
-}
-
 func resolveCoordinatorPaths(cfg *clientConfig) ([]string, error) {
 	if cfg == nil {
 		return nil, nil

@@ -30,6 +30,11 @@ type jsonSession struct {
 	ExitedAt    string `json:"exited_at,omitempty"`
 }
 
+type sessionItem struct {
+	Coordinator string
+	Session     *proto.Session
+}
+
 type jsonList struct {
 	Sessions []jsonSession `json:"sessions"`
 }
@@ -64,6 +69,37 @@ type jsonScreenCell struct {
 
 type jsonOK struct {
 	OK bool `json:"ok"`
+}
+
+type jsonGrepMatch struct {
+	LineNumber    int32    `json:"line_number"`
+	Line          string   `json:"line"`
+	ContextBefore []string `json:"context_before,omitempty"`
+	ContextAfter  []string `json:"context_after,omitempty"`
+}
+
+type jsonGrep struct {
+	Matches []jsonGrepMatch `json:"matches"`
+}
+
+type jsonWait struct {
+	Matched     bool   `json:"matched"`
+	MatchedLine string `json:"matched_line,omitempty"`
+	TimedOut    bool   `json:"timed_out"`
+}
+
+type jsonIdle struct {
+	Idle     bool `json:"idle"`
+	TimedOut bool `json:"timed_out"`
+}
+
+type jsonCoordinator struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+}
+
+type jsonCoordinators struct {
+	Coordinators []jsonCoordinator `json:"coordinators"`
 }
 
 func writeJSON(w io.Writer, v any) error {
@@ -103,6 +139,14 @@ func sessionToJSON(session *proto.Session, coordinator string) jsonSession {
 	return out
 }
 
+func sessionsToJSON(items []sessionItem) jsonList {
+	out := make([]jsonSession, 0, len(items))
+	for _, item := range items {
+		out = append(out, sessionToJSON(item.Session, item.Coordinator))
+	}
+	return jsonList{Sessions: out}
+}
+
 func formatTimestamp(ts *timestamppb.Timestamp) string {
 	if ts == nil || !ts.IsValid() {
 		return ""
@@ -130,20 +174,20 @@ func formatAge(ts *timestamppb.Timestamp) string {
 	return fmt.Sprintf("%dd", int(age.Hours()/24))
 }
 
-func printListHuman(w io.Writer, sessions []*proto.Session, coordinator string) {
+func printListHuman(w io.Writer, items []sessionItem) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "COORDINATOR\tSESSION\tSTATUS\tCOLSxROWS\tAGE")
-	for _, session := range sessions {
-		if session == nil {
+	for _, item := range items {
+		if item.Session == nil {
 			continue
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%dx%d\t%s\n",
-			coordinator,
-			session.Name,
-			statusString(session.Status),
-			session.Cols,
-			session.Rows,
-			formatAge(session.CreatedAt),
+			item.Coordinator,
+			item.Session.Name,
+			statusString(item.Session.Status),
+			item.Session.Cols,
+			item.Session.Rows,
+			formatAge(item.Session.CreatedAt),
 		)
 	}
 	_ = tw.Flush()
@@ -217,4 +261,63 @@ func screenToJSON(resp *proto.GetScreenResponse) jsonScreen {
 		CursorY:    resp.CursorY,
 		ScreenRows: rows,
 	}
+}
+
+func printGrepHuman(w io.Writer, matches []*proto.GrepMatch) {
+	for i, match := range matches {
+		if match == nil {
+			continue
+		}
+		base := int(match.LineNumber) - len(match.ContextBefore)
+		for idx, line := range match.ContextBefore {
+			fmt.Fprintf(w, "scrollback:%d: %s\n", base+idx, line)
+		}
+		fmt.Fprintf(w, "scrollback:%d: %s\n", match.LineNumber, match.Line)
+		for idx, line := range match.ContextAfter {
+			fmt.Fprintf(w, "scrollback:%d: %s\n", int(match.LineNumber)+1+idx, line)
+		}
+		if i+1 < len(matches) {
+			fmt.Fprintln(w, "--")
+		}
+	}
+}
+
+func grepToJSON(matches []*proto.GrepMatch) jsonGrep {
+	out := make([]jsonGrepMatch, 0, len(matches))
+	for _, match := range matches {
+		if match == nil {
+			continue
+		}
+		out = append(out, jsonGrepMatch{
+			LineNumber:    match.LineNumber,
+			Line:          match.Line,
+			ContextBefore: append([]string(nil), match.ContextBefore...),
+			ContextAfter:  append([]string(nil), match.ContextAfter...),
+		})
+	}
+	return jsonGrep{Matches: out}
+}
+
+func printWaitHuman(w io.Writer, matched bool, line string, timedOut bool) {
+	if timedOut {
+		fmt.Fprintln(w, "timed out")
+		return
+	}
+	if matched {
+		fmt.Fprintln(w, line)
+		return
+	}
+	fmt.Fprintln(w, "no match")
+}
+
+func printIdleHuman(w io.Writer, idle bool, timedOut bool) {
+	if timedOut {
+		fmt.Fprintln(w, "timed out")
+		return
+	}
+	if idle {
+		fmt.Fprintln(w, "idle")
+		return
+	}
+	fmt.Fprintln(w, "active")
 }

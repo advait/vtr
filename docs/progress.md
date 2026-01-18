@@ -104,6 +104,8 @@ Estimated complexity: M.
 
 Goal: Ship the agent-ready MVP with grep/wait/idle and coordinator discovery.
 
+Status: complete (2026-01-18).
+
 Deliverables:
 - Server RPCs: `Grep`, `WaitFor`, `WaitForIdle` with timeout handling.
 - CLI commands: `grep`, `wait`, `idle`.

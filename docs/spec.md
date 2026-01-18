@@ -8,12 +8,13 @@ vtr is a terminal multiplexer designed for the agent era. Each container runs a 
 
 **Core insight**: Agents don't need 60fps terminal streaming. They need consistent screen state on demand, pattern matching on output, and reliable input delivery.
 
-## Implementation Status (post-M4)
+## Implementation Status (post-M5)
 
-- Implemented gRPC methods: Spawn, List, Info, Kill, Remove, GetScreen, SendText, SendKey, SendBytes, Resize.
-- Grep, WaitFor, WaitForIdle, Subscribe, and DumpAsciinema are defined in `proto/vtr.proto` but are not implemented yet (gRPC returns UNIMPLEMENTED).
-- CLI supports core client commands (`ls`, `spawn`, `info`, `screen`, `send`, `key`, `raw`, `resize`, `kill`, `rm`) plus `serve` and `version`.
-- Client config loader is active for single-coordinator setups; multi-coordinator resolution and advanced RPCs are planned for M5.
+- Implemented gRPC methods: Spawn, List, Info, Kill, Remove, GetScreen, Grep, SendText, SendKey, SendBytes, Resize, WaitFor, WaitForIdle.
+- Subscribe and DumpAsciinema remain defined in `proto/vtr.proto` but are not implemented yet (gRPC returns UNIMPLEMENTED).
+- CLI supports core client commands plus `grep`, `wait`, `idle`, and `config resolve` (alongside `serve` and `version`).
+- Multi-coordinator resolution supports `--socket` and `coordinator:session` with auto-disambiguation via per-coordinator lookup.
+- Grep uses scrollback dumps when available; falls back to screen/viewport dumps if history is unavailable.
 
 ## Architecture
 
@@ -98,7 +99,7 @@ vtr is a terminal multiplexer designed for the agent era. Each container runs a 
 
 ## Configuration
 
-### Client Config (M4)
+### Client Config (M5)
 
 Location: `~/.config/vtr/config.toml`
 
@@ -113,12 +114,12 @@ path = "/home/advait/.vtr/project-alpha.sock"  # explicit path
 # Defaults
 [defaults]
 output_format = "human"  # or "json"
-# wait_for_idle_timeout = "5s"  # planned M5 (idle RPC/CLI)
-# grep_context_before = 3       # planned M5 (grep RPC/CLI)
-# grep_context_after = 3        # planned M5 (grep RPC/CLI)
+# wait_for_idle_timeout = "5s"  # planned (idle default override)
+# grep_context_before = 3       # planned (grep default override)
+# grep_context_after = 3        # planned (grep default override)
 ```
 
-M4 uses `coordinators.path` (single resolved socket) and `defaults.output_format`.
+M5 uses `coordinators.path` (glob or explicit sockets) and `defaults.output_format`.
 If no config file is present and `--socket` is not provided, the client defaults to `/var/run/vtr.sock`.
 
 ### Server Config (planned)
@@ -172,7 +173,7 @@ vtr kill <name> [--signal TERM|KILL|INT] [--socket /path/to.sock]
 vtr screen <name> [--json] [--socket /path/to.sock]
 
 # Search scrollback (ripgrep-style output; RE2 regex)
-vtr grep <name> <pattern> [-B lines] [-A lines] [-C lines] [--socket /path/to.sock] [--json]  # planned M5
+vtr grep <name> <pattern> [-B lines] [-A lines] [-C lines] [--socket /path/to.sock] [--json]
 
 # Get session info (dimensions, status, exit code)
 vtr info <name> [--json] [--socket /path/to.sock]
@@ -200,10 +201,10 @@ vtr resize <name> <cols> <rows> [--socket /path/to.sock]
 
 ```bash
 # Wait for pattern in output (future output only, RE2 regex)
-vtr wait <name> <pattern> [--timeout 30s] [--socket /path/to.sock] [--json]  # planned M5
+vtr wait <name> <pattern> [--timeout 30s] [--socket /path/to.sock] [--json]
 
 # Wait for idle (no output for idle duration)
-vtr idle <name> [--idle 5s] [--timeout 5s] [--socket /path/to.sock] [--json]  # planned M5
+vtr idle <name> [--idle 5s] [--timeout 30s] [--socket /path/to.sock] [--json]
 ```
 
 ### Interactive Mode
@@ -235,27 +236,27 @@ vtr config add <path-or-glob>  # planned M5
 vtr config rm <path-or-glob>  # planned M5
 
 # Show resolved socket paths
-vtr config resolve  # planned M5
+vtr config resolve
 ```
 
-### Session Addressing (planned M5)
+### Session Addressing
 
 When multiple coordinators are configured:
 
 1. **Unambiguous**: Session name unique across all coordinators → use name directly
 2. **Ambiguous**: Session name exists on multiple coordinators → error with suggestion
-3. **Explicit**: Use `--coordinator` flag or `coordinator:session` syntax
+3. **Explicit**: Use `--socket` flag or `coordinator:session` syntax
 
 ```bash
 # These are equivalent
-vtr screen codex --coordinator /var/run/project-a.sock
+vtr screen codex --socket /var/run/project-a.sock
 vtr screen project-a:codex
 ```
 
 Coordinator names derived from socket filename (without .sock extension).
-If two sockets share the same basename, names collide; use `--coordinator` to disambiguate.
+If two sockets share the same basename, names collide; use `--socket` to disambiguate.
 
-M4 CLI uses `--socket` to target a single coordinator.
+M5 CLI uses `--socket` to target a single coordinator and auto-resolves session names across configured coordinators.
 
 ### Output Formats
 

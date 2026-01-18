@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -14,18 +15,16 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 const (
-	dialTimeout = 3 * time.Second
-	rpcTimeout  = 10 * time.Second
+	dialTimeout        = 3 * time.Second
+	rpcTimeout         = 10 * time.Second
+	waitTimeoutDefault = 30 * time.Second
+	idleTimeoutDefault = 30 * time.Second
+	idleDurationDefault = 5 * time.Second
 )
-
-type clientOptions struct {
-	SocketPath  string
-	Coordinator string
-	Output      outputFormat
-}
 
 func newListCmd() *cobra.Command {
 	var socket string
@@ -34,21 +33,58 @@ func newListCmd() *cobra.Command {
 		Use:   "ls",
 		Short: "List sessions",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return withClient(cmd, socket, jsonOut, func(ctx context.Context, client proto.VTRClient, opts clientOptions, out io.Writer) error {
-				resp, err := client.List(ctx, &proto.ListRequest{})
+			cfg, _, output, err := loadConfigAndOutput(jsonOut)
+			if err != nil {
+				return err
+			}
+			coords, err := resolveCoordinatorRefs(cfg)
+			if err != nil {
+				return err
+			}
+			if socket != "" {
+				coords = []coordinatorRef{{Name: coordinatorName(socket), Path: socket}}
+			} else {
+				coords = coordinatorsOrDefault(coords)
+			}
+			items := make([]sessionItem, 0)
+			for _, coord := range coords {
+				ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
+				err = withCoordinator(ctx, coord, func(client proto.VTRClient) error {
+					resp, err := client.List(ctx, &proto.ListRequest{})
+					if err != nil {
+						return err
+					}
+					for _, session := range resp.Sessions {
+						items = append(items, sessionItem{Coordinator: coord.Name, Session: session})
+					}
+					return nil
+				})
+				cancel()
 				if err != nil {
 					return err
 				}
-				if opts.Output == outputJSON {
-					items := make([]jsonSession, 0, len(resp.Sessions))
-					for _, session := range resp.Sessions {
-						items = append(items, sessionToJSON(session, opts.Coordinator))
+			}
+			sort.Slice(items, func(i, j int) bool {
+				left := items[i]
+				right := items[j]
+				if left.Coordinator == right.Coordinator {
+					leftName := ""
+					rightName := ""
+					if left.Session != nil {
+						leftName = left.Session.Name
 					}
-					return writeJSON(out, jsonList{Sessions: items})
+					if right.Session != nil {
+						rightName = right.Session.Name
+					}
+					return leftName < rightName
 				}
-				printListHuman(out, resp.Sessions, opts.Coordinator)
-				return nil
+				return left.Coordinator < right.Coordinator
 			})
+			if output == outputJSON {
+				return writeJSON(cmd.OutOrStdout(), sessionsToJSON(items))
+			}
+			printListHuman(cmd.OutOrStdout(), items)
+			return nil
 		},
 	}
 	addSocketFlag(cmd, &socket)
@@ -68,9 +104,23 @@ func newSpawnCmd() *cobra.Command {
 		Short: "Spawn a new session",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return withClient(cmd, socket, jsonOut, func(ctx context.Context, client proto.VTRClient, opts clientOptions, out io.Writer) error {
+			cfg, configPath, output, err := loadConfigAndOutput(jsonOut)
+			if err != nil {
+				return err
+			}
+			coords, err := resolveCoordinatorRefs(cfg)
+			if err != nil {
+				return err
+			}
+			target, err := resolveSpawnTarget(configPath, coords, socket, args[0])
+			if err != nil {
+				return err
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
+			defer cancel()
+			return withCoordinator(ctx, target.Coordinator, func(client proto.VTRClient) error {
 				req := &proto.SpawnRequest{
-					Name:       args[0],
+					Name:       target.Session,
 					Command:    command,
 					WorkingDir: cwd,
 				}
@@ -84,10 +134,10 @@ func newSpawnCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				if opts.Output == outputJSON {
-					return writeJSON(out, jsonSessionEnvelope{Session: sessionToJSON(resp.Session, opts.Coordinator)})
+				if output == outputJSON {
+					return writeJSON(cmd.OutOrStdout(), jsonSessionEnvelope{Session: sessionToJSON(resp.Session, target.Coordinator.Name)})
 				}
-				printSessionHuman(out, resp.Session, opts.Coordinator)
+				printSessionHuman(cmd.OutOrStdout(), resp.Session, target.Coordinator.Name)
 				return nil
 			})
 		},
@@ -109,15 +159,29 @@ func newInfoCmd() *cobra.Command {
 		Short: "Show session info",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return withClient(cmd, socket, jsonOut, func(ctx context.Context, client proto.VTRClient, opts clientOptions, out io.Writer) error {
-				resp, err := client.Info(ctx, &proto.InfoRequest{Name: args[0]})
+			cfg, _, output, err := loadConfigAndOutput(jsonOut)
+			if err != nil {
+				return err
+			}
+			coords, err := resolveCoordinatorRefs(cfg)
+			if err != nil {
+				return err
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
+			defer cancel()
+			target, err := resolveSessionTarget(context.Background(), coords, socket, args[0])
+			if err != nil {
+				return err
+			}
+			return withCoordinator(ctx, target.Coordinator, func(client proto.VTRClient) error {
+				resp, err := client.Info(ctx, &proto.InfoRequest{Name: target.Session})
 				if err != nil {
 					return err
 				}
-				if opts.Output == outputJSON {
-					return writeJSON(out, jsonSessionEnvelope{Session: sessionToJSON(resp.Session, opts.Coordinator)})
+				if output == outputJSON {
+					return writeJSON(cmd.OutOrStdout(), jsonSessionEnvelope{Session: sessionToJSON(resp.Session, target.Coordinator.Name)})
 				}
-				printSessionHuman(out, resp.Session, opts.Coordinator)
+				printSessionHuman(cmd.OutOrStdout(), resp.Session, target.Coordinator.Name)
 				return nil
 			})
 		},
@@ -135,15 +199,29 @@ func newScreenCmd() *cobra.Command {
 		Short: "Fetch the current screen",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return withClient(cmd, socket, jsonOut, func(ctx context.Context, client proto.VTRClient, opts clientOptions, out io.Writer) error {
-				resp, err := client.GetScreen(ctx, &proto.GetScreenRequest{Name: args[0]})
+			cfg, _, output, err := loadConfigAndOutput(jsonOut)
+			if err != nil {
+				return err
+			}
+			coords, err := resolveCoordinatorRefs(cfg)
+			if err != nil {
+				return err
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
+			defer cancel()
+			target, err := resolveSessionTarget(context.Background(), coords, socket, args[0])
+			if err != nil {
+				return err
+			}
+			return withCoordinator(ctx, target.Coordinator, func(client proto.VTRClient) error {
+				resp, err := client.GetScreen(ctx, &proto.GetScreenRequest{Name: target.Session})
 				if err != nil {
 					return err
 				}
-			if opts.Output == outputJSON {
-				return writeJSON(out, jsonScreenEnvelope{Screen: screenToJSON(resp)})
-			}
-				printScreenHuman(out, resp)
+				if output == outputJSON {
+					return writeJSON(cmd.OutOrStdout(), jsonScreenEnvelope{Screen: screenToJSON(resp)})
+				}
+				printScreenHuman(cmd.OutOrStdout(), resp)
 				return nil
 			})
 		},
@@ -162,12 +240,26 @@ func newSendCmd() *cobra.Command {
 		Args:  cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			text := strings.Join(args[1:], " ")
-			return withClient(cmd, socket, jsonOut, func(ctx context.Context, client proto.VTRClient, opts clientOptions, out io.Writer) error {
-				_, err := client.SendText(ctx, &proto.SendTextRequest{Name: args[0], Text: text})
+			cfg, _, output, err := loadConfigAndOutput(jsonOut)
+			if err != nil {
+				return err
+			}
+			coords, err := resolveCoordinatorRefs(cfg)
+			if err != nil {
+				return err
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
+			defer cancel()
+			target, err := resolveSessionTarget(context.Background(), coords, socket, args[0])
+			if err != nil {
+				return err
+			}
+			return withCoordinator(ctx, target.Coordinator, func(client proto.VTRClient) error {
+				_, err := client.SendText(ctx, &proto.SendTextRequest{Name: target.Session, Text: text})
 				if err != nil {
 					return err
 				}
-				return writeOK(out, opts.Output)
+				return writeOK(cmd.OutOrStdout(), output)
 			})
 		},
 	}
@@ -184,12 +276,26 @@ func newKeyCmd() *cobra.Command {
 		Short: "Send a special key sequence",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return withClient(cmd, socket, jsonOut, func(ctx context.Context, client proto.VTRClient, opts clientOptions, out io.Writer) error {
-				_, err := client.SendKey(ctx, &proto.SendKeyRequest{Name: args[0], Key: args[1]})
+			cfg, _, output, err := loadConfigAndOutput(jsonOut)
+			if err != nil {
+				return err
+			}
+			coords, err := resolveCoordinatorRefs(cfg)
+			if err != nil {
+				return err
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
+			defer cancel()
+			target, err := resolveSessionTarget(context.Background(), coords, socket, args[0])
+			if err != nil {
+				return err
+			}
+			return withCoordinator(ctx, target.Coordinator, func(client proto.VTRClient) error {
+				_, err := client.SendKey(ctx, &proto.SendKeyRequest{Name: target.Session, Key: args[1]})
 				if err != nil {
 					return err
 				}
-				return writeOK(out, opts.Output)
+				return writeOK(cmd.OutOrStdout(), output)
 			})
 		},
 	}
@@ -210,12 +316,26 @@ func newRawCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return withClient(cmd, socket, jsonOut, func(ctx context.Context, client proto.VTRClient, opts clientOptions, out io.Writer) error {
-				_, err := client.SendBytes(ctx, &proto.SendBytesRequest{Name: args[0], Data: data})
+			cfg, _, output, err := loadConfigAndOutput(jsonOut)
+			if err != nil {
+				return err
+			}
+			coords, err := resolveCoordinatorRefs(cfg)
+			if err != nil {
+				return err
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
+			defer cancel()
+			target, err := resolveSessionTarget(context.Background(), coords, socket, args[0])
+			if err != nil {
+				return err
+			}
+			return withCoordinator(ctx, target.Coordinator, func(client proto.VTRClient) error {
+				_, err := client.SendBytes(ctx, &proto.SendBytesRequest{Name: target.Session, Data: data})
 				if err != nil {
 					return err
 				}
-				return writeOK(out, opts.Output)
+				return writeOK(cmd.OutOrStdout(), output)
 			})
 		},
 	}
@@ -240,12 +360,26 @@ func newResizeCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return withClient(cmd, socket, jsonOut, func(ctx context.Context, client proto.VTRClient, opts clientOptions, out io.Writer) error {
-				_, err := client.Resize(ctx, &proto.ResizeRequest{Name: args[0], Cols: int32(cols), Rows: int32(rows)})
+			cfg, _, output, err := loadConfigAndOutput(jsonOut)
+			if err != nil {
+				return err
+			}
+			coords, err := resolveCoordinatorRefs(cfg)
+			if err != nil {
+				return err
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
+			defer cancel()
+			target, err := resolveSessionTarget(context.Background(), coords, socket, args[0])
+			if err != nil {
+				return err
+			}
+			return withCoordinator(ctx, target.Coordinator, func(client proto.VTRClient) error {
+				_, err := client.Resize(ctx, &proto.ResizeRequest{Name: target.Session, Cols: int32(cols), Rows: int32(rows)})
 				if err != nil {
 					return err
 				}
-				return writeOK(out, opts.Output)
+				return writeOK(cmd.OutOrStdout(), output)
 			})
 		},
 	}
@@ -263,12 +397,26 @@ func newKillCmd() *cobra.Command {
 		Short: "Send a signal to a session",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return withClient(cmd, socket, jsonOut, func(ctx context.Context, client proto.VTRClient, opts clientOptions, out io.Writer) error {
-				_, err := client.Kill(ctx, &proto.KillRequest{Name: args[0], Signal: signal})
+			cfg, _, output, err := loadConfigAndOutput(jsonOut)
+			if err != nil {
+				return err
+			}
+			coords, err := resolveCoordinatorRefs(cfg)
+			if err != nil {
+				return err
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
+			defer cancel()
+			target, err := resolveSessionTarget(context.Background(), coords, socket, args[0])
+			if err != nil {
+				return err
+			}
+			return withCoordinator(ctx, target.Coordinator, func(client proto.VTRClient) error {
+				_, err := client.Kill(ctx, &proto.KillRequest{Name: target.Session, Signal: signal})
 				if err != nil {
 					return err
 				}
-				return writeOK(out, opts.Output)
+				return writeOK(cmd.OutOrStdout(), output)
 			})
 		},
 	}
@@ -286,12 +434,26 @@ func newRemoveCmd() *cobra.Command {
 		Short: "Remove a session",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return withClient(cmd, socket, jsonOut, func(ctx context.Context, client proto.VTRClient, opts clientOptions, out io.Writer) error {
-				_, err := client.Remove(ctx, &proto.RemoveRequest{Name: args[0]})
+			cfg, _, output, err := loadConfigAndOutput(jsonOut)
+			if err != nil {
+				return err
+			}
+			coords, err := resolveCoordinatorRefs(cfg)
+			if err != nil {
+				return err
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
+			defer cancel()
+			target, err := resolveSessionTarget(context.Background(), coords, socket, args[0])
+			if err != nil {
+				return err
+			}
+			return withCoordinator(ctx, target.Coordinator, func(client proto.VTRClient) error {
+				_, err := client.Remove(ctx, &proto.RemoveRequest{Name: target.Session})
 				if err != nil {
 					return err
 				}
-				return writeOK(out, opts.Output)
+				return writeOK(cmd.OutOrStdout(), output)
 			})
 		},
 	}
@@ -300,48 +462,208 @@ func newRemoveCmd() *cobra.Command {
 	return cmd
 }
 
-func withClient(cmd *cobra.Command, socketFlag string, jsonFlag bool, fn func(context.Context, proto.VTRClient, clientOptions, io.Writer) error) error {
-	opts, err := resolveClientOptions(socketFlag, jsonFlag)
-	if err != nil {
-		return err
+func newGrepCmd() *cobra.Command {
+	var socket string
+	var jsonOut bool
+	var before int
+	var after int
+	var contextLines int
+	var maxMatches int
+	cmd := &cobra.Command{
+		Use:   "grep <name> <pattern>",
+		Short: "Search scrollback for a pattern",
+		Args:  cobra.MinimumNArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			pattern := strings.Join(args[1:], " ")
+			if contextLines > 0 {
+				before = contextLines
+				after = contextLines
+			}
+			if before < 0 || after < 0 {
+				return fmt.Errorf("context must be >= 0")
+			}
+			if maxMatches <= 0 {
+				maxMatches = 100
+			}
+			cfg, _, output, err := loadConfigAndOutput(jsonOut)
+			if err != nil {
+				return err
+			}
+			coords, err := resolveCoordinatorRefs(cfg)
+			if err != nil {
+				return err
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
+			defer cancel()
+			target, err := resolveSessionTarget(context.Background(), coords, socket, args[0])
+			if err != nil {
+				return err
+			}
+			return withCoordinator(ctx, target.Coordinator, func(client proto.VTRClient) error {
+				resp, err := client.Grep(ctx, &proto.GrepRequest{
+					Name:          target.Session,
+					Pattern:       pattern,
+					ContextBefore: int32(before),
+					ContextAfter:  int32(after),
+					MaxMatches:    int32(maxMatches),
+				})
+				if err != nil {
+					return err
+				}
+				if output == outputJSON {
+					return writeJSON(cmd.OutOrStdout(), grepToJSON(resp.Matches))
+				}
+				printGrepHuman(cmd.OutOrStdout(), resp.Matches)
+				return nil
+			})
+		},
 	}
-	conn, err := dialClient(opts.SocketPath)
+	addSocketFlag(cmd, &socket)
+	addJSONFlag(cmd, &jsonOut)
+	cmd.Flags().IntVarP(&before, "before", "B", 0, "lines before match")
+	cmd.Flags().IntVarP(&after, "after", "A", 0, "lines after match")
+	cmd.Flags().IntVarP(&contextLines, "context", "C", 0, "lines before and after match")
+	cmd.Flags().IntVar(&maxMatches, "max", 100, "maximum matches")
+	return cmd
+}
+
+func newWaitCmd() *cobra.Command {
+	var socket string
+	var jsonOut bool
+	var timeout time.Duration
+	cmd := &cobra.Command{
+		Use:   "wait <name> <pattern>",
+		Short: "Wait for a pattern in output",
+		Args:  cobra.MinimumNArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			pattern := strings.Join(args[1:], " ")
+			if timeout <= 0 {
+				timeout = waitTimeoutDefault
+			}
+			cfg, _, output, err := loadConfigAndOutput(jsonOut)
+			if err != nil {
+				return err
+			}
+			coords, err := resolveCoordinatorRefs(cfg)
+			if err != nil {
+				return err
+			}
+			ctxTimeout := timeout + 2*time.Second
+			ctx, cancel := context.WithTimeout(context.Background(), ctxTimeout)
+			defer cancel()
+			target, err := resolveSessionTarget(context.Background(), coords, socket, args[0])
+			if err != nil {
+				return err
+			}
+			return withCoordinator(ctx, target.Coordinator, func(client proto.VTRClient) error {
+				resp, err := client.WaitFor(ctx, &proto.WaitForRequest{
+					Name:    target.Session,
+					Pattern: pattern,
+					Timeout: durationpb.New(timeout),
+				})
+				if err != nil {
+					return err
+				}
+				if output == outputJSON {
+					return writeJSON(cmd.OutOrStdout(), jsonWait{Matched: resp.Matched, MatchedLine: resp.MatchedLine, TimedOut: resp.TimedOut})
+				}
+				printWaitHuman(cmd.OutOrStdout(), resp.Matched, resp.MatchedLine, resp.TimedOut)
+				return nil
+			})
+		},
+	}
+	addSocketFlag(cmd, &socket)
+	addJSONFlag(cmd, &jsonOut)
+	cmd.Flags().DurationVar(&timeout, "timeout", waitTimeoutDefault, "overall timeout")
+	return cmd
+}
+
+func newIdleCmd() *cobra.Command {
+	var socket string
+	var jsonOut bool
+	var timeout time.Duration
+	var idle time.Duration
+	cmd := &cobra.Command{
+		Use:   "idle <name>",
+		Short: "Wait for a period of inactivity",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if idle <= 0 {
+				idle = idleDurationDefault
+			}
+			if timeout <= 0 {
+				timeout = idleTimeoutDefault
+			}
+			cfg, _, output, err := loadConfigAndOutput(jsonOut)
+			if err != nil {
+				return err
+			}
+			coords, err := resolveCoordinatorRefs(cfg)
+			if err != nil {
+				return err
+			}
+			ctxTimeout := timeout + 2*time.Second
+			ctx, cancel := context.WithTimeout(context.Background(), ctxTimeout)
+			defer cancel()
+			target, err := resolveSessionTarget(context.Background(), coords, socket, args[0])
+			if err != nil {
+				return err
+			}
+			return withCoordinator(ctx, target.Coordinator, func(client proto.VTRClient) error {
+				resp, err := client.WaitForIdle(ctx, &proto.WaitForIdleRequest{
+					Name:         target.Session,
+					IdleDuration: durationpb.New(idle),
+					Timeout:      durationpb.New(timeout),
+				})
+				if err != nil {
+					return err
+				}
+				if output == outputJSON {
+					return writeJSON(cmd.OutOrStdout(), jsonIdle{Idle: resp.Idle, TimedOut: resp.TimedOut})
+				}
+				printIdleHuman(cmd.OutOrStdout(), resp.Idle, resp.TimedOut)
+				return nil
+			})
+		},
+	}
+	addSocketFlag(cmd, &socket)
+	addJSONFlag(cmd, &jsonOut)
+	cmd.Flags().DurationVar(&idle, "idle", idleDurationDefault, "idle duration")
+	cmd.Flags().DurationVar(&timeout, "timeout", idleTimeoutDefault, "overall timeout")
+	return cmd
+}
+
+func loadConfigAndOutput(jsonFlag bool) (*clientConfig, string, outputFormat, error) {
+	cfg, configPath, err := loadConfigWithPath()
+	if err != nil {
+		return nil, "", "", err
+	}
+	output, err := resolveOutputFormat(cfg, jsonFlag)
+	if err != nil {
+		return nil, "", "", err
+	}
+	return cfg, configPath, output, nil
+}
+
+func withCoordinator(ctx context.Context, coord coordinatorRef, fn func(proto.VTRClient) error) error {
+	conn, err := dialClient(ctx, coord.Path)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
-	defer cancel()
-
 	client := proto.NewVTRClient(conn)
-	return fn(ctx, client, opts, cmd.OutOrStdout())
+	return fn(client)
 }
 
-func resolveClientOptions(socketFlag string, jsonFlag bool) (clientOptions, error) {
-	configPath := defaultConfigPath()
-	cfg, err := loadConfig(configPath)
-	if err != nil {
-		return clientOptions{}, err
+func dialClient(ctx context.Context, socketPath string) (*grpc.ClientConn, error) {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	socketPath, err := resolveSocketPath(cfg, socketFlag, configPath)
-	if err != nil {
-		return clientOptions{}, err
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, dialTimeout)
+		defer cancel()
 	}
-	output, err := resolveOutputFormat(cfg, jsonFlag)
-	if err != nil {
-		return clientOptions{}, err
-	}
-	return clientOptions{
-		SocketPath:  socketPath,
-		Coordinator: coordinatorName(socketPath),
-		Output:      output,
-	}, nil
-}
-
-func dialClient(socketPath string) (*grpc.ClientConn, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), dialTimeout)
-	defer cancel()
 	return grpc.DialContext(ctx, socketPath,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithContextDialer(unixDialer),

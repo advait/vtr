@@ -22,6 +22,10 @@ func newRootCmd() *cobra.Command {
 		newResizeCmd(),
 		newKillCmd(),
 		newRemoveCmd(),
+		newGrepCmd(),
+		newWaitCmd(),
+		newIdleCmd(),
+		newConfigCmd(),
 	)
 
 	return root
