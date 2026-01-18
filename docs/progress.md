@@ -84,12 +84,14 @@ Estimated complexity: M.
 
 Goal: Provide a usable CLI for core operations against a single coordinator.
 
+Status: complete (2026-01-18).
+
 Deliverables:
 - CLI commands: `ls`, `spawn`, `info`, `screen`, `send`, `key`, `raw`,
   `resize`, `kill`, `rm`.
 - Client config loader for `~/.config/vtr/config.toml`.
 - Human and JSON output formats for key commands.
-- Basic end-to-end test or script that spawns a session and reads output.
+- CLI end-to-end test that spawns a session and validates screen output.
 
 Success criteria:
 - `vtr ls` and `vtr spawn` work against a running coordinator.

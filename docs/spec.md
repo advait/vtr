@@ -8,11 +8,11 @@ vtr is a terminal multiplexer designed for the agent era. Each container runs a 
 
 **Core insight**: Agents don't need 60fps terminal streaming. They need consistent screen state on demand, pattern matching on output, and reliable input delivery.
 
-## Implementation Status (post-M3)
+## Implementation Status (post-M4)
 
 - Implemented gRPC methods: Spawn, List, Info, Kill, Remove, GetScreen, SendText, SendKey, SendBytes, Resize.
-- CLI currently supports `vtr serve` and `vtr version` only.
-- Client commands, config file support, multi-coordinator resolution, and advanced RPCs are planned for M4/M5.
+- CLI supports core client commands (`ls`, `spawn`, `info`, `screen`, `send`, `key`, `raw`, `resize`, `kill`, `rm`) plus `serve` and `version`.
+- Client config loader is active for single-coordinator setups; multi-coordinator resolution and advanced RPCs are planned for M5.
 
 ## Architecture
 
@@ -97,7 +97,7 @@ vtr is a terminal multiplexer designed for the agent era. Each container runs a 
 
 ## Configuration
 
-### Client Config (planned M4)
+### Client Config (M4)
 
 Location: `~/.config/vtr/config.toml`
 
@@ -116,6 +116,8 @@ grep_context_before = 3
 grep_context_after = 3
 output_format = "human"  # or "json"
 ```
+
+M4 uses `coordinators.path` (single resolved socket) and `defaults.output_format`.
 
 ### Server Config (planned)
 
@@ -149,64 +151,64 @@ vtr serve [--socket /path/to.sock] [--shell /bin/bash] [--cols 80] [--rows 24] \
 
 ```bash
 # List sessions across all configured coordinators
-vtr ls [--json]  # planned M4
+vtr ls [--json]
 
 # Create new session
-vtr spawn <name> [--coordinator /path/to.sock] [--cmd "command"] [--cwd /path] [--cols 80] [--rows 24]  # planned M4
+vtr spawn <name> [--socket /path/to.sock] [--cmd "command"] [--cwd /path] [--cols 80] [--rows 24]
 
 # Remove session (kills if running)
-vtr rm <name> [--coordinator /path/to.sock]  # planned M4
+vtr rm <name> [--socket /path/to.sock]
 
 # Kill PTY process (session remains in Exited state)
-vtr kill <name> [--signal TERM|KILL|INT] [--coordinator /path/to.sock]  # planned M4
+vtr kill <name> [--signal TERM|KILL|INT] [--socket /path/to.sock]
 ```
 
 ### Screen Operations
 
 ```bash
 # Get current screen state
-vtr screen <name> [--json] [--coordinator /path/to.sock]  # planned M4
+vtr screen <name> [--json] [--socket /path/to.sock]
 
 # Search scrollback (ripgrep-style output; RE2 regex)
-vtr grep <name> <pattern> [-B lines] [-A lines] [-C lines] [--coordinator /path/to.sock] [--json]  # planned M5
+vtr grep <name> <pattern> [-B lines] [-A lines] [-C lines] [--socket /path/to.sock] [--json]  # planned M5
 
 # Get session info (dimensions, status, exit code)
-vtr info <name> [--json] [--coordinator /path/to.sock]  # planned M4
+vtr info <name> [--json] [--socket /path/to.sock]
 ```
 
 ### Input Operations
 
 ```bash
 # Send text
-vtr send <name> <text> [--coordinator /path/to.sock]  # planned M4
+vtr send <name> <text> [--socket /path/to.sock]
 
 # Send special key
-vtr key <name> <key> [--coordinator /path/to.sock]  # planned M4
+vtr key <name> <key> [--socket /path/to.sock]
 # Keys: enter, tab, escape, up, down, left, right, backspace, delete
 # Modifiers: ctrl+c, ctrl+d, ctrl+z, alt+x, etc.
 
 # Send raw bytes (hex-encoded)
-vtr raw <name> <hex> [--coordinator /path/to.sock]  # planned M4
+vtr raw <name> <hex> [--socket /path/to.sock]
 
 # Resize terminal
-vtr resize <name> <cols> <rows> [--coordinator /path/to.sock]  # planned M4
+vtr resize <name> <cols> <rows> [--socket /path/to.sock]
 ```
 
 ### Blocking Operations
 
 ```bash
 # Wait for pattern in output (future output only, RE2 regex)
-vtr wait <name> <pattern> [--timeout 30s] [--coordinator /path/to.sock] [--json]  # planned M5
+vtr wait <name> <pattern> [--timeout 30s] [--socket /path/to.sock] [--json]  # planned M5
 
 # Wait for idle (no output for idle duration)
-vtr idle <name> [--idle 5s] [--timeout 5s] [--coordinator /path/to.sock] [--json]  # planned M5
+vtr idle <name> [--idle 5s] [--timeout 5s] [--socket /path/to.sock] [--json]  # planned M5
 ```
 
 ### Interactive Mode
 
 ```bash
 # Attach to session (interactive TUI)
-vtr attach <name> [--coordinator /path/to.sock]  # planned M4
+vtr attach <name> [--socket /path/to.sock]  # planned M4 (TUI)
 ```
 
 TUI features (Bubbletea):
@@ -234,7 +236,7 @@ vtr config rm <path-or-glob>  # planned M5
 vtr config resolve  # planned M5
 ```
 
-### Session Addressing
+### Session Addressing (planned M5)
 
 When multiple coordinators are configured:
 
@@ -251,22 +253,23 @@ vtr screen project-a:codex
 Coordinator names derived from socket filename (without .sock extension).
 If two sockets share the same basename, names collide; use `--coordinator` to disambiguate.
 
-### Output Formats (planned M4)
+M4 CLI uses `--socket` to target a single coordinator.
+
+### Output Formats
 
 **Human (default):**
 ```
 $ vtr ls
-COORDINATOR    SESSION    STATUS    COLS×ROWS    AGE
-project-a      codex      running   120×40       2h
-project-a      shell      exited    80×24        5m
-project-b      claude     running   100×30       1h
+COORDINATOR    SESSION    STATUS    COLSxROWS    AGE
+project-a      codex      running   120x40       2h
+project-a      shell      exited    80x24        5m
+project-b      claude     running   100x30       1h
 
 $ vtr screen codex
-┌─ codex (120×40) ──────────────────────────────────────┐
-│$ echo hello                                           │
-│hello                                                  │
-│$ █                                                    │
-└───────────────────────────────────────────────────────┘
+Screen: codex (120x40)
+$ echo hello
+hello
+$ █
 
 $ vtr grep codex "error" -C 2
 scrollback:142: warning: something happened

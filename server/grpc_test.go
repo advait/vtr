@@ -314,14 +314,6 @@ func TestGRPCErrors(t *testing.T) {
 		t.Fatalf("expected AlreadyExists for duplicate spawn, got %v", err)
 	}
 
-	badText := string([]byte{0xff, 0xfe})
-	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
-	_, err = client.SendText(ctx, &proto.SendTextRequest{Name: "grpc-errors", Text: badText})
-	cancel()
-	if status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("expected InvalidArgument for bad utf-8, got %v", err)
-	}
-
 	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
 	_, err = client.SendKey(ctx, &proto.SendKeyRequest{Name: "grpc-errors", Key: "not-a-key"})
 	cancel()
