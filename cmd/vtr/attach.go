@@ -8,14 +8,19 @@ import (
 	"time"
 
 	proto "github.com/advait/vtrpc/proto"
+	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc"
 )
 
 type attachModel struct {
+	conn         *grpc.ClientConn
 	client       proto.VTRClient
 	coordinator  coordinatorRef
+	coords       []coordinatorRef
 	session      string
 	stream       proto.VTR_SubscribeClient
 	streamCancel context.CancelFunc
@@ -26,6 +31,13 @@ type attachModel struct {
 	viewportWidth  int
 	viewportHeight int
 	screen         *proto.GetScreenResponse
+
+	sessionList      list.Model
+	listActive       bool
+	createActive     bool
+	createInput      textinput.Model
+	createCoordIdx   int
+	createFocusInput bool
 
 	leaderActive bool
 	exited       bool
@@ -62,6 +74,43 @@ type sessionSwitchMsg struct {
 	err  error
 }
 
+type sessionListMsg struct {
+	items []list.Item
+	err   error
+}
+
+type spawnSessionMsg struct {
+	name  string
+	coord coordinatorRef
+	conn  *grpc.ClientConn
+	err   error
+}
+
+type sessionListItem struct {
+	name     string
+	status   proto.SessionStatus
+	exitCode int32
+}
+
+func (s sessionListItem) Title() string {
+	return s.name
+}
+
+func (s sessionListItem) Description() string {
+	switch s.status {
+	case proto.SessionStatus_SESSION_STATUS_EXITED:
+		return fmt.Sprintf("exited (%d)", s.exitCode)
+	case proto.SessionStatus_SESSION_STATUS_RUNNING:
+		return "running"
+	default:
+		return "unknown"
+	}
+}
+
+func (s sessionListItem) FilterValue() string {
+	return s.name
+}
+
 var (
 	attachBorderStyle = lipgloss.NewStyle().
 				Border(lipgloss.NormalBorder()).
@@ -72,6 +121,10 @@ var (
 	attachStatusStyle = lipgloss.NewStyle().
 				Background(lipgloss.Color("236")).
 				Foreground(lipgloss.Color("252"))
+	attachModalStyle = lipgloss.NewStyle().
+				Border(lipgloss.NormalBorder()).
+				BorderForeground(lipgloss.Color("240")).
+				Padding(1, 2)
 )
 
 func newAttachCmd() *cobra.Command {
@@ -96,22 +149,39 @@ func newAttachCmd() *cobra.Command {
 				return err
 			}
 
+			coords = coordinatorsOrDefault(coords)
+			coords = ensureCoordinator(coords, target.Coordinator)
+			coordIdx := coordinatorIndex(coords, target.Coordinator)
+			if coordIdx < 0 {
+				coordIdx = 0
+			}
+
 			conn, err := dialClient(context.Background(), target.Coordinator.Path)
 			if err != nil {
 				return err
 			}
-			defer conn.Close()
 
 			model := attachModel{
-				client:      proto.NewVTRClient(conn),
-				coordinator: target.Coordinator,
-				session:     target.Session,
-				streamID:    1,
-				now:         time.Now(),
+				conn:             conn,
+				client:           proto.NewVTRClient(conn),
+				coordinator:      target.Coordinator,
+				coords:           coords,
+				session:          target.Session,
+				streamID:         1,
+				sessionList:      newSessionListModel(nil, 0, 0),
+				createInput:      newCreateInput(),
+				createCoordIdx:   coordIdx,
+				createFocusInput: true,
+				now:              time.Now(),
 			}
 
 			prog := tea.NewProgram(model, tea.WithAltScreen())
 			finalModel, err := prog.Run()
+			if fm, ok := finalModel.(attachModel); ok && fm.conn != nil {
+				_ = fm.conn.Close()
+			} else {
+				_ = conn.Close()
+			}
 			if err != nil {
 				return err
 			}
@@ -185,6 +255,9 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.viewportWidth, m.viewportHeight = viewportSize(msg.Width, msg.Height)
 		if m.viewportWidth > 0 && m.viewportHeight > 0 {
+			m.sessionList.SetSize(m.viewportWidth, m.viewportHeight)
+		}
+		if m.viewportWidth > 0 && m.viewportHeight > 0 {
 			return m, resizeCmd(m.client, m.session, m.viewportWidth, m.viewportHeight)
 		}
 		return m, nil
@@ -195,32 +268,35 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case sessionSwitchMsg:
+		return switchSession(m, msg)
+	case sessionListMsg:
 		if msg.err != nil {
-			m.statusMsg = fmt.Sprintf("switch: %v", msg.err)
+			m.listActive = false
+			m.statusMsg = fmt.Sprintf("list: %v", msg.err)
 			m.statusUntil = time.Now().Add(2 * time.Second)
 			return m, nil
 		}
-		if msg.name == "" || msg.name == m.session {
-			m.statusMsg = "switch: no other sessions"
+		m.sessionList = newSessionListModel(msg.items, m.viewportWidth, m.viewportHeight)
+		m.listActive = true
+		return m, nil
+	case spawnSessionMsg:
+		if msg.err != nil {
+			if msg.conn != nil {
+				_ = msg.conn.Close()
+			}
+			m.statusMsg = fmt.Sprintf("spawn: %v", msg.err)
 			m.statusUntil = time.Now().Add(2 * time.Second)
 			return m, nil
 		}
-		if m.streamCancel != nil {
-			m.streamCancel()
-			m.streamCancel = nil
+		if msg.conn != nil {
+			if m.conn != nil {
+				_ = m.conn.Close()
+			}
+			m.conn = msg.conn
+			m.client = proto.NewVTRClient(msg.conn)
+			m.coordinator = msg.coord
 		}
-		m.streamID++
-		m.session = msg.name
-		m.screen = nil
-		m.exited = false
-		m.exitCode = 0
-		m.statusMsg = fmt.Sprintf("attached to %s", msg.name)
-		m.statusUntil = time.Now().Add(2 * time.Second)
-		cmds := []tea.Cmd{startSubscribeCmd(m.client, m.session, m.streamID)}
-		if m.viewportWidth > 0 && m.viewportHeight > 0 {
-			cmds = append(cmds, resizeCmd(m.client, m.session, m.viewportWidth, m.viewportHeight))
-		}
-		return m, tea.Batch(cmds...)
+		return switchSession(m, sessionSwitchMsg{name: msg.name})
 	case tea.KeyMsg:
 		if m.exited {
 			switch msg.String() {
@@ -228,6 +304,12 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			}
 			return m, nil
+		}
+		if m.createActive {
+			return updateCreateModal(m, msg)
+		}
+		if m.listActive {
+			return updateSessionList(m, msg)
 		}
 		if m.leaderActive {
 			m.leaderActive = false
@@ -246,7 +328,15 @@ func (m attachModel) View() string {
 	if m.width <= 0 || m.height <= 0 {
 		return "loading..."
 	}
-	content := renderScreen(m.screen, m.viewportWidth, m.viewportHeight)
+	content := ""
+	switch {
+	case m.createActive:
+		content = renderCreateModal(m)
+	case m.listActive:
+		content = renderSessionList(m)
+	default:
+		content = renderScreen(m.screen, m.viewportWidth, m.viewportHeight)
+	}
 	border := attachBorderStyle
 	if m.exited {
 		border = attachExitedBorderStyle
@@ -405,6 +495,66 @@ func nextSessionCmd(client proto.VTRClient, current string, forward bool) tea.Cm
 	}
 }
 
+func loadSessionListCmd(client proto.VTRClient) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
+		defer cancel()
+		resp, err := client.List(ctx, &proto.ListRequest{})
+		if err != nil {
+			return sessionListMsg{err: err}
+		}
+		sessions := resp.Sessions
+		sort.Slice(sessions, func(i, j int) bool {
+			if sessions[i] == nil || sessions[j] == nil {
+				return sessions[i] != nil
+			}
+			return sessions[i].Name < sessions[j].Name
+		})
+		items := make([]list.Item, 0, len(sessions))
+		for _, session := range sessions {
+			if session == nil || session.Name == "" {
+				continue
+			}
+			items = append(items, sessionListItem{
+				name:     session.Name,
+				status:   session.Status,
+				exitCode: session.ExitCode,
+			})
+		}
+		return sessionListMsg{items: items}
+	}
+}
+
+func spawnCurrentCmd(client proto.VTRClient, name string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
+		defer cancel()
+		_, err := client.Spawn(ctx, &proto.SpawnRequest{Name: name})
+		if err != nil {
+			return rpcErrMsg{err: err, op: "spawn"}
+		}
+		return sessionSwitchMsg{name: name}
+	}
+}
+
+func spawnSessionCmd(coord coordinatorRef, name string) tea.Cmd {
+	return func() tea.Msg {
+		conn, err := dialClient(context.Background(), coord.Path)
+		if err != nil {
+			return spawnSessionMsg{err: err, coord: coord}
+		}
+		client := proto.NewVTRClient(conn)
+		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
+		defer cancel()
+		_, err = client.Spawn(ctx, &proto.SpawnRequest{Name: name})
+		if err != nil {
+			_ = conn.Close()
+			return spawnSessionMsg{err: err, coord: coord}
+		}
+		return spawnSessionMsg{name: name, coord: coord, conn: conn}
+	}
+}
+
 func handleLeaderKey(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
 	key := msg.String()
 	if len(key) == 1 {
@@ -424,13 +574,10 @@ func handleLeaderKey(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
 	case "p":
 		return m, nextSessionCmd(m.client, m.session, false)
 	case "c":
-		m.statusMsg = "create: not ready"
-		m.statusUntil = time.Now().Add(2 * time.Second)
-		return m, nil
+		return beginCreateModal(m)
 	case "w":
-		m.statusMsg = "picker: not ready"
-		m.statusUntil = time.Now().Add(2 * time.Second)
-		return m, nil
+		m.listActive = true
+		return m, loadSessionListCmd(m.client)
 	default:
 		m.statusMsg = fmt.Sprintf("unknown leader key: %s", key)
 		m.statusUntil = time.Now().Add(2 * time.Second)
@@ -477,6 +624,149 @@ func inputForKey(msg tea.KeyMsg) (string, []byte, bool) {
 		return key, nil, true
 	}
 	return "", nil, false
+}
+
+func newSessionListModel(items []list.Item, width, height int) list.Model {
+	delegate := list.NewDefaultDelegate()
+	model := list.New(items, delegate, width, height)
+	model.Title = "Sessions"
+	model.SetShowStatusBar(false)
+	model.SetShowHelp(false)
+	model.SetFilteringEnabled(true)
+	return model
+}
+
+func newCreateInput() textinput.Model {
+	input := textinput.New()
+	input.Prompt = "Name: "
+	input.Placeholder = "session"
+	input.CharLimit = 64
+	input.Width = 30
+	input.Blur()
+	return input
+}
+
+func beginCreateModal(m attachModel) (attachModel, tea.Cmd) {
+	if len(m.coords) == 0 {
+		m.statusMsg = "create: no coordinators"
+		m.statusUntil = time.Now().Add(2 * time.Second)
+		return m, nil
+	}
+	m.createActive = true
+	m.listActive = false
+	m.createFocusInput = true
+	m.createCoordIdx = coordinatorIndex(m.coords, m.coordinator)
+	if m.createCoordIdx < 0 {
+		m.createCoordIdx = 0
+	}
+	m.createInput.SetValue("")
+	m.createInput.Focus()
+	return m, nil
+}
+
+func updateSessionList(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.listActive = false
+		return m, nil
+	case "enter":
+		item := m.sessionList.SelectedItem()
+		if item == nil {
+			return m, nil
+		}
+		selected, ok := item.(sessionListItem)
+		if !ok {
+			return m, nil
+		}
+		m.listActive = false
+		return switchSession(m, sessionSwitchMsg{name: selected.name})
+	}
+	var cmd tea.Cmd
+	m.sessionList, cmd = m.sessionList.Update(msg)
+	return m, cmd
+}
+
+func updateCreateModal(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.createActive = false
+		m.createInput.Blur()
+		return m, nil
+	case "tab":
+		m.createFocusInput = !m.createFocusInput
+		if m.createFocusInput {
+			m.createInput.Focus()
+		} else {
+			m.createInput.Blur()
+		}
+		return m, nil
+	case "enter":
+		name := strings.TrimSpace(m.createInput.Value())
+		if name == "" {
+			m.statusMsg = "create: name required"
+			m.statusUntil = time.Now().Add(2 * time.Second)
+			return m, nil
+		}
+		coord := m.coordinator
+		if m.createCoordIdx >= 0 && m.createCoordIdx < len(m.coords) {
+			coord = m.coords[m.createCoordIdx]
+		}
+		m.createActive = false
+		m.createInput.Blur()
+		if coord.Path == m.coordinator.Path {
+			return m, spawnCurrentCmd(m.client, name)
+		}
+		return m, spawnSessionCmd(coord, name)
+	case "j", "down":
+		if !m.createFocusInput && len(m.coords) > 0 {
+			m.createCoordIdx = (m.createCoordIdx + 1) % len(m.coords)
+		}
+		return m, nil
+	case "k", "up":
+		if !m.createFocusInput && len(m.coords) > 0 {
+			m.createCoordIdx = (m.createCoordIdx - 1 + len(m.coords)) % len(m.coords)
+		}
+		return m, nil
+	}
+	if m.createFocusInput {
+		var cmd tea.Cmd
+		m.createInput, cmd = m.createInput.Update(msg)
+		return m, cmd
+	}
+	return m, nil
+}
+
+func switchSession(m attachModel, msg sessionSwitchMsg) (attachModel, tea.Cmd) {
+	if msg.err != nil {
+		m.statusMsg = fmt.Sprintf("switch: %v", msg.err)
+		m.statusUntil = time.Now().Add(2 * time.Second)
+		return m, nil
+	}
+	if msg.name == "" || msg.name == m.session {
+		m.statusMsg = "switch: no other sessions"
+		m.statusUntil = time.Now().Add(2 * time.Second)
+		return m, nil
+	}
+	if m.streamCancel != nil {
+		m.streamCancel()
+		m.streamCancel = nil
+	}
+	m.streamID++
+	m.session = msg.name
+	m.screen = nil
+	m.exited = false
+	m.exitCode = 0
+	m.leaderActive = false
+	m.listActive = false
+	m.createActive = false
+	m.createInput.Blur()
+	m.statusMsg = fmt.Sprintf("attached to %s", msg.name)
+	m.statusUntil = time.Now().Add(2 * time.Second)
+	cmds := []tea.Cmd{startSubscribeCmd(m.client, m.session, m.streamID)}
+	if m.viewportWidth > 0 && m.viewportHeight > 0 {
+		cmds = append(cmds, resizeCmd(m.client, m.session, m.viewportWidth, m.viewportHeight))
+	}
+	return m, tea.Batch(cmds...)
 }
 
 func viewportSize(width, height int) (int, int) {
@@ -526,6 +816,56 @@ func renderRow(row *proto.ScreenRow, width int) string {
 		b.WriteByte(' ')
 	}
 	return b.String()
+}
+
+func renderSessionList(m attachModel) string {
+	if m.viewportWidth <= 0 || m.viewportHeight <= 0 {
+		return ""
+	}
+	view := m.sessionList.View()
+	return lipgloss.Place(m.viewportWidth, m.viewportHeight, lipgloss.Left, lipgloss.Top, view)
+}
+
+func renderCreateModal(m attachModel) string {
+	if m.viewportWidth <= 0 || m.viewportHeight <= 0 {
+		return ""
+	}
+	coordName := m.coordinator.Name
+	if m.createCoordIdx >= 0 && m.createCoordIdx < len(m.coords) {
+		coordName = m.coords[m.createCoordIdx].Name
+	}
+	focus := "name"
+	if !m.createFocusInput {
+		focus = "coordinator"
+	}
+	lines := []string{
+		"Create session",
+		"",
+		m.createInput.View(),
+		fmt.Sprintf("Coordinator: %s", coordName),
+		fmt.Sprintf("Focus: %s", focus),
+		"Tab switches field; j/k changes coordinator",
+		"Enter to create, Esc to cancel",
+	}
+	content := strings.Join(lines, "\n")
+	box := attachModalStyle.Render(content)
+	return lipgloss.Place(m.viewportWidth, m.viewportHeight, lipgloss.Center, lipgloss.Center, box)
+}
+
+func coordinatorIndex(coords []coordinatorRef, target coordinatorRef) int {
+	for i, coord := range coords {
+		if coord.Path == target.Path {
+			return i
+		}
+	}
+	return -1
+}
+
+func ensureCoordinator(coords []coordinatorRef, target coordinatorRef) []coordinatorRef {
+	if coordinatorIndex(coords, target) >= 0 {
+		return coords
+	}
+	return append(coords, target)
 }
 
 type statusView struct {
