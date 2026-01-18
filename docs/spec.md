@@ -339,6 +339,8 @@ Typography:
 - Font: `"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace`.
 - Base size: 14px mobile, 15px desktop; headings at 16-18px.
 - Line height: 1.45 for labels, 1.6 for body.
+- Enable programming ligatures in terminal content when supported by the font;
+  keep UI labels non-ligatured for legibility.
 
 Component specs (shadcn/ui primitives):
 - App shell: sticky top bar with coordinator filter + status; background `--tn-panel`.
@@ -358,6 +360,19 @@ Visual QA:
 - Capture screenshots (shot or equivalent) for mobile (390px wide) and desktop
   (1280px wide) with tree view expanded and a live session attached.
 
+### UI polish requirements (M7)
+
+- No layout jumps: measure cell size after fonts load; keep the grid stable
+  during connect/reconnect.
+- Connection UX: clear connecting/reconnecting states; disable input when the
+  session exits or the socket is down.
+- Input feel: tap-to-focus is reliable; paste works; on-screen controls and
+  keyboard input never fight for focus.
+- Performance: row-level updates apply within a frame budget; avoid per-cell DOM
+  churn by using run-based rendering.
+- Fit-and-finish: crisp borders, consistent spacing, 44px tap targets, and
+  readable contrast across all states.
+
 ### Testing strategy (E2E pipeline)
 
 Goal: validate end-to-end data flow from ANSI bytes to rendered browser state
@@ -372,6 +387,12 @@ Example flow:
 1. Feed `"\x1b[31mRED\x1b[0m"` to PTY.
 2. Wait for the web client to attach and render.
 3. Assert the terminal contains "RED" with the expected red color.
+
+Additional coverage:
+- Emoji grapheme sequences (e.g., U+1F1FA U+1F1F8 flags or ZWJ sequences) render
+  as a single cell and maintain alignment.
+- Ligatures (e.g., `->`, `=>`, `!=`) render when enabled without shifting cell
+  boundaries.
 
 ### Session Tree View (coordinator -> sessions)
 
@@ -424,7 +445,10 @@ message GetScreenResponse {
 }
 ```
 Screen cell semantics:
-- `char` is always a single Unicode codepoint; the server sends `" "` for empty cells.
+- `char` is a Unicode grapheme cluster (one or more codepoints) representing a
+  single cell; the server sends `" "` for empty cells. Emoji sequences (ZWJ
+  U+200D, variation selectors U+FE0F, regional indicator pairs U+1F1E6..U+1F1FF,
+  and skin tone modifiers U+1F3FB..U+1F3FF) are encoded as a single `char` string.
 - `fg_color`/`bg_color` are packed 24-bit RGB ints (`0xRRGGBB`, no alpha).
 - `attributes` uses the Ghostty bitmask values listed above.
 - Cursor visibility is not exposed in the proto; M7 assumes the cursor is visible.
@@ -445,16 +469,23 @@ Screen cell semantics:
 - Core rendering is a monospace grid, but correctness also needs cursor,
   wide-char handling, and selection/copy behavior.
 - Grid rendering: monospace cells with per-cell fg/bg and attribute bitmask;
-  use `white-space: pre`, `font-variant-ligatures: none`, and fixed tab size.
+- use `white-space: pre` and fixed tab size; measure cell metrics after fonts
+  load to avoid layout shifts.
+- Emoji/graphemes: render `char` as an atomic grapheme cluster string; do not
+  split or normalize it on the client.
+- Ligatures: coalesce consecutive cells with identical style into text runs and
+  enable programming ligatures (`font-variant-ligatures: contextual`,
+  `font-feature-settings: "liga" 1, "calt" 1`). If the chosen font breaks
+  monospaced advances, disable ligatures to preserve grid alignment.
 - Attributes: map bold/italic/underline/strikethrough/overline to CSS; implement
   faint via reduced opacity, inverse by swapping fg/bg, invisible by rendering
   fg as bg, and ignore blink for M7.
 - Cursor: use `cursor_x`/`cursor_y` and render a block cursor with inverted
   colors; cursor-only updates are legal (no row diffs). Cursor visibility is
   assumed true in M7.
-- Wide characters: use `wcwidth` to detect width 2. If width 2, render the rune
-  in the head cell and hide the next cell only when it is a space with matching
-  style (heuristic until wide metadata is exposed in the proto).
+- Wide characters: use grapheme-aware `wcwidth` to detect width 2. If width 2,
+  render the grapheme in the head cell and hide the next cell only when it is a
+  space with matching style (heuristic until wide metadata is exposed in the proto).
 - Selection/copy: implement client-side range selection across the grid and
   synthesize text for clipboard. Paste uses a hidden textarea and `SendText`.
 - Scrollback: not in `GetScreenResponse`. M7 shows viewport only; add a
@@ -463,9 +494,9 @@ Screen cell semantics:
 ### React component responsibilities
 
 - `TerminalGrid` holds the current grid, cursor, and size (`cols`/`rows`).
-- `TerminalRow` renders a row and applies row-level updates efficiently.
-- `TerminalCell` maps packed RGB colors and `attributes` bitmask to CSS styles
-  (unknown bits are ignored).
+- `TerminalRow` coalesces cells into styled runs and renders a text layer to
+  allow ligatures and grapheme clusters to shape correctly.
+- `TerminalCell` (optional) renders background/selection in a separate grid layer.
 - Cursor overlay is a positioned element layered above the grid.
 
 ### gRPC-Web or WebSocket bridge design
@@ -526,6 +557,7 @@ Notes:
 - Indices are 0-based.
 - `screen_full.screen.rows` is a dense 2D array (`rows[y][x]`).
 - `screen_full` uses the compact tuple format above, not raw protobuf JSON.
+- `Cell[0]` is a grapheme cluster string; treat it as atomic.
 - `screen_delta` may include only cursor changes (`rows` can be empty).
 - `input.kind` maps to `SendText` or `SendKey` using the same key names as the CLI.
 
