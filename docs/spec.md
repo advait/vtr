@@ -328,12 +328,13 @@ Visual QA:
 
 ### Testing strategy (E2E pipeline)
 
-Goal: validate end-to-end data flow from ANSI bytes to rendered browser state.
+Goal: validate end-to-end data flow from ANSI bytes to rendered browser state
+via structured screen updates (no client-side ANSI parsing).
 
 Approach:
 - Spawn a coordinator-backed PTY, feed ANSI bytes, and attach a web client.
 - Observe the rendered terminal state in the browser and assert content + style.
-- Cover both raw streaming and snapshot resync paths.
+- Cover both screen-update streaming and snapshot resync paths.
 
 Example flow:
 1. Feed `"\x1b[31mRED\x1b[0m"` to PTY.
@@ -360,35 +361,65 @@ terminal renderer or reusable web UI components:
   `ghostty/example/wasm-key-encode` (key encoder).
 - Web canvas font utilities live in `ghostty/src/font/*/web_canvas.zig`.
 
-Recommendation: for M7, use xterm.js with raw output streaming. Revisit
-Ghostty WASM later if we want client-side parsing or custom cell rendering.
+Recommendation: for M7, do not use Ghostty WASM in the browser. Render from
+structured screen updates emitted by the coordinator.
 
-### Terminal renderer alternatives
+### Screen model (proto)
 
-- hterm (Chromium-derived) is a possible alternative but still expects raw
-  output and does not directly integrate with our VT engine.
-- Custom renderer using `GetScreenResponse` or `ScreenUpdate` can align with
-  the Zig VT state but requires font shaping, selection, and input handling.
-- Asciinema-style playback is useful for recordings, not interactive attach.
+The coordinator owns terminal state and exposes it as a structured grid:
 
-### Terminal renderer evaluation (xterm.js vs custom)
+```
+message ScreenCell {
+  string char = 1;
+  int32 fg_color = 2;  // RGB packed
+  int32 bg_color = 3;  // RGB packed
+  uint32 attributes = 4;  // bold=0x01, italic=0x02, underline=0x04, etc.
+}
 
-xterm.js (raw output):
-- Pros: mature renderer, IME/selection/copy/search, wide-char handling,
-  good performance, minimal terminal-specific UI work.
-- Cons: client parses ANSI even though server already has VT state, bundle size
-  overhead, and potential drift if server and client interpret sequences
-  differently (mitigate with periodic `snapshot` resync).
+message ScreenRow {
+  repeated ScreenCell cells = 1;
+}
 
-Custom renderer (ScreenUpdate diffs):
-- Pros: server is source of truth, no ANSI parsing in the browser, easier to
-  enforce fidelity with Ghostty VT state.
-- Cons: need a full grid renderer (layout, selection, links, IME, scrollback,
-  clipboard, accessibility), plus a diff protocol not yet defined.
+message GetScreenResponse {
+  string name = 1;
+  int32 cols = 2;
+  int32 rows = 3;
+  int32 cursor_x = 4;
+  int32 cursor_y = 5;
+  repeated ScreenRow screen_rows = 6;
+}
+```
+`fg_color` and `bg_color` are packed RGB ints; convert to CSS colors.
 
-Recommendation: use xterm.js for M7 to ship fast and avoid reimplementing
-terminal UX. Keep `include_screen_updates` for resync and revisit a custom
-renderer when diff format and UI primitives are proven.
+### Terminal renderer (decision: custom grid, no ANSI parsing)
+
+- Web clients render directly from `ScreenRow`/`ScreenCell` data.
+- `Subscribe` streams `ScreenUpdate` (structured grid), not raw output bytes.
+- The web server can compute row-level deltas from full screens and emit
+  `screen_delta` events to reduce payload size.
+
+### Rendering considerations
+
+- Core rendering is a monospace grid, but correctness also needs cursor,
+  wide-char handling, and selection/copy behavior.
+- Grid rendering: monospace cells with per-cell fg/bg and attribute bitmask.
+- Attributes: map bold/italic/underline bits to CSS; ignore unknown bits.
+- Cursor: use `cursor_x`/`cursor_y` and render a block cursor with inverted
+  colors. If we need beam/underline styles, add them to the proto later.
+- Wide characters: treat cells as fixed-width; if a cell contains a wide rune,
+  use a `wcwidth` lookup and skip the next cell when it is empty.
+- Selection/copy: implement client-side range selection across the grid and
+  synthesize text for clipboard. Paste uses a hidden textarea and `SendText`.
+- Scrollback: not in `GetScreenResponse`. M7 shows viewport only; add a
+  scrollback API later (e.g. dump + paging or new RPC).
+
+### React component responsibilities
+
+- `TerminalGrid` holds the current grid, cursor, and size (`cols`/`rows`).
+- `TerminalRow` renders a row and applies row-level updates efficiently.
+- `TerminalCell` maps packed RGB colors and `attributes` bitmask to CSS styles
+  (unknown bits are ignored).
+- Cursor overlay is a positioned element layered above the grid.
 
 ### gRPC-Web or WebSocket bridge design
 
@@ -399,26 +430,20 @@ Recommended: server-side bridge in Go, not gRPC-Web.
 - SSE is viable for read-only streaming but WS is required for input.
 
 Bridge behavior:
-- On attach, call `GetScreen` for a full snapshot and send to client.
-- Start `Subscribe` with `include_raw_output` for xterm.js streaming.
-- Optionally also enable `include_screen_updates` for resync or for a custom
-  cell renderer if we choose not to use xterm.js.
-- Use binary WS frames for `raw_output` and JSON for control events
-  (resize, session exit, errors).
+- On attach, call `GetScreen` for a full snapshot and send `screen_full`.
+- Start `Subscribe` with `include_screen_updates` enabled.
+- Convert `ScreenUpdate` to row deltas and send `screen_delta` events.
+- Use JSON WS frames for control and screen updates (resize, session exit, errors).
 - Backpressure: coalesce output, drop stale frames, and cap per-client buffers.
 
 ### WebSocket schema recommendation
 
-Prefer a simple hybrid: JSON text frames for control + binary frames for raw
-output. This mirrors `SubscribeEvent` without protobuf framing overhead.
-
-Multiplexing logic (M7): text frames are control, binary frames are raw output.
-If we later need multiple binary payloads, add a 1-byte type prefix to binary
-frames and keep JSON for control.
+Prefer JSON text frames for both control and screen updates in M7. If payloads
+grow too large, add a binary `screen_delta` frame (protobuf or custom) later.
 
 Client -> server (JSON):
 ```json
-{"type":"hello","coordinator":"project-a","session":"codex","cols":120,"rows":40,"want_raw":true,"want_screen":false}
+{"type":"hello","coordinator":"project-a","session":"codex","cols":120,"rows":40}
 {"type":"resize","cols":120,"rows":40}
 {"type":"input","kind":"text","data":"ls -la\n"}
 {"type":"input","kind":"key","data":"ctrl+c"}
@@ -428,18 +453,17 @@ Server -> client:
 - JSON control frames:
 ```json
 {"type":"ready","cols":120,"rows":40}
-{"type":"snapshot","screen":{...GetScreenResponse...}}
+{"type":"screen_full","screen":{...GetScreenResponse...}}
+{"type":"screen_delta","cursor":{"x":10,"y":4},"rows":[{"y":4,"cells":[["R",16711680,0,1],["E",16711680,0,1],["D",16711680,0,1]]}]}
 {"type":"session_exited","exit_code":0}
 {"type":"error","code":"not_found","message":"unknown session"}
 ```
-- Binary frames: raw output bytes (xterm.js input stream).
+`screen_delta.rows[].cells` uses `[char, fg_color, bg_color, attributes]`.
 
 Compression/deltas:
-- Enable WebSocket permessage-deflate for JSON frames; raw output is often
-  compressible but avoid base64 to keep overhead low.
-- For M7, rely on raw output streaming with periodic `snapshot` resync
-  (on connect/reconnect or every N seconds). If we need diffs later, add a
-  `screen_patch` message with row-level deltas.
+- Enable WebSocket permessage-deflate for JSON frames.
+- For M7, use row-level deltas and periodic `screen_full` resync
+  (on connect/reconnect or every N seconds).
 
 ### Tailscale Serve integration
 
@@ -458,17 +482,20 @@ explicitly out of scope for this milestone.
 
 ### Notes from modern web terminal patterns
 
-- ttyd/wetty/xterm.js stacks use WebSockets with raw PTY output and a small
-  control channel for resize, reconnect, and keepalives.
+- ttyd/wetty stacks use WebSockets with raw PTY output; vtr uses structured
+  screen updates instead of ANSI parsing.
 - Vibe tunnel patterns appear to prefer tailnet access plus optional share
   links; we are not implementing share links in M7.
 
 ### Open questions (decide before implementation)
 
-- Do we accept xterm.js for M7, or invest in a custom renderer plus diff format?
-- Should binary frames include a 1-byte type prefix from day one?
-- What resync cadence should we use (only on connect vs periodic snapshots)?
-- Do we expose scrollback in the Web UI (read-only) during M7?
+- What delta format do we standardize on (row-level vs cell-level), and what
+  `screen_full` resync cadence do we want?
+- Do we need cursor style/blink fields in the proto beyond position?
+- How should we represent wide/combining characters (client `wcwidth` vs
+  explicit width/continuation markers from the server)?
+- Do we expose scrollback in the Web UI during M7, and if so via what RPC?
+- When do we switch from JSON to binary encoding for `screen_delta`?
 
 ### Config Management
 
@@ -710,7 +737,8 @@ message SubscribeEvent {
 - Server always sends an initial full `ScreenUpdate` snapshot so clients can diff (even when
   `include_screen_updates` is false).
 - `include_screen_updates` controls subsequent full-frame snapshots (throttled to 30fps max).
-- `include_raw_output` emits raw PTY bytes for logging or custom rendering.
+- `include_raw_output` emits raw PTY bytes for logging or custom rendering; the Web UI
+  must not rely on it in M7.
 - At least one of `include_screen_updates` or `include_raw_output` must be true; otherwise the
   server returns `INVALID_ARGUMENT`.
 - If `include_screen_updates` is true, the server sends a final `ScreenUpdate` before
@@ -870,7 +898,7 @@ chmod 660 /var/run/vtr.sock
 
 1. React + shadcn/ui frontend with Tokyo Night palette and JetBrains Mono
 2. Bun + Vite dev tooling and HMR workflow
-3. Terminal renderer decision (xterm.js recommended) with resync strategy
+3. Custom grid renderer using `ScreenUpdate` deltas (no ANSI parsing)
 4. WebSocket -> gRPC bridge in `vtr web`
 5. Multi-coordinator tree view from `~/.config/vtr/config.toml`
 6. Tailnet-only Tailscale Serve integration
