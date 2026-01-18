@@ -11,6 +11,7 @@ vtr is a terminal multiplexer designed for the agent era. Each container runs a 
 ## Implementation Status (post-M4)
 
 - Implemented gRPC methods: Spawn, List, Info, Kill, Remove, GetScreen, SendText, SendKey, SendBytes, Resize.
+- Grep, WaitFor, WaitForIdle, Subscribe, and DumpAsciinema are defined in `proto/vtr.proto` but are not implemented yet (gRPC returns UNIMPLEMENTED).
 - CLI supports core client commands (`ls`, `spawn`, `info`, `screen`, `send`, `key`, `raw`, `resize`, `kill`, `rm`) plus `serve` and `version`.
 - Client config loader is active for single-coordinator setups; multi-coordinator resolution and advanced RPCs are planned for M5.
 
@@ -111,13 +112,14 @@ path = "/home/advait/.vtr/project-alpha.sock"  # explicit path
 
 # Defaults
 [defaults]
-wait_for_idle_timeout = "5s"  # overall deadline for vtr idle
-grep_context_before = 3
-grep_context_after = 3
 output_format = "human"  # or "json"
+# wait_for_idle_timeout = "5s"  # planned M5 (idle RPC/CLI)
+# grep_context_before = 3       # planned M5 (grep RPC/CLI)
+# grep_context_after = 3        # planned M5 (grep RPC/CLI)
 ```
 
 M4 uses `coordinators.path` (single resolved socket) and `defaults.output_format`.
+If no config file is present and `--socket` is not provided, the client defaults to `/var/run/vtr.sock`.
 
 ### Server Config (planned)
 
@@ -184,8 +186,8 @@ vtr send <name> <text> [--socket /path/to.sock]
 
 # Send special key
 vtr key <name> <key> [--socket /path/to.sock]
-# Keys: enter, tab, escape, up, down, left, right, backspace, delete
-# Modifiers: ctrl+c, ctrl+d, ctrl+z, alt+x, etc.
+# Keys: enter/return, tab, escape/esc, up, down, left, right, backspace, delete, home, end, pageup, pagedown
+# Modifiers: ctrl+c, ctrl+d, ctrl+z, alt+x, meta+x, etc. (single characters are sent verbatim)
 
 # Send raw bytes (hex-encoded)
 vtr raw <name> <hex> [--socket /path/to.sock]
@@ -208,10 +210,10 @@ vtr idle <name> [--idle 5s] [--timeout 5s] [--socket /path/to.sock] [--json]  # 
 
 ```bash
 # Attach to session (interactive TUI)
-vtr attach <name> [--socket /path/to.sock]  # planned M4 (TUI)
+vtr attach <name> [--socket /path/to.sock]  # planned post-M5 (TUI)
 ```
 
-TUI features (Bubbletea):
+TUI features (planned; implementation pending):
 - Window decoration showing session name, coordinator, dimensions
 - Leader key (`Ctrl+b` default) for commands:
   - `d` - Detach
@@ -302,6 +304,8 @@ Transport: Unix domain socket
 Auth: POSIX filesystem permissions
 
 ### Service Definition
+
+**Status (post-M4):** Spawn, List, Info, Kill, Remove, GetScreen, SendText, SendKey, SendBytes, Resize are implemented. Grep, WaitFor, WaitForIdle, Subscribe, and DumpAsciinema are defined but not implemented yet.
 
 ```protobuf
 syntax = "proto3";
@@ -491,9 +495,9 @@ Scrollback is line-indexed for efficient grep:
 
 Agents use `GetScreen()`, `WaitFor()`, `WaitForIdle()` — natural backpressure via request/response. No buffering concerns.
 
-### Streaming Clients (Subscribe)
+### Streaming Clients (Subscribe) (planned)
 
-For attach and web UI:
+For attach and web UI (not implemented yet):
 - Server maintains circular buffer of recent screen snapshots
 - Slow clients skip intermediate frames
 - Clients always see current state, may miss transitions
@@ -551,30 +555,29 @@ chmod 660 /var/run/vtr.sock
 
 - Text input: UTF-8 validated
 - Raw bytes: CLI accepts hex and decodes to bytes; server enforces length limit (1MB max)
-- Patterns: regex validated, timeout enforced
+- Patterns: regex validated, timeout enforced (planned for grep/wait RPCs)
 
 ## Implementation Plan
 
-### Phase 1: Server Core
+### Phase 1: Server Core (done in M3)
 
 1. gRPC server over Unix socket
 2. Session spawn/list/info/kill/rm
 3. PTY management (spawn, I/O)
 4. VT engine integration (libghostty-vt via go-ghostty shim)
-5. GetScreen, SendText, SendKey
-6. Tests for all core operations
+5. GetScreen, SendText, SendKey, SendBytes, Resize
+6. Tests for core operations
 
-### Phase 2: Advanced Operations
+### Phase 2: Advanced Operations (planned M5)
 
 1. Grep with context
 2. WaitFor (pattern matching)
 3. WaitForIdle (debounced idle detection)
-4. Resize
-5. Subscribe stream (for attach)
+4. Subscribe stream (for attach)
 
-### Phase 3: CLI Client
+### Phase 3: CLI Client (core done, advanced planned)
 
-1. All commands implemented
+1. Core commands implemented (`ls`, `spawn`, `info`, `screen`, `send`, `key`, `raw`, `resize`, `kill`, `rm`)
 2. Human and JSON output formats
 3. Config management
 4. Multi-coordinator support
@@ -600,26 +603,35 @@ chmod 660 /var/run/vtr.sock
 2. DumpAsciinema RPC
 3. Playback support in web UI
 
-## Project Structure (planned)
+## Project Structure (post-M4)
 
 ```
-vtr/
+vtrpc/
+├── cmd/
+│   └── vtr/
+│       ├── main.go
+│       ├── root.go
+│       ├── serve.go
+│       ├── client.go
+│       ├── output.go
+│       ├── config.go
+│       └── version.go
 ├── docs/
-│   ├── spec.md          # This file
-│   └── progress.md      # Development progress tracking (planned)
-├── go-ghostty/          # cgo shim around libghostty-vt Zig module
+│   ├── spec.md
+│   ├── progress.md
+│   └── agent-meta.md
+├── go-ghostty/
+│   ├── ghostty.go
+│   ├── ghostty_test.go
+│   └── shim/            # Zig shim + build artifacts
 ├── proto/
-│   └── vtr.proto        # gRPC service definition
+│   └── vtr.proto
 ├── server/
-│   ├── main.go
-│   ├── coordinator.go   # Session management
-│   ├── pty.go           # PTY operations
-│   ├── vt.go            # VT engine wrapper
-│   └── grpc.go          # gRPC handlers
-├── cli/
-│   ├── main.go
-│   ├── commands/        # CLI command implementations
-│   └── tui/             # Bubbletea attach mode
+│   ├── coordinator.go
+│   ├── grpc.go
+│   ├── input.go
+│   ├── pty.go
+│   └── vt.go
 ├── web/                 # Web UI (P2)
 ├── go.mod
 ├── go.sum
@@ -634,49 +646,24 @@ vtr/
 | github.com/creack/pty | PTY management |
 | libghostty-vt (Zig) | Terminal emulation core accessed via go-ghostty shim (custom C ABI) |
 | github.com/spf13/cobra | CLI framework |
-| github.com/charmbracelet/bubbletea | TUI framework |
-| github.com/BurntSushi/toml | Config parsing |
+| github.com/BurntSushi/toml | Client config parsing |
+| github.com/charmbracelet/bubbletea | TUI framework (planned) |
 
-## Testing Strategy
+## Testing Strategy (post-M4)
 
-### Tier 1: Core Contracts (CI gate)
+### Current coverage
 
-```go
-func TestSpawnAndEcho(t *testing.T)      // PTY + I/O round-trip
-func TestScreenDimensions(t *testing.T)  // GetScreen correctness
-func TestCursorPosition(t *testing.T)    // Cursor tracking
-func TestScrollbackGrep(t *testing.T)    // Search correctness
-func TestWaitForTimeout(t *testing.T)    // Timeout behavior
-func TestWaitForSuccess(t *testing.T)    // Pattern detection
-func TestMultiClient(t *testing.T)       // Concurrent connections
-func TestSpecialKeys(t *testing.T)       // Ctrl+C, arrows, etc.
-```
+- go-ghostty snapshot/dump coverage (attrs, colors, cursor movement, wide chars, wrapping)
+- Server coordinator tests for spawn/echo, exit code, kill/remove, screen snapshot
+- gRPC integration tests for spawn/send/screen, list/info/resize, kill/remove, error mapping
+- CLI end-to-end test (spawn/send/key/screen) against a live coordinator
 
-### Tier 2: Confidence Builders
+### Gaps / planned
 
-```go
-func TestUnicode(t *testing.T)           // 日本語 rendering
-func TestColors(t *testing.T)            // ANSI color preservation
-func TestRapidOutput(t *testing.T)       // Output flood handling
-func TestResize(t *testing.T)            // Mid-session resize
-func TestLongRunning(t *testing.T)       // 60s stability
-```
-
-### Golden Tests
-
-Screen state tests use golden files:
-```go
-func TestVimRenders(t *testing.T) {
-    // spawn vim, wait for "~", compare screen to golden file
-}
-```
-
-### Test Harness
-
-```go
-// fixtures_test.go
-func withSession(t *testing.T, name string, fn func(client vtr.VTRClient, session string))
-```
+- Grep, WaitFor, WaitForIdle RPCs + CLI coverage (M5)
+- Subscribe stream behavior (backpressure, dropped frames, event ordering)
+- Multi-coordinator resolution + `vtr config` commands
+- Attach TUI + web UI + recording
 
 ---
 

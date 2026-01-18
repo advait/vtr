@@ -208,3 +208,31 @@ func TestScreenCapture(t *testing.T) {
 		t.Fatalf("cell(1,0)=%q", got)
 	}
 }
+
+func TestMergeEnvOverrides(t *testing.T) {
+	base := []string{"PATH=/bin", "FOO=bar"}
+	extra := []string{"FOO=baz", "NEW=1"}
+	got := mergeEnv(base, extra)
+
+	env := make(map[string]string)
+	for _, entry := range got {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			t.Fatalf("invalid env entry %q", entry)
+		}
+		if _, exists := env[key]; exists {
+			t.Fatalf("duplicate env key %q", key)
+		}
+		env[key] = value
+	}
+
+	if env["PATH"] != "/bin" {
+		t.Fatalf("PATH=%q", env["PATH"])
+	}
+	if env["FOO"] != "baz" {
+		t.Fatalf("FOO=%q", env["FOO"])
+	}
+	if env["NEW"] != "1" {
+		t.Fatalf("NEW=%q", env["NEW"])
+	}
+}

@@ -14,7 +14,7 @@ How this project is being developed with AI agents.
 - Maintain documentation quality
 
 **Workflow:**
-1. Load current milestone from `progress.md`
+1. Load current milestone from `docs/progress.md`
 2. Send task to Codex with clear scope
 3. Monitor progress, approve network/file operations as needed
 4. On completion: commit, run fresh eyes review, advance to next milestone

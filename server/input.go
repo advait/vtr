@@ -33,8 +33,8 @@ func keyToBytes(key string) ([]byte, error) {
 	if trimmed == "" {
 		return nil, errors.New("key is required")
 	}
-	k := strings.ToLower(trimmed)
-	switch k {
+	lower := strings.ToLower(trimmed)
+	switch lower {
 	case "enter", "return":
 		return []byte{'\r'}, nil
 	case "tab":
@@ -63,21 +63,21 @@ func keyToBytes(key string) ([]byte, error) {
 		return []byte("\x1b[6~"), nil
 	}
 
-	if strings.HasPrefix(k, "ctrl+") || strings.HasPrefix(k, "ctrl-") {
-		part := k[5:]
+	if strings.HasPrefix(lower, "ctrl+") || strings.HasPrefix(lower, "ctrl-") {
+		part := strings.ToLower(trimmed[5:])
 		return ctrlSequence(part)
 	}
-	if strings.HasPrefix(k, "alt+") || strings.HasPrefix(k, "alt-") {
-		part := k[4:]
+	if strings.HasPrefix(lower, "alt+") || strings.HasPrefix(lower, "alt-") {
+		part := trimmed[4:]
 		return altSequence(part)
 	}
-	if strings.HasPrefix(k, "meta+") || strings.HasPrefix(k, "meta-") {
-		part := k[5:]
+	if strings.HasPrefix(lower, "meta+") || strings.HasPrefix(lower, "meta-") {
+		part := trimmed[5:]
 		return altSequence(part)
 	}
 
-	if runeCount := utf8.RuneCountInString(k); runeCount == 1 {
-		return []byte(k), nil
+	if runeCount := utf8.RuneCountInString(trimmed); runeCount == 1 {
+		return []byte(trimmed), nil
 	}
 
 	return nil, fmt.Errorf("unknown key %q", key)

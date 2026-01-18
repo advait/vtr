@@ -327,8 +327,33 @@ func (c *Coordinator) getSession(name string) (*Session, error) {
 }
 
 func mergeEnv(base []string, extra []string) []string {
-	out := append([]string(nil), base...)
-	out = append(out, extra...)
+	if len(extra) == 0 {
+		return append([]string(nil), base...)
+	}
+	entries := make(map[string]string, len(base)+len(extra))
+	order := make([]string, 0, len(base)+len(extra))
+	add := func(entry string) {
+		key, _, ok := strings.Cut(entry, "=")
+		if !ok || key == "" {
+			return
+		}
+		if _, seen := entries[key]; !seen {
+			order = append(order, key)
+		}
+		entries[key] = entry
+	}
+	for _, entry := range base {
+		add(entry)
+	}
+	for _, entry := range extra {
+		add(entry)
+	}
+	out := make([]string, 0, len(order))
+	for _, key := range order {
+		if entry, ok := entries[key]; ok {
+			out = append(out, entry)
+		}
+	}
 	return out
 }
 
