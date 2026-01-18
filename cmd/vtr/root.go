@@ -26,6 +26,7 @@ func newRootCmd() *cobra.Command {
 		newWaitCmd(),
 		newIdleCmd(),
 		newConfigCmd(),
+		newAttachCmd(),
 	)
 
 	return root
