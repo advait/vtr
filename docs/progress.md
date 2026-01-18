@@ -173,3 +173,30 @@ Success criteria:
 - `go test ./...` passes with core and advanced RPC coverage.
 
 Estimated complexity: M.
+
+## M8 - Attach TUI Mouse Support
+
+Goal: Add mouse passthrough in `vtr attach` so interactive apps (vim, htop, etc.) can click and scroll.
+
+Status: planned.
+
+Deliverables:
+- Attach TUI captures mouse input and forwards it to the session when mouse tracking is active.
+- VT layer exposes mouse tracking mode (X10, button-event, any-event, SGR) for the TUI.
+- Mouse input encoder with coverage for press/release, drag, wheel, and modifiers.
+- Tests for mouse encoding and mode gating.
+
+Implementation plan:
+- Bubbletea: construct the program with `tea.WithMouseCellMotion()` (or `tea.WithMouseAllMotion()` for drag/motion), handle `tea.MouseMsg` in `Update`, map coordinates into the viewport, and ignore events while list/create modals are active.
+- Mouse mode tracking: parse DECSET/DECRST sequences (`CSI ? 1000/1002/1003/1006 h` and `CSI ? ... l`) from PTY output or expose Ghostty mouse mode via the shim and plumb it through server snapshots/Subscribe events.
+- PTY enablement: only forward mouse events while mouse tracking is enabled; otherwise drop to avoid injecting escape sequences into apps that did not request mouse input.
+- Translation: emit xterm mouse escape sequences using 1-based coordinates; default to SGR (`CSI <b;x;yM`/`m`) when enabled and fall back to X10/normal if SGR is off; include modifier bits and wheel encoding.
+- Modes: support X10 (1000), button-event tracking (1002), any-event tracking (1003), and SGR (1006), with optional UTF-8 (1005) compatibility if needed.
+
+Open questions:
+- Should we always prefer SGR when 1006 is set, or expose a config override for legacy clients?
+- Do you want mouse mode detection via Ghostty state or via parsing raw output in the server/TUI?
+- Should mouse events be consumed by the attach UI (list/modal) or always forwarded?
+- Do we need a CLI/config flag to disable mouse passthrough entirely?
+
+Estimated complexity: M.
