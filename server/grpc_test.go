@@ -536,6 +536,58 @@ func TestGRPCSubscribeInitialSnapshot(t *testing.T) {
 	}
 }
 
+func TestGRPCSubscribeRawOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty tests not supported on windows")
+	}
+
+	client, cleanup := startGRPCTestServer(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	_, err := client.Spawn(ctx, &proto.SpawnRequest{
+		Name:    "grpc-subscribe-raw",
+		Command: "sleep 0.4; printf 'raw-output\\n'; sleep 0.1",
+	})
+	cancel()
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	ctx, cancel = context.WithTimeout(context.Background(), 3*time.Second)
+	stream, err := client.Subscribe(ctx, &proto.SubscribeRequest{
+		Name:                 "grpc-subscribe-raw",
+		IncludeScreenUpdates: false,
+		IncludeRawOutput:     true,
+	})
+	if err != nil {
+		cancel()
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	sawRaw := false
+	for {
+		event, err := stream.Recv()
+		if err != nil {
+			cancel()
+			t.Fatalf("Recv: %v", err)
+		}
+		if data := event.GetRawOutput(); len(data) > 0 {
+			if strings.Contains(string(data), "raw-output") {
+				sawRaw = true
+				break
+			}
+		}
+		if event.GetSessionExited() != nil {
+			break
+		}
+	}
+	cancel()
+	if !sawRaw {
+		t.Fatalf("expected raw output event containing %q", "raw-output")
+	}
+}
+
 func TestGRPCSubscribeExitEvent(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("pty tests not supported on windows")

@@ -8,11 +8,12 @@ vtr is a terminal multiplexer designed for the agent era. Each container runs a 
 
 **Core insight**: Agents don't need 60fps terminal streaming. They need consistent screen state on demand, pattern matching on output, and reliable input delivery.
 
-## Implementation Status (post-M5)
+## Implementation Status (post-M6)
 
-- Implemented gRPC methods: Spawn, List, Info, Kill, Remove, GetScreen, Grep, SendText, SendKey, SendBytes, Resize, WaitFor, WaitForIdle.
-- Subscribe and DumpAsciinema remain defined in `proto/vtr.proto` but are not implemented yet (gRPC returns UNIMPLEMENTED).
-- CLI supports core client commands plus `grep`, `wait`, `idle`, and `config resolve` (alongside `serve` and `version`).
+- Implemented gRPC methods: Spawn, List, Info, Kill, Remove, GetScreen, Grep, SendText, SendKey, SendBytes, Resize, WaitFor, WaitForIdle, Subscribe.
+- DumpAsciinema remains defined in `proto/vtr.proto` but is not implemented yet (gRPC returns UNIMPLEMENTED).
+- CLI supports core client commands plus `grep`, `wait`, `idle`, `attach`, and `config resolve` (alongside `serve` and `version`).
+- Attach TUI uses Subscribe streaming updates with leader key bindings for session actions.
 - Multi-coordinator resolution supports `--socket` and `coordinator:session` with auto-disambiguation via per-coordinator lookup.
 - Grep uses scrollback dumps when available; falls back to screen/viewport dumps if history is unavailable.
 - WaitFor scans output emitted after the request starts using a rolling 1MB buffer.
@@ -212,28 +213,29 @@ vtr idle <name> [--idle 5s] [--timeout 30s] [--socket /path/to.sock] [--json]
 
 ```bash
 # Attach to session (interactive TUI)
-vtr attach <name> [--socket /path/to.sock]  # planned M6 (TUI)
+vtr attach <name> [--socket /path/to.sock]
 ```
 
-TUI features (planned for M6):
+TUI features (M6):
 - Bubbletea TUI renders the viewport inside a Lipgloss border with a 1-row status bar.
-- Status bar shows session name, coordinator, and local time (cwd/process name TBD if available).
+- Status bar shows session name, coordinator, local time, leader mode, and transient status messages.
 - Attach uses the standard session addressing rules (`coordinator:session` or `--socket`).
-- Uses `Subscribe` for real-time screen updates (throttled to 30fps max).
+- Uses `Subscribe` for real-time screen updates (output-driven, throttled to 30fps max).
 - Terminal runs in raw mode; input not bound to leader commands is forwarded via `SendBytes`
   (or `SendKey` for special keys).
 - `Ctrl+b` enters leader mode; the next key is consumed. `Ctrl+b` then `Ctrl+b` sends a
   literal `Ctrl+b` to the session. Unknown leader keys show a brief status message and
   do not send input.
 - Leader key commands:
-  - `c` - Create new session (prompt for name only; defaults to current coordinator
-    with j/k selector to change; uses coordinator default shell/cwd; attaches to the new session)
+  - `c` - Create new session (prompt for name; `tab` toggles focus between name and coordinator;
+    j/k changes coordinator; uses coordinator default shell/cwd; attaches to the new session)
   - `d` - Detach (exit TUI, session keeps running)
   - `k` - Kill current session
   - `n` - Next session (current coordinator, name-sorted; includes exited)
   - `p` - Previous session (current coordinator, name-sorted; includes exited)
   - `w` - List sessions (current coordinator; fuzzy finder picker using Bubbletea filter component;
     selection switches sessions)
+- `Esc` closes the session picker or create dialog.
 - Window resize sends `Resize` with viewport dimensions (terminal size minus border and status bar).
 - Session exit keeps the final screen visible, disables input, and marks the UI
   clearly exited (border color change + EXITED badge with exit code); press
@@ -656,7 +658,7 @@ Auth: POSIX filesystem permissions
 
 ### Service Definition
 
-**Status (post-M5):** Spawn, List, Info, Kill, Remove, GetScreen, Grep, SendText, SendKey, SendBytes, Resize, WaitFor, and WaitForIdle are implemented. Subscribe and DumpAsciinema are defined but not implemented yet.
+**Status (post-M6):** Spawn, List, Info, Kill, Remove, GetScreen, Grep, SendText, SendKey, SendBytes, Resize, WaitFor, WaitForIdle, and Subscribe are implemented. DumpAsciinema is defined but not implemented yet.
 
 ```protobuf
 syntax = "proto3";
@@ -805,14 +807,15 @@ message SubscribeEvent {
 }
 ```
 
-### Subscribe Stream (planned M6)
+### Subscribe Stream (M6)
 
 - Server-side stream of `SubscribeEvent` for attach and web UI clients.
 - Server always sends an initial full `ScreenUpdate` snapshot so clients can diff (even when
   `include_screen_updates` is false).
-- `include_screen_updates` controls subsequent full-frame snapshots (throttled to 30fps max).
-- `include_raw_output` emits raw PTY bytes for logging or custom rendering; the Web UI
-  must not rely on it in M7.
+- `include_screen_updates` controls subsequent full-frame snapshots; updates are emitted on new
+  output and coalesced to 30fps max.
+- `include_raw_output` emits raw PTY bytes for logging or custom rendering; raw output starts at
+  subscription time and is buffered up to 1MB (older bytes are dropped on overflow).
 - At least one of `include_screen_updates` or `include_raw_output` must be true; otherwise the
   server returns `INVALID_ARGUMENT`.
 - If `include_screen_updates` is true, the server sends a final `ScreenUpdate` before
@@ -872,14 +875,13 @@ Scrollback is line-indexed for efficient grep:
 
 Agents use `GetScreen()`, `WaitFor()`, `WaitForIdle()` — natural backpressure via request/response. No buffering concerns.
 
-### Streaming Clients (Subscribe) (planned)
+### Streaming Clients (Subscribe) (M6)
 
-For attach and web UI (not implemented yet):
-- Server maintains circular buffer of recent screen snapshots
-- Screen updates are throttled to 30fps max and coalesced to the latest frame
-- Slow clients skip intermediate frames
-- Clients always see current state, may miss transitions
-- Buffer size: 10 snapshots (configurable)
+For attach and web UI:
+- Screen updates are output-driven and throttled to 30fps max
+- Slow clients skip intermediate frames and receive the latest snapshot
+- No snapshot ring buffer yet; each update is a fresh snapshot on send
+- Raw output is buffered up to 1MB for subscribers that request it
 
 ### PTY Output Floods
 
@@ -951,7 +953,7 @@ chmod 660 /var/run/vtr.sock
 1. Grep with context (done)
 2. WaitFor (pattern matching) (done)
 3. WaitForIdle (debounced idle detection) (done)
-4. Subscribe stream (for attach) (planned post-M5)
+4. Subscribe stream (for attach) (done in M6)
 
 ### Phase 3: CLI Client (core done; M5 extensions done)
 
@@ -961,7 +963,7 @@ chmod 660 /var/run/vtr.sock
 4. Multi-coordinator support (done)
 5. Session addressing resolution (done)
 
-### Phase 4: Interactive Attach
+### Phase 4: Interactive Attach (done in M6)
 
 1. Bubbletea TUI
 2. Raw mode passthrough
@@ -984,12 +986,13 @@ chmod 660 /var/run/vtr.sock
 2. DumpAsciinema RPC
 3. Playback support in web UI
 
-## Project Structure (post-M5)
+## Project Structure (post-M6)
 
 ```
 vtrpc/
 ├── cmd/
 │   └── vtr/
+│       ├── attach.go
 │       ├── client.go
 │       ├── output.go
 │       ├── config.go
@@ -1033,21 +1036,24 @@ vtrpc/
 | libghostty-vt (Zig) | Terminal emulation core accessed via go-ghostty shim (custom C ABI) |
 | github.com/spf13/cobra | CLI framework |
 | github.com/BurntSushi/toml | Client config parsing |
-| github.com/charmbracelet/bubbletea | TUI framework (planned) |
+| github.com/charmbracelet/bubbletea | TUI framework |
+| github.com/charmbracelet/bubbles | TUI components (list, text input) |
+| github.com/charmbracelet/lipgloss | TUI styling |
 
-## Testing Strategy (post-M5)
+## Testing Strategy (post-M6)
 
 ### Current coverage
 
 - go-ghostty snapshot/dump coverage (attrs, colors, cursor movement, wide chars, wrapping)
 - Server coordinator tests for spawn/echo, exit code, kill/remove, screen snapshot, default working dir
 - gRPC integration tests for spawn/send/screen, list/info/resize, kill/remove, error mapping, grep, wait, idle
+- gRPC Subscribe tests for initial snapshot, raw output, and exit ordering
 - CLI end-to-end tests for spawn/send/key/screen plus grep/wait/idle
 
 ### Gaps / planned
 
 - Multi-coordinator resolution + `vtr config` command coverage
-- Subscribe stream behavior (backpressure, dropped frames, event ordering)
+- Subscribe stream backpressure/coalescing behavior under slow clients
 - Attach TUI + web UI + recording
 
 ---

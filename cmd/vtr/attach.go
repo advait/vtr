@@ -341,7 +341,7 @@ func (m attachModel) View() string {
 	if m.exited {
 		border = attachExitedBorderStyle
 	}
-	box := border.Width(m.viewportWidth).Height(m.viewportHeight).Render(content)
+	box := border.Width(m.viewportWidth + 2).Height(m.viewportHeight + 2).Render(content)
 	status := attachStatusStyle.Width(m.width).Render(renderStatusBar(statusView{
 		session:     m.session,
 		coordinator: m.coordinator.Name,
