@@ -105,7 +105,7 @@ path = "/home/advait/.vtr/project-alpha.sock"  # explicit path
 
 # Defaults
 [defaults]
-wait_for_idle_timeout = "5s"
+wait_for_idle_timeout = "5s"  # overall deadline for vtr idle
 grep_context_before = 3
 grep_context_after = 3
 output_format = "human"  # or "json"
@@ -161,7 +161,7 @@ vtr kill <name> [--signal TERM|KILL|INT] [--coordinator /path/to.sock]
 # Get current screen state
 vtr screen <name> [--json] [--coordinator /path/to.sock]
 
-# Search scrollback (ripgrep-style output)
+# Search scrollback (ripgrep-style output; RE2 regex)
 vtr grep <name> <pattern> [-B lines] [-A lines] [-C lines] [--json]
 
 # Get session info (dimensions, status, exit code)
@@ -189,11 +189,11 @@ vtr resize <name> <cols> <rows> [--coordinator /path/to.sock]
 ### Blocking Operations
 
 ```bash
-# Wait for pattern in output (future output only)
+# Wait for pattern in output (future output only, RE2 regex)
 vtr wait <name> <pattern> [--timeout 30s] [--json]
 
-# Wait for idle (no output for duration)
-vtr idle <name> [--timeout 5s] [--json]
+# Wait for idle (no output for idle duration)
+vtr idle <name> [--idle 5s] [--timeout 5s] [--json]
 ```
 
 ### Interactive Mode
@@ -348,7 +348,7 @@ enum SessionStatus {
 
 message SpawnRequest {
   string name = 1;
-  string command = 2;  // default: $SHELL
+  string command = 2;  // default: server default shell (config or $SHELL)
   string working_dir = 3;  // default: $HOME
   map<string, string> env = 4;  // merged with default env
   int32 cols = 5;  // default: 80
@@ -377,7 +377,7 @@ message ScreenCell {
 
 message GrepRequest {
   string name = 1;
-  string pattern = 2;  // regex
+  string pattern = 2;  // regex (RE2)
   int32 context_before = 3;
   int32 context_after = 4;
   int32 max_matches = 5;  // default: 100
@@ -396,8 +396,8 @@ message GrepMatch {
 
 message WaitForRequest {
   string name = 1;
-  string pattern = 2;  // regex
-  google.protobuf.Duration timeout = 3;
+  string pattern = 2;  // regex (RE2), matches output after request starts
+  google.protobuf.Duration timeout = 3;  // overall deadline
 }
 
 message WaitForResponse {
@@ -408,8 +408,8 @@ message WaitForResponse {
 
 message WaitForIdleRequest {
   string name = 1;
-  google.protobuf.Duration idle_duration = 2;  // default: 5s
-  google.protobuf.Duration timeout = 3;
+  google.protobuf.Duration idle_duration = 2;  // default: 5s of silence
+  google.protobuf.Duration timeout = 3;  // overall deadline
 }
 
 message WaitForIdleResponse {
@@ -467,7 +467,7 @@ Uses ghostty-web (WASM) for terminal emulation.
 Scrollback is line-indexed for efficient grep:
 - Line 0 = oldest line in scrollback
 - Line N = most recent line
-- Pattern matching via Go regexp
+- Pattern matching via Go regexp (RE2; no backreferences/lookaround)
 - Returns line numbers relative to scrollback start
 
 ## Backpressure
@@ -496,24 +496,22 @@ When PTY produces output faster than VT engine processes:
 
 ### Session Errors
 
-| Error | Code | When |
-|-------|------|------|
-| `SESSION_NOT_FOUND` | 404 | Session name doesn't exist |
-| `SESSION_ALREADY_EXISTS` | 409 | Spawn with existing name |
-| `SESSION_NOT_RUNNING` | 400 | Send input to exited session |
+| Error | gRPC Code | When |
+|-------|-----------|------|
+| `SESSION_NOT_FOUND` | `NOT_FOUND` | Session name doesn't exist |
+| `SESSION_ALREADY_EXISTS` | `ALREADY_EXISTS` | Spawn with existing name |
+| `SESSION_NOT_RUNNING` | `FAILED_PRECONDITION` | Send input to exited session |
 
-### Timeout Errors
+### Timeout Handling
 
-| Error | Code | When |
-|-------|------|------|
-| `WAIT_TIMEOUT` | 408 | WaitFor/WaitForIdle exceeded timeout |
+`WaitFor`/`WaitForIdle` return `timed_out = true` when the request timeout elapses. gRPC `DEADLINE_EXCEEDED` only applies if the client deadline is shorter than the request timeout.
 
 ### System Errors
 
-| Error | Code | When |
-|-------|------|------|
-| `SPAWN_FAILED` | 500 | PTY creation failed |
-| `INTERNAL_ERROR` | 500 | Unexpected server error |
+| Error | gRPC Code | When |
+|-------|-----------|------|
+| `SPAWN_FAILED` | `INTERNAL` | PTY creation failed |
+| `INTERNAL_ERROR` | `INTERNAL` | Unexpected server error |
 
 ## Security
 
@@ -532,7 +530,7 @@ chmod 660 /var/run/vtr.sock
 
 - Each container has its own coordinator and socket
 - Host accesses container sockets via volume mounts
-- No cross-container session access (by design)
+- No cross-container federation; each coordinator only serves its own container's sessions
 
 ### Input Sanitization
 
