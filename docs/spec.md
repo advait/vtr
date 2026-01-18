@@ -221,15 +221,17 @@ TUI features (planned for M6):
 - Uses `Subscribe` for real-time screen updates (throttled to 30fps max).
 - Raw mode passthrough for normal typing.
 - Leader key is `Ctrl+b` (tmux-style) for commands:
-  - `c` - Create new session (defaults to current coordinator, j/k selector to change)
+  - `c` - Create new session (prompt for name only; defaults to current coordinator
+    with j/k selector to change; uses coordinator default shell/cwd)
   - `d` - Detach (exit TUI, session keeps running)
   - `k` - Kill current session
-  - `n` - Next session
-  - `p` - Previous session
-  - `w` - List sessions (fuzzy finder picker using Bubbletea filter component)
+  - `n` - Next session (current coordinator)
+  - `p` - Previous session (current coordinator)
+  - `w` - List sessions (current coordinator; fuzzy finder picker using Bubbletea filter component)
   - `r` - Rename session (modal prompt)
-- Session exit keeps the final screen visible and marks the UI clearly exited
-  (border color change + EXITED badge with exit code).
+- Session exit keeps the final screen visible, disables input, and marks the UI
+  clearly exited (border color change + EXITED badge with exit code); press
+  `q` or `enter` to close the TUI.
 
 ### Config Management
 
