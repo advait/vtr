@@ -601,11 +601,16 @@ func TestGRPCSubscribeInvalidArgs(t *testing.T) {
 	defer cleanup()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	_, err := client.Subscribe(ctx, &proto.SubscribeRequest{
+	stream, err := client.Subscribe(ctx, &proto.SubscribeRequest{
 		Name:                 "missing",
 		IncludeScreenUpdates: false,
 		IncludeRawOutput:     false,
 	})
+	if err != nil {
+		cancel()
+		t.Fatalf("Subscribe: %v", err)
+	}
+	_, err = stream.Recv()
 	cancel()
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("expected InvalidArgument, got %v", err)
