@@ -269,7 +269,8 @@ to WebSocket.
 
 ### Frontend stack (decision)
 
-- Framework: React + Vite with shadcn/ui (Radix + Tailwind) components.
+- Framework: React with shadcn/ui (Radix + Tailwind) components.
+- Dev tooling: Bun + Vite for fast HMR and modern tooling.
 - Typography: JetBrains Mono for UI + terminal, fallback to `ui-monospace`.
 - Theme: Tokyo Night dark palette (see UI design spec).
 - Layout: single-column mobile layout, bottom input bar, tap-to-focus, and a
@@ -324,6 +325,20 @@ Spacing and shape:
 Visual QA:
 - Capture screenshots (shot or equivalent) for mobile (390px wide) and desktop
   (1280px wide) with tree view expanded and a live session attached.
+
+### Testing strategy (E2E pipeline)
+
+Goal: validate end-to-end data flow from ANSI bytes to rendered browser state.
+
+Approach:
+- Spawn a coordinator-backed PTY, feed ANSI bytes, and attach a web client.
+- Observe the rendered terminal state in the browser and assert content + style.
+- Cover both raw streaming and snapshot resync paths.
+
+Example flow:
+1. Feed `"\x1b[31mRED\x1b[0m"` to PTY.
+2. Wait for the web client to attach and render.
+3. Assert the terminal contains "RED" with the expected red color.
 
 ### Session Tree View (coordinator -> sessions)
 
@@ -854,10 +869,12 @@ chmod 660 /var/run/vtr.sock
 ### Phase 5: Web UI (M7)
 
 1. React + shadcn/ui frontend with Tokyo Night palette and JetBrains Mono
-2. Terminal renderer decision (xterm.js recommended) with resync strategy
-3. WebSocket -> gRPC bridge in `vtr web`
-4. Multi-coordinator tree view from `~/.config/vtr/config.toml`
-5. Tailnet-only Tailscale Serve integration
+2. Bun + Vite dev tooling and HMR workflow
+3. Terminal renderer decision (xterm.js recommended) with resync strategy
+4. WebSocket -> gRPC bridge in `vtr web`
+5. Multi-coordinator tree view from `~/.config/vtr/config.toml`
+6. Tailnet-only Tailscale Serve integration
+7. E2E tests covering ANSI -> coordinator -> web -> render pipeline
 
 ### Phase 6: Recording (P2)
 
