@@ -27,6 +27,8 @@ Estimated complexity: S.
 
 Goal: Prove VT engine integration and snapshot/dump access via go-ghostty.
 
+Status: complete (2026-01-18).
+
 Deliverables:
 - `go-ghostty/shim` Zig build script producing `libvtr-ghostty-vt.a` and header.
 - C header defining `vtr_ghostty_*` API per `go-ghostty/README.md`.

@@ -178,9 +178,13 @@ Notes:
 - Build a small Zig shim library that imports `ghostty-vt` and exports the
   `vtr_ghostty_*` C API. The shim build script should mirror Ghostty's
   `terminal_options` (`artifact = .lib`, `oniguruma = false`, `simd = true/false`).
-- Example (placeholder, build script TBD):
+- Example build (uses `build.zig` in this repo; default Ghostty path is `../../ghostty`):
   - `cd go-ghostty/shim && zig build -Dghostty=/tmp/ghostty -Doptimize=ReleaseSafe`
-  - Output: `zig-out/lib/libvtr-ghostty-vt.a` and `zig-out/include/vtr-ghostty-vt.h`
+  - Output: `zig-out/lib/libvtr-ghostty-vt.a` and `zig-out/include/vtr_ghostty_vt.h`
 - cgo flags (local dev):
   - `CGO_CFLAGS=-I$(pwd)/go-ghostty/shim/zig-out/include`
   - `CGO_LDFLAGS=-L$(pwd)/go-ghostty/shim/zig-out/lib -lvtr-ghostty-vt`
+
+For convenience, this repo includes `go-ghostty/shim/zig-out` build artifacts for
+local tests. Rebuild them after changing the shim or Ghostty sources, or when
+targeting a different platform.
