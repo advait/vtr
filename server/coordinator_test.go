@@ -1,0 +1,160 @@
+package server
+
+import (
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+)
+
+func newTestCoordinator() *Coordinator {
+	return NewCoordinator(CoordinatorOptions{
+		DefaultShell: "/bin/sh",
+		DefaultCols:  80,
+		DefaultRows:  24,
+		Scrollback:   2000,
+		KillTimeout:  500 * time.Millisecond,
+	})
+}
+
+func waitForDumpContains(t *testing.T, coord *Coordinator, name, want string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var lastDump string
+	var lastErr error
+	for time.Now().Before(deadline) {
+		dump, err := coord.Dump(name, DumpViewport, false)
+		if err == nil {
+			normalized := strings.ReplaceAll(dump, "\r", "")
+			if strings.Contains(normalized, want) {
+				return
+			}
+			lastDump = normalized
+			lastErr = nil
+		} else {
+			lastErr = err
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if lastErr != nil {
+		t.Fatalf("timeout waiting for %q: last error: %v", want, lastErr)
+	}
+	t.Fatalf("timeout waiting for %q: last dump: %q", want, lastDump)
+}
+
+func waitForState(t *testing.T, coord *Coordinator, name string, want SessionState, timeout time.Duration) SessionInfo {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var lastInfo *SessionInfo
+	var lastErr error
+	for time.Now().Before(deadline) {
+		info, err := coord.Info(name)
+		if err == nil {
+			if info.State == want {
+				return *info
+			}
+			lastInfo = info
+			lastErr = nil
+		} else {
+			lastErr = err
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if lastErr != nil {
+		t.Fatalf("timeout waiting for state %s: last error: %v", want.String(), lastErr)
+	}
+	if lastInfo == nil {
+		t.Fatalf("timeout waiting for state %s: no info", want.String())
+	}
+	t.Fatalf("timeout waiting for state %s: last state %s", want.String(), lastInfo.State.String())
+	return SessionInfo{}
+}
+
+func cellAt(t *testing.T, snap *Snapshot, x, y int) Cell {
+	t.Helper()
+	if snap == nil {
+		t.Fatal("snapshot is nil")
+	}
+	idx := y*snap.Cols + x
+	if idx < 0 || idx >= len(snap.Cells) {
+		t.Fatalf("cell index out of range: %d", idx)
+	}
+	return snap.Cells[idx]
+}
+
+func TestSpawnEcho(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty tests not supported on windows")
+	}
+
+	coord := newTestCoordinator()
+	defer coord.Close()
+
+	_, err := coord.Spawn("echo", SpawnOptions{
+		Command: []string{"/bin/sh", "-c", "printf 'ready\\n'; read line; printf 'got:%s\\n' \"$line\"; sleep 0.1"},
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	waitForDumpContains(t, coord, "echo", "ready", 2*time.Second)
+
+	if err := coord.Send("echo", []byte("hello\n")); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	waitForDumpContains(t, coord, "echo", "got:hello", 2*time.Second)
+}
+
+func TestExitCode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty tests not supported on windows")
+	}
+
+	coord := newTestCoordinator()
+	defer coord.Close()
+
+	_, err := coord.Spawn("exit", SpawnOptions{
+		Command: []string{"/bin/sh", "-c", "exit 7"},
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	info := waitForState(t, coord, "exit", SessionExited, 2*time.Second)
+	if info.ExitCode != 7 {
+		t.Fatalf("exit code=%d", info.ExitCode)
+	}
+}
+
+func TestScreenCapture(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty tests not supported on windows")
+	}
+
+	coord := newTestCoordinator()
+	defer coord.Close()
+
+	_, err := coord.Spawn("screen", SpawnOptions{
+		Command: []string{"/bin/sh", "-c", "printf 'hi'; sleep 0.2"},
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	waitForDumpContains(t, coord, "screen", "hi", 2*time.Second)
+
+	snap, err := coord.Snapshot("screen")
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if snap.Cols != 80 || snap.Rows != 24 {
+		t.Fatalf("unexpected size: %dx%d", snap.Cols, snap.Rows)
+	}
+	if got := cellAt(t, snap, 0, 0).Rune; got != 'h' {
+		t.Fatalf("cell(0,0)=%q", got)
+	}
+	if got := cellAt(t, snap, 1, 0).Rune; got != 'i' {
+		t.Fatalf("cell(1,0)=%q", got)
+	}
+}
