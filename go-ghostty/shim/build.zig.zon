@@ -1,0 +1,13 @@
+.{
+    .name = .vtr_ghostty_vt_shim,
+    .version = "0.0.0",
+    .paths = .{""},
+    .fingerprint = 0x6b686c2dee7e7805,
+    .minimum_zig_version = "0.15.2",
+    .dependencies = .{
+        .uucode = .{
+            .url = "https://deps.files.ghostty.org/uucode-31655fba3c638229989cc524363ef5e3c7b580c1.tar.gz",
+            .hash = "uucode-0.1.0-ZZjBPicPTQDlG6OClzn2bPu7ICkkkyWrTB6aRsBr-A1E",
+        },
+    },
+}

@@ -8,3 +8,7 @@ bin/
 
 # OS
 .DS_Store
+
+# Ghostty shim build output
+/go-ghostty/shim/zig-out/
+/go-ghostty/shim/.zig-cache/
