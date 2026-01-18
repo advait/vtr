@@ -15,6 +15,7 @@ vtr is a terminal multiplexer designed for the agent era. Each container runs a 
 - CLI supports core client commands plus `grep`, `wait`, `idle`, and `config resolve` (alongside `serve` and `version`).
 - Multi-coordinator resolution supports `--socket` and `coordinator:session` with auto-disambiguation via per-coordinator lookup.
 - Grep uses scrollback dumps when available; falls back to screen/viewport dumps if history is unavailable.
+- WaitFor scans output emitted after the request starts using a rolling 1MB buffer.
 
 ## Architecture
 
@@ -216,30 +217,33 @@ vtr attach <name> [--socket /path/to.sock]  # planned M6 (TUI)
 
 TUI features (planned for M6):
 - Bubbletea TUI renders the viewport inside a Lipgloss border.
-- Status bar shows session name, coordinator, and time.
-- Uses `Subscribe` for real-time screen updates.
+- Status bar shows session name, coordinator, and time (cwd/process name TBD if available).
+- Uses `Subscribe` for real-time screen updates (throttled to 30fps max).
 - Raw mode passthrough for normal typing.
-- Leader key (`Ctrl+b` default) for commands:
-  - `c` - Create new session
+- Leader key is `Ctrl+b` (tmux-style) for commands:
+  - `c` - Create new session (defaults to current coordinator, j/k selector to change)
   - `d` - Detach (exit TUI, session keeps running)
   - `k` - Kill current session
   - `n` - Next session
   - `p` - Previous session
-  - `w` - List sessions (picker)
-  - `r` - Rename session
-- Session exit closes the TUI with an exit notice and code.
+  - `w` - List sessions (fuzzy finder picker using Bubbletea filter component)
+  - `r` - Rename session (modal prompt)
+- Session exit keeps the final screen visible and marks the UI clearly exited
+  (border color change + EXITED badge with exit code).
 
 ### Config Management
 
+Only `config resolve` is implemented in M5; the remaining subcommands are planned post-M5.
+
 ```bash
 # List configured coordinators
-vtr config ls  # planned M5
+vtr config ls  # planned post-M5
 
 # Add coordinator
-vtr config add <path-or-glob>  # planned M5
+vtr config add <path-or-glob>  # planned post-M5
 
 # Remove coordinator
-vtr config rm <path-or-glob>  # planned M5
+vtr config rm <path-or-glob>  # planned post-M5
 
 # Show resolved socket paths
 vtr config resolve
@@ -312,7 +316,7 @@ Auth: POSIX filesystem permissions
 
 ### Service Definition
 
-**Status (post-M4):** Spawn, List, Info, Kill, Remove, GetScreen, SendText, SendKey, SendBytes, Resize are implemented. Grep, WaitFor, WaitForIdle, Subscribe, and DumpAsciinema are defined but not implemented yet.
+**Status (post-M5):** Spawn, List, Info, Kill, Remove, GetScreen, Grep, SendText, SendKey, SendBytes, Resize, WaitFor, and WaitForIdle are implemented. Subscribe and DumpAsciinema are defined but not implemented yet.
 
 ```protobuf
 syntax = "proto3";
@@ -464,7 +468,8 @@ message SubscribeEvent {
 ### Subscribe Stream (planned M6)
 
 - Server-side stream of `SubscribeEvent` for attach and web UI clients.
-- `include_screen_updates` sends an initial full snapshot plus subsequent snapshots (full frames).
+- Server always sends an initial full `ScreenUpdate` snapshot so clients can diff.
+- `include_screen_updates` controls subsequent full-frame snapshots (throttled to 30fps max).
 - `include_raw_output` emits raw PTY bytes for logging or custom rendering.
 - `session_exited` is sent once with the exit code; the server closes the stream afterward.
 - Slow clients may skip intermediate frames; the server prioritizes the latest screen state (see Backpressure).
@@ -512,6 +517,7 @@ Scrollback is line-indexed for efficient grep:
 - Line N = most recent line
 - Pattern matching via Go regexp (RE2; no backreferences/lookaround)
 - Returns line numbers relative to scrollback start
+- If scrollback is unavailable, line numbers are relative to the fallback screen/viewport dump
 
 ## Backpressure
 
@@ -523,6 +529,7 @@ Agents use `GetScreen()`, `WaitFor()`, `WaitForIdle()` — natural backpressure 
 
 For attach and web UI (not implemented yet):
 - Server maintains circular buffer of recent screen snapshots
+- Screen updates are throttled to 30fps max and coalesced to the latest frame
 - Slow clients skip intermediate frames
 - Clients always see current state, may miss transitions
 - Buffer size: 10 snapshots (configurable)
@@ -547,7 +554,7 @@ When PTY produces output faster than VT engine processes:
 
 ### Timeout Handling
 
-`WaitFor`/`WaitForIdle` return `timed_out = true` when the request timeout elapses. If the gRPC deadline triggers first, the RPC is canceled and no response body is returned.
+`WaitFor`/`WaitForIdle` return `timed_out = true` when the request timeout elapses. `WaitFor` also returns `timed_out = true` if the session exits before a match. If the gRPC deadline triggers first, the RPC is canceled and no response body is returned.
 
 ### System Errors
 
@@ -579,7 +586,7 @@ chmod 660 /var/run/vtr.sock
 
 - Text input: UTF-8 validated
 - Raw bytes: CLI accepts hex and decodes to bytes; server enforces length limit (1MB max)
-- Patterns: regex validated, timeout enforced (planned for grep/wait RPCs)
+- Patterns: regex validated (RE2); WaitFor/WaitForIdle honor timeouts
 
 ## Implementation Plan
 
@@ -592,20 +599,20 @@ chmod 660 /var/run/vtr.sock
 5. GetScreen, SendText, SendKey, SendBytes, Resize
 6. Tests for core operations
 
-### Phase 2: Advanced Operations (planned M5)
+### Phase 2: Advanced Operations (done in M5)
 
-1. Grep with context
-2. WaitFor (pattern matching)
-3. WaitForIdle (debounced idle detection)
-4. Subscribe stream (for attach)
+1. Grep with context (done)
+2. WaitFor (pattern matching) (done)
+3. WaitForIdle (debounced idle detection) (done)
+4. Subscribe stream (for attach) (planned post-M5)
 
-### Phase 3: CLI Client (core done, advanced planned)
+### Phase 3: CLI Client (core done; M5 extensions done)
 
 1. Core commands implemented (`ls`, `spawn`, `info`, `screen`, `send`, `key`, `raw`, `resize`, `kill`, `rm`)
 2. Human and JSON output formats
-3. Config management
-4. Multi-coordinator support
-5. Session addressing resolution
+3. Config management (`config resolve` done; `config ls/add/rm` planned post-M5)
+4. Multi-coordinator support (done)
+5. Session addressing resolution (done)
 
 ### Phase 4: Interactive Attach
 
@@ -627,18 +634,20 @@ chmod 660 /var/run/vtr.sock
 2. DumpAsciinema RPC
 3. Playback support in web UI
 
-## Project Structure (post-M4)
+## Project Structure (post-M5)
 
 ```
 vtrpc/
 ├── cmd/
 │   └── vtr/
-│       ├── main.go
-│       ├── root.go
-│       ├── serve.go
 │       ├── client.go
 │       ├── output.go
 │       ├── config.go
+│       ├── config_cmd.go
+│       ├── main.go
+│       ├── resolve.go
+│       ├── root.go
+│       ├── serve.go
 │       └── version.go
 ├── docs/
 │   ├── spec.md
@@ -652,10 +661,13 @@ vtrpc/
 │   └── vtr.proto
 ├── server/
 │   ├── coordinator.go
+│   ├── grep.go
 │   ├── grpc.go
 │   ├── input.go
+│   ├── output.go
 │   ├── pty.go
-│   └── vt.go
+│   ├── vt.go
+│   └── wait.go
 ├── web/                 # Web UI (P2)
 ├── go.mod
 ├── go.sum
@@ -673,20 +685,19 @@ vtrpc/
 | github.com/BurntSushi/toml | Client config parsing |
 | github.com/charmbracelet/bubbletea | TUI framework (planned) |
 
-## Testing Strategy (post-M4)
+## Testing Strategy (post-M5)
 
 ### Current coverage
 
 - go-ghostty snapshot/dump coverage (attrs, colors, cursor movement, wide chars, wrapping)
-- Server coordinator tests for spawn/echo, exit code, kill/remove, screen snapshot
-- gRPC integration tests for spawn/send/screen, list/info/resize, kill/remove, error mapping
-- CLI end-to-end test (spawn/send/key/screen) against a live coordinator
+- Server coordinator tests for spawn/echo, exit code, kill/remove, screen snapshot, default working dir
+- gRPC integration tests for spawn/send/screen, list/info/resize, kill/remove, error mapping, grep, wait, idle
+- CLI end-to-end tests for spawn/send/key/screen plus grep/wait/idle
 
 ### Gaps / planned
 
-- Grep, WaitFor, WaitForIdle RPCs + CLI coverage (M5)
+- Multi-coordinator resolution + `vtr config` command coverage
 - Subscribe stream behavior (backpressure, dropped frames, event ordering)
-- Multi-coordinator resolution + `vtr config` commands
 - Attach TUI + web UI + recording
 
 ---
