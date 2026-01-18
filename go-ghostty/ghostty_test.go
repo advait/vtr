@@ -365,3 +365,294 @@ func TestSnapshotAttrsReset(t *testing.T) {
 	}
 }
 
+
+func TestSnapshotCursorMovement(t *testing.T) {
+	cases := []struct {
+		name      string
+		seq       string
+		wantX     int
+		wantY     int
+		wantCols  int
+		wantRows  int
+	}{
+		{name: "cup_home", seq: "\x1b[H", wantX: 0, wantY: 0, wantCols: 6, wantRows: 4},
+		{name: "cup_explicit", seq: "\x1b[3;4H", wantX: 3, wantY: 2, wantCols: 6, wantRows: 4},
+		{name: "cuu_default", seq: "\x1b[3;4H\x1b[A", wantX: 3, wantY: 1, wantCols: 6, wantRows: 4},
+		{name: "cud_two", seq: "\x1b[H\x1b[2B", wantX: 0, wantY: 2, wantCols: 6, wantRows: 4},
+		{name: "cuf_three", seq: "\x1b[H\x1b[3C", wantX: 3, wantY: 0, wantCols: 6, wantRows: 4},
+		{name: "cub_two", seq: "\x1b[1;4H\x1b[2D", wantX: 1, wantY: 0, wantCols: 6, wantRows: 4},
+		{name: "cuu_clamp", seq: "\x1b[1;1H\x1b[5A", wantX: 0, wantY: 0, wantCols: 6, wantRows: 4},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			term := newTerminal(t, tc.wantCols, tc.wantRows)
+			feed(t, term, tc.seq)
+			snap := snapshot(t, term)
+			if snap.CursorX != tc.wantX || snap.CursorY != tc.wantY {
+				t.Fatalf("cursor=%d,%d want=%d,%d", snap.CursorX, snap.CursorY, tc.wantX, tc.wantY)
+			}
+		})
+	}
+}
+
+func TestSnapshotScreenOperations(t *testing.T) {
+	type cellExpect struct {
+		x    int
+		y    int
+		rune rune
+	}
+	cases := []struct {
+		name   string
+		cols   int
+		rows   int
+		input  string
+		checks []cellExpect
+	}{
+		{
+			name:  "ed_clear_to_end",
+			cols:  4,
+			rows:  3,
+			input: "abcd\r\nefgh\r\nijkl\x1b[2;3H\x1b[J",
+			checks: []cellExpect{
+				{x: 0, y: 0, rune: 'a'},
+				{x: 1, y: 0, rune: 'b'},
+				{x: 2, y: 0, rune: 'c'},
+				{x: 3, y: 0, rune: 'd'},
+				{x: 0, y: 1, rune: 'e'},
+				{x: 1, y: 1, rune: 'f'},
+				{x: 2, y: 1, rune: 0},
+				{x: 3, y: 1, rune: 0},
+				{x: 0, y: 2, rune: 0},
+				{x: 1, y: 2, rune: 0},
+				{x: 2, y: 2, rune: 0},
+				{x: 3, y: 2, rune: 0},
+			},
+		},
+		{
+			name:  "ed_clear_all",
+			cols:  4,
+			rows:  3,
+			input: "abcd\r\nefgh\r\nijkl\x1b[2J",
+			checks: []cellExpect{
+				{x: 0, y: 0, rune: 0},
+				{x: 1, y: 1, rune: 0},
+				{x: 2, y: 2, rune: 0},
+			},
+		},
+		{
+			name:  "el_clear_to_end",
+			cols:  4,
+			rows:  1,
+			input: "abcd\x1b[1;3H\x1b[K",
+			checks: []cellExpect{
+				{x: 0, y: 0, rune: 'a'},
+				{x: 1, y: 0, rune: 'b'},
+				{x: 2, y: 0, rune: 0},
+				{x: 3, y: 0, rune: 0},
+			},
+		},
+		{
+			name:  "el_clear_all",
+			cols:  4,
+			rows:  1,
+			input: "abcd\x1b[2K",
+			checks: []cellExpect{
+				{x: 0, y: 0, rune: 0},
+				{x: 1, y: 0, rune: 0},
+				{x: 2, y: 0, rune: 0},
+				{x: 3, y: 0, rune: 0},
+			},
+		},
+		{
+			name:  "scroll_on_newline",
+			cols:  3,
+			rows:  2,
+			input: "AAA\r\nBBB\r\nCCC",
+			checks: []cellExpect{
+				{x: 0, y: 0, rune: 'B'},
+				{x: 1, y: 0, rune: 'B'},
+				{x: 2, y: 0, rune: 'B'},
+				{x: 0, y: 1, rune: 'C'},
+				{x: 1, y: 1, rune: 'C'},
+				{x: 2, y: 1, rune: 'C'},
+			},
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			term := newTerminal(t, tc.cols, tc.rows)
+			feed(t, term, tc.input)
+			snap := snapshot(t, term)
+			for _, check := range tc.checks {
+				cell := cellAt(t, snap, check.x, check.y)
+				if cell.Rune != check.rune {
+					t.Fatalf("cell(%d,%d)=%q want=%q", check.x, check.y, cell.Rune, check.rune)
+				}
+			}
+		})
+	}
+}
+
+func TestSnapshotPartialSequences(t *testing.T) {
+	cases := []struct {
+		name           string
+		cols           int
+		rows           int
+		first          string
+		second         string
+		wantAfterFirst  rune
+		wantAfterSecond rune
+		wantFg         color.RGBA
+		wantFirstX     int
+		wantFirstY     int
+		wantFinalX     int
+		wantFinalY     int
+	}{
+		{
+			name:            "split_truecolor",
+			cols:            4,
+			rows:            1,
+			first:           "\x1b[38;2;12;",
+			second:          "34;56mX",
+			wantAfterFirst:  0,
+			wantAfterSecond: 'X',
+			wantFg:          rgb(12, 34, 56),
+			wantFirstX:      0,
+			wantFirstY:      0,
+			wantFinalX:      1,
+			wantFinalY:      0,
+		},
+		{
+			name:            "split_cup",
+			cols:            4,
+			rows:            3,
+			first:           "\x1b[2;",
+			second:          "3H",
+			wantAfterFirst:  0,
+			wantAfterSecond: 0,
+			wantFg:          color.RGBA{},
+			wantFirstX:      0,
+			wantFirstY:      0,
+			wantFinalX:      2,
+			wantFinalY:      1,
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			term := newTerminal(t, tc.cols, tc.rows)
+			feed(t, term, tc.first)
+			firstSnap := snapshot(t, term)
+			firstCell := cellAt(t, firstSnap, 0, 0)
+			if firstCell.Rune != tc.wantAfterFirst {
+				t.Fatalf("after first cell(0,0)=%q want=%q", firstCell.Rune, tc.wantAfterFirst)
+			}
+			if firstSnap.CursorX != tc.wantFirstX || firstSnap.CursorY != tc.wantFirstY {
+				t.Fatalf("after first cursor=%d,%d want=%d,%d", firstSnap.CursorX, firstSnap.CursorY, tc.wantFirstX, tc.wantFirstY)
+			}
+			feed(t, term, tc.second)
+			finalSnap := snapshot(t, term)
+			cell := cellAt(t, finalSnap, 0, 0)
+			if cell.Rune != tc.wantAfterSecond {
+				t.Fatalf("after second cell(0,0)=%q want=%q", cell.Rune, tc.wantAfterSecond)
+			}
+			if tc.wantAfterSecond != 0 && cell.Fg != tc.wantFg {
+				t.Fatalf("fg=%v want=%v", cell.Fg, tc.wantFg)
+			}
+			if finalSnap.CursorX != tc.wantFinalX || finalSnap.CursorY != tc.wantFinalY {
+				t.Fatalf("cursor=%d,%d want=%d,%d", finalSnap.CursorX, finalSnap.CursorY, tc.wantFinalX, tc.wantFinalY)
+			}
+		})
+	}
+}
+
+func TestSnapshotWideChars(t *testing.T) {
+	cases := []struct {
+		name           string
+		input          string
+		wantHead       rune
+		wantHeadWide   Wide
+		wantTailWide   Wide
+		wantNext       rune
+	}{
+		{
+			name:         "cjk_wide",
+			input:        "界A",
+			wantHead:     '界',
+			wantHeadWide: WideWide,
+			wantTailWide: WideSpacerTail,
+			wantNext:     'A',
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			term := newTerminal(t, 4, 1)
+			feed(t, term, tc.input)
+			snap := snapshot(t, term)
+			head := cellAt(t, snap, 0, 0)
+			tail := cellAt(t, snap, 1, 0)
+			next := cellAt(t, snap, 2, 0)
+			if head.Rune != tc.wantHead {
+				t.Fatalf("head rune=%q want=%q", head.Rune, tc.wantHead)
+			}
+			if head.Wide != tc.wantHeadWide {
+				t.Fatalf("head wide=%v want=%v", head.Wide, tc.wantHeadWide)
+			}
+			if tail.Wide != tc.wantTailWide {
+				t.Fatalf("tail wide=%v want=%v", tail.Wide, tc.wantTailWide)
+			}
+			if tail.Rune != 0 {
+				t.Fatalf("tail rune=%q want=0", tail.Rune)
+			}
+			if next.Rune != tc.wantNext {
+				t.Fatalf("next rune=%q want=%q", next.Rune, tc.wantNext)
+			}
+		})
+	}
+}
+
+func TestSnapshotLineWrapping(t *testing.T) {
+	type cellExpect struct {
+		x    int
+		y    int
+		rune rune
+	}
+	cases := []struct {
+		name   string
+		cols   int
+		rows   int
+		input  string
+		checks []cellExpect
+	}{
+		{
+			name:  "wrap_next_line",
+			cols:  4,
+			rows:  2,
+			input: "abcdE",
+			checks: []cellExpect{
+				{x: 0, y: 0, rune: 'a'},
+				{x: 1, y: 0, rune: 'b'},
+				{x: 2, y: 0, rune: 'c'},
+				{x: 3, y: 0, rune: 'd'},
+				{x: 0, y: 1, rune: 'E'},
+			},
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			term := newTerminal(t, tc.cols, tc.rows)
+			feed(t, term, tc.input)
+			snap := snapshot(t, term)
+			for _, check := range tc.checks {
+				cell := cellAt(t, snap, check.x, check.y)
+				if cell.Rune != check.rune {
+					t.Fatalf("cell(%d,%d)=%q want=%q", check.x, check.y, cell.Rune, check.rune)
+				}
+			}
+		})
+	}
+}
