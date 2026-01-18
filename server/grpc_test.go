@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 func startGRPCTestServer(t *testing.T) (proto.VTRClient, func()) {
@@ -350,5 +351,142 @@ func TestGRPCErrors(t *testing.T) {
 	cancel()
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("expected FailedPrecondition for exited session, got %v", err)
+	}
+}
+
+func TestGRPCGrep(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty tests not supported on windows")
+	}
+
+	client, cleanup := startGRPCTestServer(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	_, err := client.Spawn(ctx, &proto.SpawnRequest{
+		Name:    "grpc-grep",
+		Command: "printf 'zero\\none\\nerror here\\nthree\\n'; sleep 0.1",
+	})
+	cancel()
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	waitForScreenContains(t, client, "grpc-grep", "error here", 2*time.Second)
+
+	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+	resp, err := client.Grep(ctx, &proto.GrepRequest{
+		Name:          "grpc-grep",
+		Pattern:       "error",
+		ContextBefore: 1,
+		ContextAfter:  1,
+		MaxMatches:    5,
+	})
+	cancel()
+	if err != nil {
+		t.Fatalf("Grep: %v", err)
+	}
+	if len(resp.Matches) != 1 {
+		t.Fatalf("expected 1 match, got %d", len(resp.Matches))
+	}
+	match := resp.Matches[0]
+	if match.Line != "error here" {
+		t.Fatalf("match line=%q", match.Line)
+	}
+	if len(match.ContextBefore) != 1 || match.ContextBefore[0] != "one" {
+		t.Fatalf("context before=%v", match.ContextBefore)
+	}
+	if len(match.ContextAfter) != 1 || match.ContextAfter[0] != "three" {
+		t.Fatalf("context after=%v", match.ContextAfter)
+	}
+	if match.LineNumber != 2 {
+		t.Fatalf("line number=%d", match.LineNumber)
+	}
+}
+
+func TestGRPCWaitFor(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty tests not supported on windows")
+	}
+
+	client, cleanup := startGRPCTestServer(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	_, err := client.Spawn(ctx, &proto.SpawnRequest{
+		Name:    "grpc-wait",
+		Command: "printf 'ready\\n'; sleep 0.2; printf 'done\\n'; sleep 0.1",
+	})
+	cancel()
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	waitForScreenContains(t, client, "grpc-wait", "ready", 2*time.Second)
+
+	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+	resp, err := client.WaitFor(ctx, &proto.WaitForRequest{
+		Name:    "grpc-wait",
+		Pattern: "done",
+		Timeout: durationpb.New(2 * time.Second),
+	})
+	cancel()
+	if err != nil {
+		t.Fatalf("WaitFor: %v", err)
+	}
+	if resp.TimedOut || !resp.Matched {
+		t.Fatalf("expected match, got %+v", resp)
+	}
+	if !strings.Contains(resp.MatchedLine, "done") {
+		t.Fatalf("matched line=%q", resp.MatchedLine)
+	}
+
+	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+	resp, err = client.WaitFor(ctx, &proto.WaitForRequest{
+		Name:    "grpc-wait",
+		Pattern: "never",
+		Timeout: durationpb.New(200 * time.Millisecond),
+	})
+	cancel()
+	if err != nil {
+		t.Fatalf("WaitFor timeout: %v", err)
+	}
+	if !resp.TimedOut || resp.Matched {
+		t.Fatalf("expected timeout, got %+v", resp)
+	}
+}
+
+func TestGRPCWaitForIdle(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty tests not supported on windows")
+	}
+
+	client, cleanup := startGRPCTestServer(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	_, err := client.Spawn(ctx, &proto.SpawnRequest{
+		Name:    "grpc-idle",
+		Command: "printf 'ready\\n'; sleep 0.5",
+	})
+	cancel()
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	waitForScreenContains(t, client, "grpc-idle", "ready", 2*time.Second)
+
+	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+	resp, err := client.WaitForIdle(ctx, &proto.WaitForIdleRequest{
+		Name:         "grpc-idle",
+		IdleDuration: durationpb.New(200 * time.Millisecond),
+		Timeout:      durationpb.New(1 * time.Second),
+	})
+	cancel()
+	if err != nil {
+		t.Fatalf("WaitForIdle: %v", err)
+	}
+	if resp.TimedOut || !resp.Idle {
+		t.Fatalf("expected idle, got %+v", resp)
 	}
 }

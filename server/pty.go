@@ -101,7 +101,7 @@ func (p *PTY) ProcessState() *os.ProcessState {
 }
 
 // StartReadLoop feeds PTY output into the VT engine.
-func (p *PTY) StartReadLoop(vt *VT, onErr func(error)) <-chan struct{} {
+func (p *PTY) StartReadLoop(vt *VT, onData func([]byte), onErr func(error)) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -109,6 +109,9 @@ func (p *PTY) StartReadLoop(vt *VT, onErr func(error)) <-chan struct{} {
 		for {
 			n, err := p.Read(buf)
 			if n > 0 {
+				if onData != nil {
+					onData(buf[:n])
+				}
 				reply, feedErr := vt.Feed(buf[:n])
 				if feedErr != nil {
 					if onErr != nil {

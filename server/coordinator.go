@@ -373,23 +373,31 @@ type Session struct {
 	exitCh   chan struct{}
 	exitOnce sync.Once
 	ioDone   <-chan struct{}
+
+	outputMu    sync.Mutex
+	outputBuf   []byte
+	outputTotal int64
+	outputCh    chan struct{}
+	lastOutput  time.Time
 }
 
 func newSession(name string, cols, rows uint16, vt *VT, ptyHandle *PTY) *Session {
 	return &Session{
-		name:      name,
-		cols:      cols,
-		rows:      rows,
-		pty:       ptyHandle,
-		vt:        vt,
-		createdAt: time.Now(),
-		state:     SessionRunning,
-		exitCh:    make(chan struct{}),
+		name:       name,
+		cols:       cols,
+		rows:       rows,
+		pty:        ptyHandle,
+		vt:         vt,
+		createdAt:  time.Now(),
+		state:      SessionRunning,
+		exitCh:     make(chan struct{}),
+		outputCh:   make(chan struct{}),
+		lastOutput: time.Now(),
 	}
 }
 
 func (s *Session) start() {
-	s.ioDone = s.pty.StartReadLoop(s.vt, nil)
+	s.ioDone = s.pty.StartReadLoop(s.vt, s.recordOutput, nil)
 	go s.waitForExit()
 }
 

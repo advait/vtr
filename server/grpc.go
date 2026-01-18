@@ -7,13 +7,16 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	proto "github.com/advait/vtrpc/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -200,6 +203,41 @@ func (s *GRPCServer) GetScreen(_ context.Context, req *proto.GetScreenRequest) (
 	}, nil
 }
 
+func (s *GRPCServer) Grep(_ context.Context, req *proto.GrepRequest) (*proto.GrepResponse, error) {
+	if req == nil || req.Name == "" {
+		return nil, status.Error(codes.InvalidArgument, "session name is required")
+	}
+	if strings.TrimSpace(req.Pattern) == "" {
+		return nil, status.Error(codes.InvalidArgument, "pattern is required")
+	}
+	if req.ContextBefore < 0 || req.ContextAfter < 0 {
+		return nil, status.Error(codes.InvalidArgument, "context must be >= 0")
+	}
+	maxMatches := int(req.MaxMatches)
+	if maxMatches <= 0 {
+		maxMatches = 100
+	}
+	re, err := regexp.Compile(req.Pattern)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	matches, err := s.coord.Grep(req.Name, re, int(req.ContextBefore), int(req.ContextAfter), maxMatches)
+	if err != nil {
+		return nil, mapCoordinatorErr(err)
+	}
+	out := make([]*proto.GrepMatch, 0, len(matches))
+	for _, match := range matches {
+		matchCopy := match
+		out = append(out, &proto.GrepMatch{
+			LineNumber:    int32(matchCopy.LineNumber),
+			Line:          matchCopy.Line,
+			ContextBefore: append([]string(nil), matchCopy.ContextBefore...),
+			ContextAfter:  append([]string(nil), matchCopy.ContextAfter...),
+		})
+	}
+	return &proto.GrepResponse{Matches: out}, nil
+}
+
 func (s *GRPCServer) SendText(_ context.Context, req *proto.SendTextRequest) (*proto.SendTextResponse, error) {
 	if req == nil || req.Name == "" {
 		return nil, status.Error(codes.InvalidArgument, "session name is required")
@@ -256,6 +294,63 @@ func (s *GRPCServer) Resize(_ context.Context, req *proto.ResizeRequest) (*proto
 		return nil, mapCoordinatorErr(err)
 	}
 	return &proto.ResizeResponse{}, nil
+}
+
+func (s *GRPCServer) WaitFor(ctx context.Context, req *proto.WaitForRequest) (*proto.WaitForResponse, error) {
+	if req == nil || req.Name == "" {
+		return nil, status.Error(codes.InvalidArgument, "session name is required")
+	}
+	if strings.TrimSpace(req.Pattern) == "" {
+		return nil, status.Error(codes.InvalidArgument, "pattern is required")
+	}
+	timeout, err := durationFromProto(req.Timeout)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	re, err := regexp.Compile(req.Pattern)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	matched, line, timedOut, err := s.coord.WaitFor(ctx, req.Name, re, timeout)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
+		return nil, mapCoordinatorErr(err)
+	}
+	return &proto.WaitForResponse{
+		Matched:     matched,
+		MatchedLine: line,
+		TimedOut:    timedOut,
+	}, nil
+}
+
+func (s *GRPCServer) WaitForIdle(ctx context.Context, req *proto.WaitForIdleRequest) (*proto.WaitForIdleResponse, error) {
+	if req == nil || req.Name == "" {
+		return nil, status.Error(codes.InvalidArgument, "session name is required")
+	}
+	idle, err := durationFromProto(req.IdleDuration)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if idle == 0 {
+		idle = 5 * time.Second
+	}
+	timeout, err := durationFromProto(req.Timeout)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	idleReached, timedOut, err := s.coord.WaitForIdle(ctx, req.Name, idle, timeout)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
+		return nil, mapCoordinatorErr(err)
+	}
+	return &proto.WaitForIdleResponse{
+		Idle:     idleReached,
+		TimedOut: timedOut,
+	}, nil
 }
 
 func toProtoSession(info *SessionInfo) *proto.Session {
@@ -337,4 +432,18 @@ func requiredUint16(v int32) (uint16, error) {
 
 func packRGB(c color.RGBA) int32 {
 	return int32(c.R)<<16 | int32(c.G)<<8 | int32(c.B)
+}
+
+func durationFromProto(dur *durationpb.Duration) (time.Duration, error) {
+	if dur == nil {
+		return 0, nil
+	}
+	if !dur.IsValid() {
+		return 0, errors.New("invalid duration")
+	}
+	out := dur.AsDuration()
+	if out < 0 {
+		return 0, errors.New("duration must be >= 0")
+	}
+	return out, nil
 }
