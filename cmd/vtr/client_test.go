@@ -2,7 +2,7 @@ package main
 
 import (
 	"bytes"
-	"os"
+	"encoding/json"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -14,23 +14,13 @@ import (
 	"google.golang.org/grpc"
 )
 
-func TestCLIEndToEnd(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("pty tests not supported on windows")
-	}
+func setupCLIConfigHome(t *testing.T) {
+	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+}
 
-	tmpDir := t.TempDir()
-	prevConfigHome := os.Getenv("XDG_CONFIG_HOME")
-	if err := os.Setenv("XDG_CONFIG_HOME", tmpDir); err != nil {
-		t.Fatalf("set XDG_CONFIG_HOME: %v", err)
-	}
-	t.Cleanup(func() {
-		if prevConfigHome == "" {
-			_ = os.Unsetenv("XDG_CONFIG_HOME")
-			return
-		}
-		_ = os.Setenv("XDG_CONFIG_HOME", prevConfigHome)
-	})
+func startCLITestServer(t *testing.T) (string, func()) {
+	t.Helper()
 
 	coord := server.NewCoordinator(server.CoordinatorOptions{
 		DefaultShell: "/bin/sh",
@@ -52,13 +42,24 @@ func TestCLIEndToEnd(t *testing.T) {
 		_ = grpcServer.Serve(listener)
 	}()
 
-	t.Cleanup(func() {
+	cleanup := func() {
 		grpcServer.GracefulStop()
 		_ = listener.Close()
 		_ = coord.Close()
-	})
+	}
+	return socketPath, cleanup
+}
 
-	_, err = runCLICommand(t, "spawn", "--socket", socketPath, "--cmd", "printf 'ready\\n'; read line; printf 'got:%s\\n' \"$line\"; sleep 0.1", "cli-e2e")
+func TestCLIEndToEnd(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty tests not supported on windows")
+	}
+
+	setupCLIConfigHome(t)
+	socketPath, cleanup := startCLITestServer(t)
+	t.Cleanup(cleanup)
+
+	_, err := runCLICommand(t, "spawn", "--socket", socketPath, "--cmd", "printf 'ready\\n'; read line; printf 'got:%s\\n' \"$line\"; sleep 0.1", "cli-e2e")
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
@@ -75,6 +76,126 @@ func TestCLIEndToEnd(t *testing.T) {
 	}
 
 	waitForCLIScreenContains(t, socketPath, "cli-e2e", "got:hello", 2*time.Second)
+}
+
+func TestCLIGrep(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty tests not supported on windows")
+	}
+
+	setupCLIConfigHome(t)
+	socketPath, cleanup := startCLITestServer(t)
+	t.Cleanup(cleanup)
+
+	_, err := runCLICommand(t, "spawn", "--socket", socketPath, "--cmd", "printf 'zero\\none\\nerror here\\nthree\\n'; sleep 0.1", "cli-grep")
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+
+	waitForCLIScreenContains(t, socketPath, "cli-grep", "error here", 2*time.Second)
+
+	out, err := runCLICommand(t, "grep", "--socket", socketPath, "--json", "-C", "1", "cli-grep", "error")
+	if err != nil {
+		t.Fatalf("grep: %v", err)
+	}
+
+	var resp jsonGrep
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		t.Fatalf("decode grep: %v", err)
+	}
+	if len(resp.Matches) != 1 {
+		t.Fatalf("expected 1 match, got %d", len(resp.Matches))
+	}
+	match := resp.Matches[0]
+	if match.Line != "error here" {
+		t.Fatalf("match line=%q", match.Line)
+	}
+	if len(match.ContextBefore) != 1 || match.ContextBefore[0] != "one" {
+		t.Fatalf("context before=%v", match.ContextBefore)
+	}
+	if len(match.ContextAfter) != 1 || match.ContextAfter[0] != "three" {
+		t.Fatalf("context after=%v", match.ContextAfter)
+	}
+	if match.LineNumber != 2 {
+		t.Fatalf("line number=%d", match.LineNumber)
+	}
+}
+
+func TestCLIWait(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty tests not supported on windows")
+	}
+
+	setupCLIConfigHome(t)
+	socketPath, cleanup := startCLITestServer(t)
+	t.Cleanup(cleanup)
+
+	_, err := runCLICommand(t, "spawn", "--socket", socketPath, "--cmd", "sleep 0.2; printf 'done\\n'; sleep 0.1", "cli-wait")
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+
+	out, err := runCLICommand(t, "wait", "--socket", socketPath, "--json", "--timeout", "1s", "cli-wait", "done")
+	if err != nil {
+		t.Fatalf("wait: %v", err)
+	}
+
+	var resp jsonWait
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		t.Fatalf("decode wait: %v", err)
+	}
+	if resp.TimedOut || !resp.Matched {
+		t.Fatalf("expected match, got %+v", resp)
+	}
+	if !strings.Contains(resp.MatchedLine, "done") {
+		t.Fatalf("matched line=%q", resp.MatchedLine)
+	}
+
+	_, err = runCLICommand(t, "spawn", "--socket", socketPath, "--cmd", "sleep 0.3", "cli-wait-timeout")
+	if err != nil {
+		t.Fatalf("spawn timeout: %v", err)
+	}
+
+	out, err = runCLICommand(t, "wait", "--socket", socketPath, "--json", "--timeout", "200ms", "cli-wait-timeout", "never")
+	if err != nil {
+		t.Fatalf("wait timeout: %v", err)
+	}
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		t.Fatalf("decode wait timeout: %v", err)
+	}
+	if !resp.TimedOut || resp.Matched {
+		t.Fatalf("expected timeout, got %+v", resp)
+	}
+}
+
+func TestCLIIdle(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty tests not supported on windows")
+	}
+
+	setupCLIConfigHome(t)
+	socketPath, cleanup := startCLITestServer(t)
+	t.Cleanup(cleanup)
+
+	_, err := runCLICommand(t, "spawn", "--socket", socketPath, "--cmd", "printf 'ready\\n'; sleep 0.4", "cli-idle")
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+
+	waitForCLIScreenContains(t, socketPath, "cli-idle", "ready", 2*time.Second)
+
+	out, err := runCLICommand(t, "idle", "--socket", socketPath, "--json", "--idle", "100ms", "--timeout", "1s", "cli-idle")
+	if err != nil {
+		t.Fatalf("idle: %v", err)
+	}
+
+	var resp jsonIdle
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		t.Fatalf("decode idle: %v", err)
+	}
+	if resp.TimedOut || !resp.Idle {
+		t.Fatalf("expected idle, got %+v", resp)
+	}
 }
 
 func runCLICommand(t *testing.T, args ...string) (string, error) {

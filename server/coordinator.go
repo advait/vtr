@@ -114,6 +114,8 @@ func (c *Coordinator) Spawn(name string, opts SpawnOptions) (*SessionInfo, error
 	cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
 	if opts.WorkingDir != "" {
 		cmd.Dir = opts.WorkingDir
+	} else if home := defaultWorkingDir(); home != "" {
+		cmd.Dir = home
 	}
 	if len(opts.Env) > 0 {
 		cmd.Env = mergeEnv(os.Environ(), opts.Env)
@@ -355,6 +357,16 @@ func mergeEnv(base []string, extra []string) []string {
 		}
 	}
 	return out
+}
+
+func defaultWorkingDir() string {
+	if dir, err := os.UserHomeDir(); err == nil && dir != "" {
+		return dir
+	}
+	if dir := os.Getenv("HOME"); dir != "" {
+		return dir
+	}
+	return ""
 }
 
 type Session struct {

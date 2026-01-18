@@ -236,3 +236,24 @@ func TestMergeEnvOverrides(t *testing.T) {
 		t.Fatalf("NEW=%q", env["NEW"])
 	}
 }
+
+func TestSpawnDefaultWorkingDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty tests not supported on windows")
+	}
+
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	coord := newTestCoordinator()
+	defer coord.Close()
+
+	_, err := coord.Spawn("cwd", SpawnOptions{
+		Command: []string{"/bin/sh", "-c", "pwd; sleep 0.1"},
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	waitForDumpContains(t, coord, "cwd", tmpDir, 2*time.Second)
+}
