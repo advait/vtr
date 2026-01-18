@@ -208,15 +208,19 @@ Goal: Comprehensive memory safety test suite for CGO + Zig integration.
 Status: planned.
 
 Deliverables:
-- Sanitizer build path for the Zig shim (ASan + LSan) with a dedicated `go test` target.
-- Valgrind memcheck target for focused `go-ghostty` tests with documented suppressions.
+- Sanitizer build path for the Zig shim (ASan + LSan) using Zig 0.13.x (stable) with frame pointers enabled, plus a dedicated `go test` target for CGO-focused tests.
 - Go race detector job for Go packages that exercise the CGO boundary.
-- CI pipeline jobs for sanitizer, memcheck, and race runs with clear failure criteria.
+- CI pipeline jobs for sanitizer + race runs scoped to CGO tests to keep runtime under 5 minutes.
+- `GODEBUG=cgocheck=2` (or `GOEXPERIMENT=cgocheck2` when required) enabled for the sanitizer run.
+- Suppression files (if needed) stored in `go-ghostty/shim/sanitizers/`.
 - Documentation of CGO ownership patterns and safe usage for snapshot/dump allocations.
 
 Success criteria:
-- Sanitizer and memcheck runs report zero actionable findings in `go-ghostty` paths.
+- Sanitizer run reports zero actionable findings in `go-ghostty` paths and finishes within the 5-minute CI budget.
 - `go test -race ./...` passes on supported platforms in CI.
 - Docs describe allocator ownership and required free calls at the boundary.
+
+Notes:
+- Valgrind intentionally skipped due to latency constraints.
 
 Estimated complexity: M.
