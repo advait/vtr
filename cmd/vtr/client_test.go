@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -195,6 +196,48 @@ func TestCLIIdle(t *testing.T) {
 	}
 	if resp.TimedOut || !resp.Idle {
 		t.Fatalf("expected idle, got %+v", resp)
+	}
+}
+
+func TestCLIConfigResolveHonorsOutputFormat(t *testing.T) {
+	setupCLIConfigHome(t)
+
+	configPath := defaultConfigPath()
+	if configPath == "" {
+		t.Fatal("default config path is empty")
+	}
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	config := strings.Join([]string{
+		"[[coordinators]]",
+		`path = "/tmp/vtr-test.sock"`,
+		"",
+		"[defaults]",
+		`output_format = "json"`,
+		"",
+	}, "\n")
+	if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	out, err := runCLICommand(t, "config", "resolve")
+	if err != nil {
+		t.Fatalf("config resolve: %v", err)
+	}
+
+	var resp jsonCoordinators
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		t.Fatalf("decode config resolve: %v", err)
+	}
+	if len(resp.Coordinators) != 1 {
+		t.Fatalf("expected 1 coordinator, got %d", len(resp.Coordinators))
+	}
+	if resp.Coordinators[0].Path != "/tmp/vtr-test.sock" {
+		t.Fatalf("coordinator path=%q", resp.Coordinators[0].Path)
+	}
+	if resp.Coordinators[0].Name != "vtr-test" {
+		t.Fatalf("coordinator name=%q", resp.Coordinators[0].Name)
 	}
 }
 

@@ -446,10 +446,10 @@ message GetScreenResponse {
 }
 ```
 Screen cell semantics:
-- `char` is a Unicode grapheme cluster (one or more codepoints) representing a
-  single cell; the server sends `" "` for empty cells. Emoji sequences (ZWJ
-  U+200D, variation selectors U+FE0F, regional indicator pairs U+1F1E6..U+1F1FF,
-  and skin tone modifiers U+1F3FB..U+1F3FF) are encoded as a single `char` string.
+- `char` is a single Unicode codepoint string from Ghostty's snapshot; the
+  server sends `" "` for empty cells. Multi-codepoint grapheme clusters
+  (ZWJ/flags/emoji sequences) are not preserved yet and may appear as separate
+  cells until the proto carries cluster metadata.
 - `fg_color`/`bg_color` are packed 24-bit RGB ints (`0xRRGGBB`, no alpha).
 - `attributes` uses the Ghostty bitmask values listed above.
 - Cursor visibility is not exposed in the proto; M7 assumes the cursor is visible.
@@ -472,8 +472,8 @@ Screen cell semantics:
 - Grid rendering: monospace cells with per-cell fg/bg and attribute bitmask;
 - use `white-space: pre` and fixed tab size; measure cell metrics after fonts
   load to avoid layout shifts.
-- Emoji/graphemes: render `char` as an atomic grapheme cluster string; do not
-  split or normalize it on the client.
+- Emoji/graphemes: render `char` as an atomic codepoint string; do not split or
+  normalize it on the client. Multi-codepoint clusters are not preserved yet.
 - Ligatures: coalesce consecutive cells with identical style into text runs and
   enable programming ligatures (`font-variant-ligatures: contextual`,
   `font-feature-settings: "liga" 1, "calt" 1`). If the chosen font breaks
@@ -484,9 +484,9 @@ Screen cell semantics:
 - Cursor: use `cursor_x`/`cursor_y` and render a block cursor with inverted
   colors; cursor-only updates are legal (no row diffs). Cursor visibility is
   assumed true in M7.
-- Wide characters: use grapheme-aware `wcwidth` to detect width 2. If width 2,
-  render the grapheme in the head cell and hide the next cell only when it is a
-  space with matching style (heuristic until wide metadata is exposed in the proto).
+- Wide characters: use `wcwidth` on `char` to detect width 2. If width 2, render
+  the codepoint in the head cell and hide the next cell only when it is a space
+  with matching style (heuristic until wide metadata is exposed in the proto).
 - Selection/copy: implement client-side range selection across the grid and
   synthesize text for clipboard. Paste uses a hidden textarea and `SendText`.
 - Scrollback: not in `GetScreenResponse`. M7 shows viewport only; add a
@@ -602,7 +602,7 @@ explicitly out of scope for this milestone.
 ### Post-M7 considerations
 
 - Add cursor visibility/style fields to the proto or WS schema.
-- Expose wide/continuation metadata in `ScreenCell`.
+- Expose wide/continuation metadata and grapheme cluster text in `ScreenCell`.
 - Add scrollback RPC + UI paging.
 - Introduce binary delta frames if JSON payloads become too large.
 
@@ -623,6 +623,8 @@ vtr config rm <path-or-glob>  # planned post-M5
 # Show resolved socket paths
 vtr config resolve
 ```
+
+`config resolve` honors `--json` and `defaults.output_format`.
 
 ### Session Addressing
 
@@ -1175,7 +1177,7 @@ vtrpc/
 │   ├── pty.go
 │   ├── vt.go
 │   └── wait.go
-├── web/                 # Web UI (P2)
+├── web/                 # Web UI (M7 planned)
 ├── go.mod
 ├── go.sum
 └── Makefile
@@ -1203,10 +1205,11 @@ vtrpc/
 - gRPC integration tests for spawn/send/screen, list/info/resize, kill/remove, error mapping, grep, wait, idle
 - gRPC Subscribe tests for initial snapshot, raw output, and exit ordering
 - CLI end-to-end tests for spawn/send/key/screen plus grep/wait/idle
+- CLI config resolve test for default output format handling
 
 ### Gaps / planned
 
-- Multi-coordinator resolution + `vtr config` command coverage
+- Multi-coordinator resolution coverage (ambiguity handling across coordinators)
 - Subscribe stream backpressure/coalescing behavior under slow clients
 - Mouse mode tracking + SendMouse encoding coverage
 - Attach TUI + web UI + recording

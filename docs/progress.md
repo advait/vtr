@@ -9,6 +9,8 @@ Complexity scale: XS (hours), S (1-2 days), M (3-5 days), L (1-2 weeks), XL (2+ 
 
 Goal: Establish repo scaffolding and build/test workflow.
 
+Status: complete (2026-01-18).
+
 Deliverables:
 - `go.mod`/`go.sum` with baseline dependencies pinned.
 - `proto/vtr.proto` checked in with initial service/messages from spec.

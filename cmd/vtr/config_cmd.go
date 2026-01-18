@@ -21,7 +21,7 @@ func newConfigResolveCmd() *cobra.Command {
 		Use:   "resolve",
 		Short: "Show resolved coordinator sockets",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, _, err := loadConfigWithPath()
+			cfg, _, output, err := loadConfigAndOutput(jsonOut)
 			if err != nil {
 				return err
 			}
@@ -32,7 +32,7 @@ func newConfigResolveCmd() *cobra.Command {
 			if len(coords) == 0 {
 				coords = []coordinatorRef{{Name: coordinatorName(defaultSocketPath), Path: defaultSocketPath}}
 			}
-			if jsonOut {
+			if output == outputJSON {
 				items := make([]jsonCoordinator, 0, len(coords))
 				for _, coord := range coords {
 					items = append(items, jsonCoordinator{Name: coord.Name, Path: coord.Path})
