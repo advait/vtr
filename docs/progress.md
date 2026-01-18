@@ -80,6 +80,28 @@ Success criteria:
 
 Estimated complexity: M.
 
+## M6 - Attach TUI (Bubbletea)
+
+Goal: Deliver a tmux-like attach experience for basic workflows with modern UX.
+
+Status: planned.
+
+Deliverables:
+- Server `Subscribe` RPC implemented with streaming events and backpressure handling.
+- Proto messages finalized for streaming: `SubscribeRequest`, `ScreenUpdate`, `SessionExited`, `SubscribeEvent`.
+- `vtr attach` Bubbletea TUI with Lipgloss border, status bar, and raw-mode passthrough.
+- Leader-based session management: create, detach, kill, next/prev, list picker, rename.
+- Tests for subscribe stream behavior (snapshot cadence, exit event, disconnect handling).
+
+Success criteria:
+- `vtr attach` renders live output with a border and status bar using Subscribe updates.
+- Leader key commands work reliably without leaking input into the session.
+- Detach returns to the shell while the session keeps running; kill ends the session cleanly.
+- Subscribe streams handle session exit and client disconnects without leaks or crashes.
+- No tabs, splits, copy mode, or mouse support in this milestone.
+
+Estimated complexity: L.
+
 ## M4 - CLI Client Core
 
 Goal: Provide a usable CLI for core operations against a single coordinator.

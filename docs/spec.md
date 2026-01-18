@@ -211,17 +211,23 @@ vtr idle <name> [--idle 5s] [--timeout 30s] [--socket /path/to.sock] [--json]
 
 ```bash
 # Attach to session (interactive TUI)
-vtr attach <name> [--socket /path/to.sock]  # planned post-M5 (TUI)
+vtr attach <name> [--socket /path/to.sock]  # planned M6 (TUI)
 ```
 
-TUI features (planned; implementation pending):
-- Window decoration showing session name, coordinator, dimensions
+TUI features (planned for M6):
+- Bubbletea TUI renders the viewport inside a Lipgloss border.
+- Status bar shows session name, coordinator, and time.
+- Uses `Subscribe` for real-time screen updates.
+- Raw mode passthrough for normal typing.
 - Leader key (`Ctrl+b` default) for commands:
-  - `d` - Detach
-  - `k` - Kill session
-  - `r` - Resize
-  - `?` - Help
-- Raw mode passthrough for normal typing
+  - `c` - Create new session
+  - `d` - Detach (exit TUI, session keeps running)
+  - `k` - Kill current session
+  - `n` - Next session
+  - `p` - Previous session
+  - `w` - List sessions (picker)
+  - `r` - Rename session
+- Session exit closes the TUI with an exit notice and code.
 
 ### Config Management
 
@@ -438,6 +444,14 @@ message SubscribeRequest {
   bool include_raw_output = 3;
 }
 
+message ScreenUpdate {
+  GetScreenResponse screen = 1;
+}
+
+message SessionExited {
+  int32 exit_code = 1;
+}
+
 message SubscribeEvent {
   oneof event {
     ScreenUpdate screen_update = 1;
@@ -446,6 +460,15 @@ message SubscribeEvent {
   }
 }
 ```
+
+### Subscribe Stream (planned M6)
+
+- Server-side stream of `SubscribeEvent` for attach and web UI clients.
+- `include_screen_updates` sends an initial full snapshot plus subsequent snapshots (full frames).
+- `include_raw_output` emits raw PTY bytes for logging or custom rendering.
+- `session_exited` is sent once with the exit code; the server closes the stream afterward.
+- Slow clients may skip intermediate frames; the server prioritizes the latest screen state (see Backpressure).
+- Subscribe is receive-only; input still uses `SendText`, `SendKey`, or `SendBytes`.
 
 ## VT Engine
 
