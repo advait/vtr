@@ -200,3 +200,23 @@ Open questions:
 - Do we need a CLI/config flag to disable mouse passthrough entirely?
 
 Estimated complexity: M.
+
+## M9 - Memory Safety Test Suite
+
+Goal: Comprehensive memory safety test suite for CGO + Zig integration.
+
+Status: planned.
+
+Deliverables:
+- Sanitizer build path for the Zig shim (ASan + LSan) with a dedicated `go test` target.
+- Valgrind memcheck target for focused `go-ghostty` tests with documented suppressions.
+- Go race detector job for Go packages that exercise the CGO boundary.
+- CI pipeline jobs for sanitizer, memcheck, and race runs with clear failure criteria.
+- Documentation of CGO ownership patterns and safe usage for snapshot/dump allocations.
+
+Success criteria:
+- Sanitizer and memcheck runs report zero actionable findings in `go-ghostty` paths.
+- `go test -race ./...` passes on supported platforms in CI.
+- Docs describe allocator ownership and required free calls at the boundary.
+
+Estimated complexity: M.
