@@ -14,6 +14,7 @@ vtr is a terminal multiplexer designed for the agent era. Each container runs a 
 - DumpAsciinema remains defined in `proto/vtr.proto` but is not implemented yet (gRPC returns UNIMPLEMENTED).
 - CLI supports core client commands plus `grep`, `wait`, `idle`, `attach`, and `config resolve` (alongside `serve` and `version`).
 - Attach TUI uses Subscribe streaming updates with leader key bindings for session actions.
+- Mouse support is not implemented yet; M8 adds mouse mode tracking, Subscribe events, and SendMouse RPC.
 - Multi-coordinator resolution supports `--socket` and `coordinator:session` with auto-disambiguation via per-coordinator lookup.
 - Grep uses scrollback dumps when available; falls back to screen/viewport dumps if history is unavailable.
 - WaitFor scans output emitted after the request starts using a rolling 1MB buffer.
@@ -690,7 +691,7 @@ Auth: POSIX filesystem permissions
 
 ### Service Definition
 
-**Status (post-M6):** Spawn, List, Info, Kill, Remove, GetScreen, Grep, SendText, SendKey, SendBytes, Resize, WaitFor, WaitForIdle, and Subscribe are implemented. DumpAsciinema is defined but not implemented yet.
+**Status (post-M6):** Spawn, List, Info, Kill, Remove, GetScreen, Grep, SendText, SendKey, SendBytes, Resize, WaitFor, WaitForIdle, and Subscribe are implemented. SendMouse and mouse mode events are planned for M8. DumpAsciinema is defined but not implemented yet.
 
 ```protobuf
 syntax = "proto3";
@@ -712,6 +713,7 @@ service VTR {
   rpc SendText(SendTextRequest) returns (SendTextResponse);
   rpc SendKey(SendKeyRequest) returns (SendKeyResponse);
   rpc SendBytes(SendBytesRequest) returns (SendBytesResponse);
+  rpc SendMouse(SendMouseRequest) returns (SendMouseResponse);
   rpc Resize(ResizeRequest) returns (ResizeResponse);
   
   // Blocking operations
@@ -816,6 +818,64 @@ message WaitForIdleResponse {
   bool timed_out = 2;
 }
 
+enum MouseEventMode {
+  MOUSE_EVENT_MODE_UNSPECIFIED = 0;
+  MOUSE_EVENT_MODE_NONE = 1;
+  MOUSE_EVENT_MODE_X10 = 2;
+  MOUSE_EVENT_MODE_NORMAL = 3;
+  MOUSE_EVENT_MODE_BUTTON = 4;
+  MOUSE_EVENT_MODE_ANY = 5;
+}
+
+enum MouseFormat {
+  MOUSE_FORMAT_UNSPECIFIED = 0;
+  MOUSE_FORMAT_X10 = 1;
+  MOUSE_FORMAT_UTF8 = 2;
+  MOUSE_FORMAT_SGR = 3;
+  MOUSE_FORMAT_URXVT = 4;
+  MOUSE_FORMAT_SGR_PIXELS = 5;
+}
+
+enum MouseButton {
+  MOUSE_BUTTON_UNSPECIFIED = 0;
+  MOUSE_BUTTON_NONE = 1;
+  MOUSE_BUTTON_LEFT = 2;
+  MOUSE_BUTTON_MIDDLE = 3;
+  MOUSE_BUTTON_RIGHT = 4;
+  MOUSE_BUTTON_WHEEL_UP = 5;
+  MOUSE_BUTTON_WHEEL_DOWN = 6;
+  MOUSE_BUTTON_WHEEL_LEFT = 7;
+  MOUSE_BUTTON_WHEEL_RIGHT = 8;
+  MOUSE_BUTTON_BACK = 9;
+  MOUSE_BUTTON_FORWARD = 10;
+}
+
+enum MouseAction {
+  MOUSE_ACTION_UNSPECIFIED = 0;
+  MOUSE_ACTION_PRESS = 1;
+  MOUSE_ACTION_RELEASE = 2;
+  MOUSE_ACTION_MOTION = 3;
+}
+
+message SendMouseRequest {
+  string name = 1;
+  int32 x = 2;  // 0-based cell coordinate
+  int32 y = 3;  // 0-based cell coordinate
+  MouseButton button = 4;
+  MouseAction action = 5;
+  bool shift = 6;
+  bool alt = 7;
+  bool ctrl = 8;
+}
+
+message SendMouseResponse {}
+
+message MouseModeChanged {
+  bool enabled = 1;
+  MouseEventMode event_mode = 2;
+  MouseFormat format = 3;
+}
+
 message SubscribeRequest {
   string name = 1;
   bool include_screen_updates = 2;
@@ -835,6 +895,7 @@ message SubscribeEvent {
     ScreenUpdate screen_update = 1;
     bytes raw_output = 2;
     SessionExited session_exited = 3;
+    MouseModeChanged mouse_mode_changed = 4;
   }
 }
 ```
@@ -852,10 +913,63 @@ message SubscribeEvent {
   server returns `INVALID_ARGUMENT`.
 - If `include_screen_updates` is true, the server sends a final `ScreenUpdate` before
   `session_exited`; `session_exited` is always the last event before stream close.
+- `mouse_mode_changed` is emitted on Subscribe start and whenever the app enables or disables
+  mouse tracking; clients gate mouse input on this event.
 - `session_exited` is sent once with the exit code; the server closes the stream afterward.
 - When clients disconnect or cancel, the server stops streaming and releases resources.
 - Slow clients may skip intermediate frames; the server prioritizes the latest screen state (see Backpressure).
-- Subscribe is receive-only; input still uses `SendText`, `SendKey`, or `SendBytes`.
+- Subscribe is receive-only; input uses `SendText`, `SendKey`, `SendBytes`, or `SendMouse`.
+
+### Mouse Support (M8) Design
+
+Key constraint: clients do not see ANSI; they only see gRPC. Mouse mode state must be owned by the coordinator.
+
+#### Ghostty mouse mode state
+- Ghostty tracks the active mouse event mode and format in `terminal.flags`:
+  - `mouse_event` (none/x10/normal/button/any) and `mouse_format` (x10/utf8/sgr/urxvt/sgr_pixels).
+- These flags are updated by the VT stream when it processes DECSET/DECRST
+  for `?9`, `?1000`, `?1002`, `?1003`, `?1005`, `?1006`, `?1015`, `?1016`
+  (see `ghostty/src/termio/stream_handler.zig`).
+- Plan: add a shim getter (`vtr_ghostty_terminal_mouse_mode`) and a Go wrapper
+  to read the current mode from the VT.
+
+#### Broadcasting mouse mode changes
+- Coordinator caches `MouseEventMode` + `MouseFormat` per session.
+- After each VT feed, query the current mode; if it changed, emit
+  `MouseModeChanged` to all `Subscribe` streams.
+- On Subscribe start, send the current mode before the first `ScreenUpdate`
+  so clients can immediately enable/disable mouse capture.
+
+#### Client -> server mouse input (SendMouse)
+- Clients send structured mouse events via `SendMouse` (no escape sequences).
+- Server validates coordinates (0-based cell coords, same as `GetScreenResponse`)
+  and checks `event_mode != NONE` before encoding; if disabled, return
+  `FAILED_PRECONDITION` (or drop) unless overridden by server config.
+- Server encodes xterm mouse sequences based on current `event_mode` + `format`
+  and writes to the PTY.
+
+#### Encoding rules (server-side)
+- Event mode gates reporting:
+  - `x10`: press only, left/middle/right only.
+  - `normal`: press/release only (no motion).
+  - `button`: motion only with a button held.
+  - `any`: motion always.
+- Formats:
+  - `sgr`: `ESC[<b;x;yM` for press/motion, `ESC[<b;x;ym` for release.
+  - `x10`: `ESC[M` with 32+encoded button/x/y (coords limited to 223).
+  - `utf8`: `ESC[M` with UTF-8 encoded x/y.
+  - `urxvt`: `ESC[b;x;yM` with decimal coords.
+  - `sgr_pixels`: only valid with pixel coords; if clients only have cell coords,
+    treat as unsupported or fall back to `sgr`.
+- Modifiers: shift +4, alt +8, ctrl +16; motion adds +32; wheel uses 64/65/66/67.
+- Reference implementation for encoding logic: `ghostty/src/Surface.zig` (`mouseReport`).
+
+#### End-to-end flow
+1. PTY app emits DECSET/DECRST -> Ghostty updates mouse flags.
+2. Coordinator detects change -> `Subscribe` emits `MouseModeChanged`.
+3. Client enables mouse capture; user clicks/scrolls.
+4. Client calls `SendMouse` -> server encodes -> PTY receives escape sequence.
+5. App disables mouse -> Ghostty flags reset -> `MouseModeChanged` -> client stops sending.
 
 ## VT Engine
 
@@ -1012,7 +1126,15 @@ chmod 660 /var/run/vtr.sock
 6. Tailnet-only Tailscale Serve integration
 7. E2E tests covering ANSI -> coordinator -> web -> render pipeline
 
-### Phase 6: Recording (P2)
+### Phase 6: Mouse Support (M8)
+
+1. Expose Ghostty mouse mode via go-ghostty shim
+2. Track mouse mode changes per session and broadcast on Subscribe
+3. Add SendMouse RPC + server-side encoding
+4. Update attach/web clients to use SendMouse and gate on MouseModeChanged
+5. Tests for mode transitions and encoding correctness
+
+### Phase 7: Recording (P2)
 
 1. Asciinema format recording
 2. DumpAsciinema RPC
@@ -1086,6 +1208,7 @@ vtrpc/
 
 - Multi-coordinator resolution + `vtr config` command coverage
 - Subscribe stream backpressure/coalescing behavior under slow clients
+- Mouse mode tracking + SendMouse encoding coverage
 - Attach TUI + web UI + recording
 
 ---
