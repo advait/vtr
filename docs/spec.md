@@ -1,6 +1,6 @@
 # vtr Specification
 
-> Headless terminal multiplexer: container PTYs stream bytes to a central VT engine over gRPC. Exposes screen state + I/O to heterogeneous clients (agent CLI, web UI). Decouples PTY lifecycle from rendering.
+> Headless terminal multiplexer: container PTYs stream bytes to a central VT engine inside the coordinator. gRPC exposes screen state + I/O to heterogeneous clients (agent CLI, web UI). Decouples PTY lifecycle from rendering.
 
 ## Overview
 
@@ -162,10 +162,10 @@ vtr kill <name> [--signal TERM|KILL|INT] [--coordinator /path/to.sock]
 vtr screen <name> [--json] [--coordinator /path/to.sock]
 
 # Search scrollback (ripgrep-style output; RE2 regex)
-vtr grep <name> <pattern> [-B lines] [-A lines] [-C lines] [--json]
+vtr grep <name> <pattern> [-B lines] [-A lines] [-C lines] [--coordinator /path/to.sock] [--json]
 
 # Get session info (dimensions, status, exit code)
-vtr info <name> [--json]
+vtr info <name> [--json] [--coordinator /path/to.sock]
 ```
 
 ### Input Operations
@@ -190,10 +190,10 @@ vtr resize <name> <cols> <rows> [--coordinator /path/to.sock]
 
 ```bash
 # Wait for pattern in output (future output only, RE2 regex)
-vtr wait <name> <pattern> [--timeout 30s] [--json]
+vtr wait <name> <pattern> [--timeout 30s] [--coordinator /path/to.sock] [--json]
 
 # Wait for idle (no output for idle duration)
-vtr idle <name> [--idle 5s] [--timeout 5s] [--json]
+vtr idle <name> [--idle 5s] [--timeout 5s] [--coordinator /path/to.sock] [--json]
 ```
 
 ### Interactive Mode
@@ -243,6 +243,7 @@ vtr screen project-a:codex
 ```
 
 Coordinator names derived from socket filename (without .sock extension).
+If two sockets share the same basename, names collide; use `--coordinator` to disambiguate.
 
 ### Output Formats
 
@@ -361,7 +362,7 @@ message GetScreenResponse {
   int32 rows = 3;
   int32 cursor_x = 4;
   int32 cursor_y = 5;
-  repeated ScreenRow rows = 6;
+  repeated ScreenRow screen_rows = 6;
 }
 
 message ScreenRow {
@@ -388,7 +389,7 @@ message GrepResponse {
 }
 
 message GrepMatch {
-  int32 line_number = 1;  // relative to scrollback start
+  int32 line_number = 1;  // 0-based, relative to scrollback start
   string line = 2;
   repeated string context_before = 3;
   repeated string context_after = 4;
@@ -507,7 +508,7 @@ When PTY produces output faster than VT engine processes:
 
 ### Timeout Handling
 
-`WaitFor`/`WaitForIdle` return `timed_out = true` when the request timeout elapses. gRPC `DEADLINE_EXCEEDED` only applies if the client deadline is shorter than the request timeout.
+`WaitFor`/`WaitForIdle` return `timed_out = true` when the request timeout elapses. If the gRPC deadline triggers first, the RPC is canceled and no response body is returned.
 
 ### System Errors
 
@@ -538,7 +539,7 @@ chmod 660 /var/run/vtr.sock
 ### Input Sanitization
 
 - Text input: UTF-8 validated
-- Raw bytes: hex-encoded, length-limited (1MB max)
+- Raw bytes: CLI accepts hex and decodes to bytes; server enforces length limit (1MB max)
 - Patterns: regex validated, timeout enforced
 
 ## Implementation Plan
@@ -588,13 +589,13 @@ chmod 660 /var/run/vtr.sock
 2. DumpAsciinema RPC
 3. Playback support in web UI
 
-## Project Structure
+## Project Structure (planned)
 
 ```
 vtr/
 ├── docs/
 │   ├── spec.md          # This file
-│   └── progress.md      # Development progress tracking
+│   └── progress.md      # Development progress tracking (planned)
 ├── go-ghostty/          # cgo wrapper around libghostty-vt
 ├── proto/
 │   └── vtr.proto        # gRPC service definition
