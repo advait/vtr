@@ -113,18 +113,21 @@ Goal: Deliver a touch-friendly browser UI with live terminal streaming over Tail
 Status: planned.
 
 Deliverables:
-- Web UI server (built into `vtr serve` or `vtr web`) serving static assets + WS/SSE.
-- Mobile-first layout: session list, attach view, and on-screen input controls.
-- Terminal renderer using xterm.js with responsive fit and resize handling.
-- Subscribe stream bridge (gRPC -> WS/SSE) with reconnect + resync logic.
-- Tailscale Serve/Funnel setup documented with a secure default.
-- Auth model defined (tailnet identity and optional share tokens).
+- Dedicated `vtr web` command serving static assets + WebSocket bridge.
+- React + shadcn/ui frontend with Tokyo Night palette and JetBrains Mono.
+- Mobile-first layout: coordinator tree view, attach view, and on-screen input controls.
+- Multi-coordinator discovery via `~/.config/vtr/config.toml` with CLI overrides.
+- Terminal renderer decision implemented (xterm.js or custom screen renderer).
+- Subscribe stream bridge (gRPC -> WS) with reconnect + resync logic.
+- Tailscale Serve tailnet-only setup documented (no Funnel).
+- UI screenshots captured for mobile + desktop review (shot or equivalent).
 
 Success criteria:
-- Phone and desktop can load the UI, list sessions, attach, and send input.
+- Phone and desktop can load the UI, list sessions across coordinators, attach, and send input.
 - Terminal updates stream within 250ms under normal load.
-- Works via Tailscale Serve on tailnet; optional Funnel path gated by auth.
+- Works via Tailscale Serve on tailnet; Funnel not supported in M7.
 - Session exit and disconnects are handled without leaks or broken UI.
+- Coordinator tree view is responsive, searchable, and touch-friendly.
 
 Estimated complexity: L.
 

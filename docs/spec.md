@@ -247,28 +247,83 @@ Goal: Mobile-first browser UI for live terminal sessions over Tailscale.
 
 ```
 Browser (mobile/desktop)
-  |  HTTPS (static assets) + WS/SSE (stream/input)
+  |  HTTPS (static assets) + WS (stream/input)
   v
 Web UI server (Go HTTP)
-  |  gRPC client (Unix socket or TCP)
+  |  gRPC clients (one per coordinator)
   v
-Coordinator (vtr serve)
+Coordinators (vtr serve)
 ```
 
-The Web UI server can live inside `vtr serve` or run as `vtr web`. It serves
-static assets, proxies REST/JSON for list/info/spawn/kill, and bridges
-`Subscribe` streaming to WebSocket or SSE.
+The Web UI runs as a dedicated `vtr web` command. It serves static assets,
+proxies REST/JSON for list/info/spawn/kill, and bridges `Subscribe` streaming
+to WebSocket.
 
-### Frontend stack recommendations
+### Command and configuration
 
-- Framework: Svelte + Vite for small bundles and simple state. Preact is a
-  valid alternative if we prefer React-compatible tooling.
-- Terminal renderer: xterm.js with `fit` addon for resizing. Use `webgl`
-  addon for performance on large screens; fall back to `canvas` on mobile.
-- UI: single-column mobile layout, bottom input bar, tap-to-focus, and a
+- `vtr web` reads `~/.config/vtr/config.toml` and resolves `coordinators.path`
+  globs to build the coordinator tree.
+- CLI overrides: `--socket /path` for a single coordinator or `--coordinator`
+  (repeatable path/glob) to replace config discovery.
+- `--listen` controls the HTTP bind address (default: `127.0.0.1:8080`).
+
+### Frontend stack (decision)
+
+- Framework: React + Vite with shadcn/ui (Radix + Tailwind) components.
+- Typography: JetBrains Mono for UI + terminal, fallback to `ui-monospace`.
+- Theme: Tokyo Night dark palette (see UI design spec).
+- Layout: single-column mobile layout, bottom input bar, tap-to-focus, and a
   minimal action tray (Ctrl, Esc, Tab, arrows, PgUp/PgDn).
 - Session navigation: coordinator tree view with expandable groups (see
   Session Tree View).
+
+### UI design (Tokyo Night)
+
+Design goals: minimalist, dark, high-contrast, and production-grade.
+
+Design tokens (CSS variables):
+```css
+:root {
+  --tn-bg: #1a1b26;
+  --tn-bg-alt: #16161e;
+  --tn-panel: #1f2335;
+  --tn-panel-2: #24283b;
+  --tn-border: #414868;
+  --tn-text: #c0caf5;
+  --tn-text-dim: #9aa5ce;
+  --tn-muted: #565f89;
+  --tn-accent: #7aa2f7;
+  --tn-cyan: #7dcfff;
+  --tn-green: #9ece6a;
+  --tn-orange: #ff9e64;
+  --tn-red: #f7768e;
+  --tn-purple: #bb9af7;
+  --tn-yellow: #e0af68;
+}
+```
+
+Typography:
+- Font: `"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace`.
+- Base size: 14px mobile, 15px desktop; headings at 16-18px.
+- Line height: 1.45 for labels, 1.6 for body.
+
+Component specs (shadcn/ui primitives):
+- App shell: sticky top bar with coordinator filter + status; background `--tn-panel`.
+- Coordinator tree: `Accordion` + `ScrollArea`, group headers 44px tall.
+- Session rows: 44px min height, full-width tap target, status `Badge`.
+- Terminal panel: full-bleed dark panel with subtle border and inset shadow.
+- Input bar: bottom-docked `Input` + `Button` row, 48px height.
+- Action tray: row of ghost buttons (Ctrl, Esc, Tab, arrows), 40px touch targets.
+- Status chip: `Badge` with running/exited colors (`--tn-green` / `--tn-red`).
+
+Spacing and shape:
+- Radius: 10px for panels, 8px for inputs/buttons.
+- Padding: 12-16px for panels, 8-12px for list rows.
+- Borders: 1px `--tn-border`, avoid heavy shadows.
+
+Visual QA:
+- Capture screenshots (shot or equivalent) for mobile (390px wide) and desktop
+  (1280px wide) with tree view expanded and a live session attached.
 
 ### Session Tree View (coordinator -> sessions)
 
@@ -277,6 +332,8 @@ Mobile-first hierarchy:
 - Expanding a coordinator shows sessions with state chips (running/exited).
 - Each session row is tap-target sized, with a primary "Attach" action.
 - Provide a global search/filter that matches coordinator or session names.
+- Default view shows all coordinators resolved from config; CLI overrides
+  restrict the tree to the provided paths.
 
 ### Ghostty web/WASM findings
 
@@ -299,6 +356,25 @@ Ghostty WASM later if we want client-side parsing or custom cell rendering.
   the Zig VT state but requires font shaping, selection, and input handling.
 - Asciinema-style playback is useful for recordings, not interactive attach.
 
+### Terminal renderer evaluation (xterm.js vs custom)
+
+xterm.js (raw output):
+- Pros: mature renderer, IME/selection/copy/search, wide-char handling,
+  good performance, minimal terminal-specific UI work.
+- Cons: client parses ANSI even though server already has VT state, bundle size
+  overhead, and potential drift if server and client interpret sequences
+  differently (mitigate with periodic `snapshot` resync).
+
+Custom renderer (ScreenUpdate diffs):
+- Pros: server is source of truth, no ANSI parsing in the browser, easier to
+  enforce fidelity with Ghostty VT state.
+- Cons: need a full grid renderer (layout, selection, links, IME, scrollback,
+  clipboard, accessibility), plus a diff protocol not yet defined.
+
+Recommendation: use xterm.js for M7 to ship fast and avoid reimplementing
+terminal UX. Keep `include_screen_updates` for resync and revisit a custom
+renderer when diff format and UI primitives are proven.
+
 ### gRPC-Web or WebSocket bridge design
 
 Recommended: server-side bridge in Go, not gRPC-Web.
@@ -320,6 +396,10 @@ Bridge behavior:
 
 Prefer a simple hybrid: JSON text frames for control + binary frames for raw
 output. This mirrors `SubscribeEvent` without protobuf framing overhead.
+
+Multiplexing logic (M7): text frames are control, binary frames are raw output.
+If we later need multiple binary payloads, add a 1-byte type prefix to binary
+frames and keep JSON for control.
 
 Client -> server (JSON):
 ```json
@@ -348,43 +428,32 @@ Compression/deltas:
 
 ### Tailscale Serve integration
 
-Suggested flow (tailnet-only by default):
+Tailnet-only flow (no Funnel in M7):
 
 ```bash
 vtr web --listen 127.0.0.1:8080 --socket /var/run/vtr.sock
 tailscale serve https / http://127.0.0.1:8080
 ```
-
-Optional public access (if device has Funnel enabled):
-
-```bash
-tailscale funnel --bg https / http://127.0.0.1:8080
-```
-
 Exact flags can vary; verify with `tailscale serve --help`.
 
 ### Authentication (M7 simplified)
 
-No additional auth in M7. Rely on Tailscale Serve tailnet access. If Funnel is
-used, it is public; avoid enabling it unless the risk is acceptable.
+No additional auth in M7. Rely on Tailscale Serve tailnet access. Funnel is
+explicitly out of scope for this milestone.
 
 ### Notes from modern web terminal patterns
 
 - ttyd/wetty/xterm.js stacks use WebSockets with raw PTY output and a small
   control channel for resize, reconnect, and keepalives.
-- Vibe tunnel patterns appear to prefer tailnet auth plus optional share links;
-  confirm exact behavior before copying.
+- Vibe tunnel patterns appear to prefer tailnet access plus optional share
+  links; we are not implementing share links in M7.
 
 ### Open questions (decide before implementation)
 
-- Do we want Svelte, Preact, or vanilla JS for the initial UI?
-- Is the terminal renderer xterm.js with raw output, or a custom renderer using
-  `ScreenUpdate` diffs?
-- Do we add a binary frame prefix for future multiplexing, or treat all binary
-  frames as raw output?
-- Do we expose the Web UI from `vtr serve` or via a dedicated `vtr web`?
-- Should M7 show multi-coordinator trees by default or stick to a single socket?
-- Do we allow Funnel in M7 given there is no additional auth?
+- Do we accept xterm.js for M7, or invest in a custom renderer plus diff format?
+- Should binary frames include a 1-byte type prefix from day one?
+- What resync cadence should we use (only on connect vs periodic snapshots)?
+- Do we expose scrollback in the Web UI (read-only) during M7?
 
 ### Config Management
 
@@ -782,12 +851,13 @@ chmod 660 /var/run/vtr.sock
 3. Leader key bindings
 4. Window decoration
 
-### Phase 5: Web UI (P2)
+### Phase 5: Web UI (M7)
 
-1. React/Lit frontend
-2. Canvas renderer over vtr screen snapshots
-3. WebSocket → gRPC bridge
-4. Multi-session view
+1. React + shadcn/ui frontend with Tokyo Night palette and JetBrains Mono
+2. Terminal renderer decision (xterm.js recommended) with resync strategy
+3. WebSocket -> gRPC bridge in `vtr web`
+4. Multi-coordinator tree view from `~/.config/vtr/config.toml`
+5. Tailnet-only Tailscale Serve integration
 
 ### Phase 6: Recording (P2)
 
