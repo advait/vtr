@@ -490,3 +490,124 @@ func TestGRPCWaitForIdle(t *testing.T) {
 		t.Fatalf("expected idle, got %+v", resp)
 	}
 }
+
+func TestGRPCSubscribeInitialSnapshot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty tests not supported on windows")
+	}
+
+	client, cleanup := startGRPCTestServer(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	_, err := client.Spawn(ctx, &proto.SpawnRequest{
+		Name:    "grpc-subscribe",
+		Command: "printf 'ready\\n'; sleep 0.5",
+	})
+	cancel()
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	waitForScreenContains(t, client, "grpc-subscribe", "ready", 2*time.Second)
+
+	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+	stream, err := client.Subscribe(ctx, &proto.SubscribeRequest{
+		Name:                 "grpc-subscribe",
+		IncludeScreenUpdates: false,
+		IncludeRawOutput:     true,
+	})
+	if err != nil {
+		cancel()
+		t.Fatalf("Subscribe: %v", err)
+	}
+	event, err := stream.Recv()
+	cancel()
+	if err != nil {
+		t.Fatalf("Recv: %v", err)
+	}
+	update := event.GetScreenUpdate()
+	if update == nil || update.Screen == nil {
+		t.Fatalf("expected initial screen update, got %+v", event)
+	}
+	screen := screenToString(update.Screen)
+	if !strings.Contains(screen, "ready") {
+		t.Fatalf("expected initial screen to contain ready, got %q", screen)
+	}
+}
+
+func TestGRPCSubscribeExitEvent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty tests not supported on windows")
+	}
+
+	client, cleanup := startGRPCTestServer(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	_, err := client.Spawn(ctx, &proto.SpawnRequest{
+		Name:    "grpc-subscribe-exit",
+		Command: "sleep 0.1; printf 'done\\n'; exit 7",
+	})
+	cancel()
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	ctx, cancel = context.WithTimeout(context.Background(), 3*time.Second)
+	stream, err := client.Subscribe(ctx, &proto.SubscribeRequest{
+		Name:                 "grpc-subscribe-exit",
+		IncludeScreenUpdates: true,
+		IncludeRawOutput:     false,
+	})
+	if err != nil {
+		cancel()
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	var lastScreen string
+	var sawScreen bool
+	var exitCode int32
+	for {
+		event, err := stream.Recv()
+		if err != nil {
+			cancel()
+			t.Fatalf("Recv: %v", err)
+		}
+		if update := event.GetScreenUpdate(); update != nil {
+			lastScreen = screenToString(update.Screen)
+			sawScreen = true
+			continue
+		}
+		if exited := event.GetSessionExited(); exited != nil {
+			exitCode = exited.ExitCode
+			break
+		}
+	}
+	cancel()
+	if !sawScreen {
+		t.Fatalf("expected screen updates before exit")
+	}
+	if exitCode != 7 {
+		t.Fatalf("expected exit code 7, got %d", exitCode)
+	}
+	if !strings.Contains(lastScreen, "done") {
+		t.Fatalf("expected final screen to contain done, got %q", lastScreen)
+	}
+}
+
+func TestGRPCSubscribeInvalidArgs(t *testing.T) {
+	client, cleanup := startGRPCTestServer(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	_, err := client.Subscribe(ctx, &proto.SubscribeRequest{
+		Name:                 "missing",
+		IncludeScreenUpdates: false,
+		IncludeRawOutput:     false,
+	})
+	cancel()
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument, got %v", err)
+	}
+}

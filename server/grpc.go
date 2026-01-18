@@ -173,34 +173,7 @@ func (s *GRPCServer) GetScreen(_ context.Context, req *proto.GetScreenRequest) (
 	if err != nil {
 		return nil, mapCoordinatorErr(err)
 	}
-
-	rows := make([]*proto.ScreenRow, snap.Rows)
-	for row := 0; row < snap.Rows; row++ {
-		cells := make([]*proto.ScreenCell, snap.Cols)
-		for col := 0; col < snap.Cols; col++ {
-			cell := snap.Cells[row*snap.Cols+col]
-			ch := " "
-			if cell.Rune != 0 {
-				ch = string(cell.Rune)
-			}
-			cells[col] = &proto.ScreenCell{
-				Char:       ch,
-				FgColor:    packRGB(cell.Fg),
-				BgColor:    packRGB(cell.Bg),
-				Attributes: uint32(cell.Attrs),
-			}
-		}
-		rows[row] = &proto.ScreenRow{Cells: cells}
-	}
-
-	return &proto.GetScreenResponse{
-		Name:       req.Name,
-		Cols:       int32(snap.Cols),
-		Rows:       int32(snap.Rows),
-		CursorX:    int32(snap.CursorX),
-		CursorY:    int32(snap.CursorY),
-		ScreenRows: rows,
-	}, nil
+	return screenResponseFromSnapshot(req.Name, snap), nil
 }
 
 func (s *GRPCServer) Grep(_ context.Context, req *proto.GrepRequest) (*proto.GrepResponse, error) {
@@ -353,6 +326,138 @@ func (s *GRPCServer) WaitForIdle(ctx context.Context, req *proto.WaitForIdleRequ
 	}, nil
 }
 
+func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_SubscribeServer) error {
+	if req == nil || req.Name == "" {
+		return status.Error(codes.InvalidArgument, "session name is required")
+	}
+	if !req.IncludeScreenUpdates && !req.IncludeRawOutput {
+		return status.Error(codes.InvalidArgument, "subscribe requires screen updates or raw output")
+	}
+
+	session, err := s.coord.getSession(req.Name)
+	if err != nil {
+		return mapCoordinatorErr(err)
+	}
+
+	offset, outputCh, _ := session.outputState()
+	includeScreen := req.IncludeScreenUpdates
+	includeRaw := req.IncludeRawOutput
+
+	snap, err := s.coord.Snapshot(req.Name)
+	if err != nil {
+		return mapCoordinatorErr(err)
+	}
+	if err := stream.Send(&proto.SubscribeEvent{
+		Event: &proto.SubscribeEvent_ScreenUpdate{
+			ScreenUpdate: &proto.ScreenUpdate{Screen: screenResponseFromSnapshot(req.Name, snap)},
+		},
+	}); err != nil {
+		return err
+	}
+
+	info := session.Info()
+	if info.State == SessionExited {
+		return stream.Send(&proto.SubscribeEvent{
+			Event: &proto.SubscribeEvent_SessionExited{
+				SessionExited: &proto.SessionExited{ExitCode: int32(info.ExitCode)},
+			},
+		})
+	}
+
+	var ticker *time.Ticker
+	var tick <-chan time.Time
+	if includeScreen {
+		ticker = time.NewTicker(time.Second / 30)
+		tick = ticker.C
+	}
+	if ticker != nil {
+		defer ticker.Stop()
+	}
+
+	pendingScreen := false
+	ctx := stream.Context()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-session.exitCh:
+			if includeRaw {
+				data, nextOffset, nextCh := session.outputSnapshot(offset)
+				offset = nextOffset
+				outputCh = nextCh
+				if len(data) > 0 {
+					if err := stream.Send(&proto.SubscribeEvent{
+						Event: &proto.SubscribeEvent_RawOutput{RawOutput: data},
+					}); err != nil {
+						return err
+					}
+				}
+			} else {
+				total, nextCh, _ := session.outputState()
+				offset = total
+				outputCh = nextCh
+			}
+
+			if includeScreen {
+				snap, err := s.coord.Snapshot(req.Name)
+				if err != nil {
+					return mapCoordinatorErr(err)
+				}
+				if err := stream.Send(&proto.SubscribeEvent{
+					Event: &proto.SubscribeEvent_ScreenUpdate{
+						ScreenUpdate: &proto.ScreenUpdate{Screen: screenResponseFromSnapshot(req.Name, snap)},
+					},
+				}); err != nil {
+					return err
+				}
+			}
+
+			info := session.Info()
+			return stream.Send(&proto.SubscribeEvent{
+				Event: &proto.SubscribeEvent_SessionExited{
+					SessionExited: &proto.SessionExited{ExitCode: int32(info.ExitCode)},
+				},
+			})
+		case <-outputCh:
+			if includeRaw {
+				data, nextOffset, nextCh := session.outputSnapshot(offset)
+				offset = nextOffset
+				outputCh = nextCh
+				if len(data) > 0 {
+					if err := stream.Send(&proto.SubscribeEvent{
+						Event: &proto.SubscribeEvent_RawOutput{RawOutput: data},
+					}); err != nil {
+						return err
+					}
+				}
+			} else {
+				total, nextCh, _ := session.outputState()
+				offset = total
+				outputCh = nextCh
+			}
+			if includeScreen {
+				pendingScreen = true
+			}
+		case <-tick:
+			if includeScreen && pendingScreen {
+				snap, err := s.coord.Snapshot(req.Name)
+				if err != nil {
+					return mapCoordinatorErr(err)
+				}
+				if err := stream.Send(&proto.SubscribeEvent{
+					Event: &proto.SubscribeEvent_ScreenUpdate{
+						ScreenUpdate: &proto.ScreenUpdate{Screen: screenResponseFromSnapshot(req.Name, snap)},
+					},
+				}); err != nil {
+					return err
+				}
+				pendingScreen = false
+			}
+		}
+	}
+}
+
 func toProtoSession(info *SessionInfo) *proto.Session {
 	if info == nil {
 		return nil
@@ -432,6 +537,38 @@ func requiredUint16(v int32) (uint16, error) {
 
 func packRGB(c color.RGBA) int32 {
 	return int32(c.R)<<16 | int32(c.G)<<8 | int32(c.B)
+}
+
+func screenResponseFromSnapshot(name string, snap *Snapshot) *proto.GetScreenResponse {
+	if snap == nil {
+		return &proto.GetScreenResponse{Name: name}
+	}
+	rows := make([]*proto.ScreenRow, snap.Rows)
+	for row := 0; row < snap.Rows; row++ {
+		cells := make([]*proto.ScreenCell, snap.Cols)
+		for col := 0; col < snap.Cols; col++ {
+			cell := snap.Cells[row*snap.Cols+col]
+			ch := " "
+			if cell.Rune != 0 {
+				ch = string(cell.Rune)
+			}
+			cells[col] = &proto.ScreenCell{
+				Char:       ch,
+				FgColor:    packRGB(cell.Fg),
+				BgColor:    packRGB(cell.Bg),
+				Attributes: uint32(cell.Attrs),
+			}
+		}
+		rows[row] = &proto.ScreenRow{Cells: cells}
+	}
+	return &proto.GetScreenResponse{
+		Name:       name,
+		Cols:       int32(snap.Cols),
+		Rows:       int32(snap.Rows),
+		CursorX:    int32(snap.CursorX),
+		CursorY:    int32(snap.CursorY),
+		ScreenRows: rows,
+	}
 }
 
 func durationFromProto(dur *durationpb.Duration) (time.Duration, error) {
