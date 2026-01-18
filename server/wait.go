@@ -45,7 +45,7 @@ func (s *Session) waitForPattern(ctx context.Context, re *regexp.Regexp, timeout
 	offset, _, _ := s.outputState()
 	pending := ""
 	for {
-		data, newOffset := s.readOutputSince(offset)
+		data, newOffset, ch := s.outputSnapshot(offset)
 		if len(data) > 0 {
 			offset = newOffset
 			pending += string(data)
@@ -69,8 +69,8 @@ func (s *Session) waitForPattern(ctx context.Context, re *regexp.Regexp, timeout
 					return true, line, false, nil
 				}
 			}
+			continue
 		}
-		_, ch, _ := s.outputState()
 		select {
 		case <-ctx.Done():
 			return false, "", false, ctx.Err()

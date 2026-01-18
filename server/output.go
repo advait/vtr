@@ -31,7 +31,7 @@ func (s *Session) outputState() (int64, <-chan struct{}, time.Time) {
 	return total, ch, last
 }
 
-func (s *Session) readOutputSince(offset int64) ([]byte, int64) {
+func (s *Session) outputSnapshot(offset int64) ([]byte, int64, <-chan struct{}) {
 	s.outputMu.Lock()
 	start := s.outputTotal - int64(len(s.outputBuf))
 	if offset < start {
@@ -43,6 +43,7 @@ func (s *Session) readOutputSince(offset int64) ([]byte, int64) {
 	}
 	data := append([]byte(nil), s.outputBuf[idx:]...)
 	total := s.outputTotal
+	ch := s.outputCh
 	s.outputMu.Unlock()
-	return data, total
+	return data, total, ch
 }
