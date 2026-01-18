@@ -102,6 +102,28 @@ Success criteria:
 
 Estimated complexity: L.
 
+## M7 - Web UI (Mobile-First)
+
+Goal: Deliver a touch-friendly browser UI with live terminal streaming over Tailscale.
+
+Status: planned.
+
+Deliverables:
+- Web UI server (built into `vtr serve` or `vtr web`) serving static assets + WS/SSE.
+- Mobile-first layout: session list, attach view, and on-screen input controls.
+- Terminal renderer using xterm.js with responsive fit and resize handling.
+- Subscribe stream bridge (gRPC -> WS/SSE) with reconnect + resync logic.
+- Tailscale Serve/Funnel setup documented with a secure default.
+- Auth model defined (tailnet identity and optional share tokens).
+
+Success criteria:
+- Phone and desktop can load the UI, list sessions, attach, and send input.
+- Terminal updates stream within 250ms under normal load.
+- Works via Tailscale Serve on tailnet; optional Funnel path gated by auth.
+- Session exit and disconnects are handled without leaks or broken UI.
+
+Estimated complexity: L.
+
 ## M4 - CLI Client Core
 
 Goal: Provide a usable CLI for core operations against a single coordinator.

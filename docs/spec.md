@@ -58,7 +58,7 @@ vtr is a terminal multiplexer designed for the agent era. Each container runs a 
 | **Session** | Named PTY + scrollback buffer + metadata |
 | **VT Engine** | Native terminal emulator (libghostty-vt Zig module via go-ghostty shim) maintaining screen state |
 | **CLI Client** | Agent/human interface for queries and input |
-| **Web UI** | Browser-based session viewer (P2) |
+| **Web UI** | Browser-based session viewer (M7) |
 
 ## Session Lifecycle
 
@@ -232,6 +232,93 @@ TUI features (planned for M6):
 - Session exit keeps the final screen visible, disables input, and marks the UI
   clearly exited (border color change + EXITED badge with exit code); press
   `q` or `enter` to close the TUI.
+
+## Web UI (M7)
+
+Goal: Mobile-first browser UI for live terminal sessions over Tailscale.
+
+### Architecture overview
+
+```
+Browser (mobile/desktop)
+  |  HTTPS (static assets) + WS/SSE (stream/input)
+  v
+Web UI server (Go HTTP)
+  |  gRPC client (Unix socket or TCP)
+  v
+Coordinator (vtr serve)
+```
+
+The Web UI server can live inside `vtr serve` or run as `vtr web`. It serves
+static assets, proxies REST/JSON for list/info/spawn/kill, and bridges
+`Subscribe` streaming to WebSocket or SSE.
+
+### Frontend stack recommendations
+
+- Framework: Svelte + Vite for small bundles and simple state. Preact is a
+  valid alternative if we prefer React-compatible tooling.
+- Terminal renderer: xterm.js with `fit` addon for resizing. Use `webgl`
+  addon for performance on large screens; fall back to `canvas` on mobile.
+- UI: single-column mobile layout, bottom input bar, tap-to-focus, and a
+  minimal action tray (Ctrl, Esc, Tab, arrows, PgUp/PgDn).
+
+### gRPC-Web or WebSocket bridge design
+
+Recommended: server-side bridge in Go, not gRPC-Web.
+
+- gRPC-Web adds an extra proxy layer and is awkward with Unix sockets.
+- A Go HTTP server can hold gRPC streams and expose a simple WS protocol.
+
+Bridge behavior:
+- On attach, call `GetScreen` for a full snapshot and send to client.
+- Start `Subscribe` with `include_raw_output` for xterm.js streaming.
+- Optionally also enable `include_screen_updates` for resync or for a custom
+  cell renderer if we choose not to use xterm.js.
+- Use binary WS frames for `raw_output` and JSON for control events
+  (resize, session exit, errors).
+- Backpressure: coalesce output, drop stale frames, and cap per-client buffers.
+
+### Tailscale Serve integration
+
+Suggested flow (tailnet-only by default):
+
+```bash
+vtr web --listen 127.0.0.1:8080 --socket /var/run/vtr.sock
+tailscale serve https / http://127.0.0.1:8080
+```
+
+Optional public access (if device has Funnel enabled):
+
+```bash
+tailscale funnel --bg https / http://127.0.0.1:8080
+```
+
+Exact flags can vary; verify with `tailscale serve --help`.
+
+### Authentication approach
+
+- Tailnet access: rely on Tailscale Serve ACLs for the default gate.
+- Identity: use `tailscale.LocalClient.WhoIs` (or `TS_AUTHKEY`-scoped ACLs)
+  to log and enforce per-user access if needed.
+- Funnel/public access: require a short-lived share token or session PIN on
+  top of Tailscale. Tokens live in memory and can be revoked.
+
+### Notes from modern web terminal patterns
+
+- ttyd/wetty/xterm.js stacks use WebSockets with raw PTY output and a small
+  control channel for resize, reconnect, and keepalives.
+- Vibe tunnel patterns appear to prefer tailnet auth plus optional share links;
+  confirm exact behavior before copying.
+
+### Open questions (decide before implementation)
+
+- Do we want Svelte, Preact, or vanilla JS for the initial UI?
+- Is the terminal renderer xterm.js with raw output, or a custom renderer using
+  `ScreenUpdate` diffs?
+- What is the exact WS/SSE message schema (JSON vs protobuf, binary framing)?
+- Do we expose the Web UI from `vtr serve` or via a dedicated `vtr web`?
+- What is the auth model for Funnel/public links (token, PIN, or none)?
+- Should the Web UI support multi-coordinator selection in M7 or single socket?
 
 ### Config Management
 
