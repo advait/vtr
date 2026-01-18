@@ -23,7 +23,7 @@ vtr is a terminal multiplexer designed for the agent era. Each container runs a 
 │  │       │            │            │                   │   │
 │  │       └────────────┴────────────┘                   │   │
 │  │                    │                                │   │
-│  │              VT Engine (ghostty-web)                │   │
+│  │      VT Engine (libghostty-vt via go-ghostty)       │   │
 │  │              Screen State + Scrollback              │   │
 │  │                    │                                │   │
 │  │              gRPC Server                            │   │
@@ -47,7 +47,7 @@ vtr is a terminal multiplexer designed for the agent era. Each container runs a 
 |-----------|-------------|
 | **Coordinator** | Per-container server managing PTY sessions, VT engine, gRPC |
 | **Session** | Named PTY + scrollback buffer + metadata |
-| **VT Engine** | WASM-based terminal emulator (ghostty-web) maintaining screen state |
+| **VT Engine** | Native terminal emulator (libghostty-vt via go-ghostty/cgo) maintaining screen state |
 | **CLI Client** | Agent/human interface for queries and input |
 | **Web UI** | Browser-based session viewer (P2) |
 
@@ -434,7 +434,10 @@ message SubscribeEvent {
 
 ## VT Engine
 
-Uses ghostty-web (WASM) for terminal emulation.
+Uses libghostty-vt (Ghostty's Zig core) via a small cgo wrapper (go-ghostty).
+
+The wrapper feeds PTY output into Ghostty's VT stream and exposes snapshots for
+viewport cells, cursor state, and scrollback dumps.
 
 **Responsibilities:**
 - Parse ANSI escape sequences from PTY output
@@ -545,7 +548,7 @@ chmod 660 /var/run/vtr.sock
 1. gRPC server over Unix socket
 2. Session spawn/list/info/kill/rm
 3. PTY management (spawn, I/O)
-4. VT engine integration (ghostty-web via wazero)
+4. VT engine integration (libghostty-vt via go-ghostty/cgo)
 5. GetScreen, SendText, SendKey
 6. Tests for all core operations
 
@@ -575,7 +578,7 @@ chmod 660 /var/run/vtr.sock
 ### Phase 5: Web UI (P2)
 
 1. React/Lit frontend
-2. ghostty-web canvas rendering
+2. Canvas renderer over vtr screen snapshots
 3. WebSocket → gRPC bridge
 4. Multi-session view
 
@@ -592,6 +595,7 @@ vtr/
 ├── docs/
 │   ├── spec.md          # This file
 │   └── progress.md      # Development progress tracking
+├── go-ghostty/          # cgo wrapper around libghostty-vt
 ├── proto/
 │   └── vtr.proto        # gRPC service definition
 ├── server/
@@ -616,7 +620,7 @@ vtr/
 |------------|---------|
 | google.golang.org/grpc | gRPC server/client |
 | github.com/creack/pty | PTY management |
-| github.com/tetratelabs/wazero | WASM runtime for ghostty-web |
+| libghostty-vt (Zig) | Terminal emulation core linked via cgo (go-ghostty) |
 | github.com/spf13/cobra | CLI framework |
 | github.com/charmbracelet/bubbletea | TUI framework |
 | github.com/BurntSushi/toml | Config parsing |
