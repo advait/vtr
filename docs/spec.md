@@ -267,6 +267,36 @@ to WebSocket.
   (repeatable path/glob) to replace config discovery.
 - `--listen` controls the HTTP bind address (default: `127.0.0.1:8080`).
 
+### HTTP API (M7)
+
+The web server exposes a minimal JSON API for listing coordinators/sessions and
+basic lifecycle operations. All endpoints live under `/api` and reuse the CLI
+JSON shapes where possible.
+
+Endpoints:
+- `GET /api/coordinators` → `{ "coordinators": [{ "name": "project-a", "path": "/var/run/project-a.sock" }] }`
+- `GET /api/sessions?coordinator=project-a` → `{ "sessions": [...] }` (same as `vtr ls --json`)
+- `GET /api/sessions/{name}?coordinator=project-a` → `{ "session": ... }` (same as `vtr info --json`)
+- `POST /api/sessions` → spawn (maps to `SpawnRequest`)
+- `POST /api/sessions/{name}/kill` → `{ "ok": true }`
+- `DELETE /api/sessions/{name}?coordinator=project-a` → `{ "ok": true }`
+
+Spawn request body (JSON):
+```json
+{
+  "name": "codex",
+  "command": "/bin/bash",
+  "working_dir": "/workspace",
+  "env": { "FOO": "bar" },
+  "cols": 120,
+  "rows": 40,
+  "coordinator": "project-a"
+}
+```
+
+`coordinator` is optional for requests that accept it; if omitted, the server
+uses the standard session-address resolution rules and errors on ambiguity.
+
 ### Frontend stack (decision)
 
 - Framework: React with shadcn/ui (Radix + Tailwind) components.
@@ -373,7 +403,9 @@ message ScreenCell {
   string char = 1;
   int32 fg_color = 2;  // RGB packed
   int32 bg_color = 3;  // RGB packed
-  uint32 attributes = 4;  // bold=0x01, italic=0x02, underline=0x04, etc.
+  uint32 attributes = 4;  // bold=0x01, italic=0x02, underline=0x04, faint=0x08,
+                          // blink=0x10, inverse=0x20, invisible=0x40,
+                          // strikethrough=0x80, overline=0x100
 }
 
 message ScreenRow {
@@ -389,25 +421,38 @@ message GetScreenResponse {
   repeated ScreenRow screen_rows = 6;
 }
 ```
-`fg_color` and `bg_color` are packed RGB ints; convert to CSS colors.
+Screen cell semantics:
+- `char` is always a single Unicode codepoint; the server sends `" "` for empty cells.
+- `fg_color`/`bg_color` are packed 24-bit RGB ints (`0xRRGGBB`, no alpha).
+- `attributes` uses the Ghostty bitmask values listed above.
+- Cursor visibility is not exposed in the proto; M7 assumes the cursor is visible.
 
 ### Terminal renderer (decision: custom grid, no ANSI parsing)
 
 - Web clients render directly from `ScreenRow`/`ScreenCell` data.
 - `Subscribe` streams `ScreenUpdate` (structured grid), not raw output bytes.
-- The web server can compute row-level deltas from full screens and emit
+- The web server computes row-level deltas from full screens and emits
   `screen_delta` events to reduce payload size.
+- Row diff: if any cell in a row changes (char/fg/bg/attrs), send the full row
+  in the delta; no per-cell diffs in M7.
+- Renderer state is a `rows x cols` grid plus cursor state. `screen_full`
+  replaces the grid; `screen_delta` replaces only the listed rows.
 
 ### Rendering considerations
 
 - Core rendering is a monospace grid, but correctness also needs cursor,
   wide-char handling, and selection/copy behavior.
-- Grid rendering: monospace cells with per-cell fg/bg and attribute bitmask.
-- Attributes: map bold/italic/underline bits to CSS; ignore unknown bits.
+- Grid rendering: monospace cells with per-cell fg/bg and attribute bitmask;
+  use `white-space: pre`, `font-variant-ligatures: none`, and fixed tab size.
+- Attributes: map bold/italic/underline/strikethrough/overline to CSS; implement
+  faint via reduced opacity, inverse by swapping fg/bg, invisible by rendering
+  fg as bg, and ignore blink for M7.
 - Cursor: use `cursor_x`/`cursor_y` and render a block cursor with inverted
-  colors. If we need beam/underline styles, add them to the proto later.
-- Wide characters: treat cells as fixed-width; if a cell contains a wide rune,
-  use a `wcwidth` lookup and skip the next cell when it is empty.
+  colors; cursor-only updates are legal (no row diffs). Cursor visibility is
+  assumed true in M7.
+- Wide characters: use `wcwidth` to detect width 2. If width 2, render the rune
+  in the head cell and hide the next cell only when it is a space with matching
+  style (heuristic until wide metadata is exposed in the proto).
 - Selection/copy: implement client-side range selection across the grid and
   synthesize text for clipboard. Paste uses a hidden textarea and `SendText`.
 - Scrollback: not in `GetScreenResponse`. M7 shows viewport only; add a
@@ -430,40 +475,62 @@ Recommended: server-side bridge in Go, not gRPC-Web.
 - SSE is viable for read-only streaming but WS is required for input.
 
 Bridge behavior:
-- On attach, call `GetScreen` for a full snapshot and send `screen_full`.
+- WS endpoint: `GET /api/ws`.
+- First client frame must be `hello`. The server resolves the coordinator/session
+  and returns `error` on ambiguity.
+- If `hello` includes `cols`/`rows`, the server calls `Resize` before the initial
+  `GetScreen`. If the size changes later, the server sends a new `screen_full`.
 - Start `Subscribe` with `include_screen_updates` enabled.
-- Convert `ScreenUpdate` to row deltas and send `screen_delta` events.
-- Use JSON WS frames for control and screen updates (resize, session exit, errors).
-- Backpressure: coalesce output, drop stale frames, and cap per-client buffers.
+- Convert each `ScreenUpdate` to row deltas against the last sent snapshot and
+  emit `screen_delta` events.
+- Backpressure: keep only the latest snapshot per client. If deltas are dropped,
+  send a `screen_full` resync before further deltas.
+- `session_exited` is the final event; the server closes the WS afterward.
 
-### WebSocket schema recommendation
+### WebSocket API (M7)
 
 Prefer JSON text frames for both control and screen updates in M7. If payloads
 grow too large, add a binary `screen_delta` frame (protobuf or custom) later.
 
+Message flow:
+1. Client sends `hello`.
+2. Server replies with `ready`, then `screen_full`.
+3. Server streams `screen_delta` until `session_exited`.
+
 Client -> server (JSON):
 ```json
-{"type":"hello","coordinator":"project-a","session":"codex","cols":120,"rows":40}
-{"type":"resize","cols":120,"rows":40}
+{"type":"hello","coordinator":"project-a","session":"codex","cols":3,"rows":1}
+{"type":"resize","cols":3,"rows":1}
 {"type":"input","kind":"text","data":"ls -la\n"}
 {"type":"input","kind":"key","data":"ctrl+c"}
 ```
 
-Server -> client:
-- JSON control frames:
+Server -> client (JSON):
 ```json
-{"type":"ready","cols":120,"rows":40}
-{"type":"screen_full","screen":{...GetScreenResponse...}}
-{"type":"screen_delta","cursor":{"x":10,"y":4},"rows":[{"y":4,"cells":[["R",16711680,0,1],["E",16711680,0,1],["D",16711680,0,1]]}]}
+{"type":"ready","coordinator":"project-a","session":"codex","cols":3,"rows":1}
+{"type":"screen_full","screen":{...}}
+{"type":"screen_delta","delta":{"cursor":{"x":2,"y":0},"rows":[{"y":0,"cells":[["R",16711680,0,1],["E",16711680,0,1],["D",16711680,0,1]]}]}}
 {"type":"session_exited","exit_code":0}
 {"type":"error","code":"not_found","message":"unknown session"}
 ```
-`screen_delta.rows[].cells` uses `[char, fg_color, bg_color, attributes]`.
+
+Screen payload schema:
+- `Cell` = `[char, fg_color, bg_color, attributes]`
+- `ScreenSnapshot` = `{ "cols": int, "rows": int, "cursor": { "x": int, "y": int }, "rows": Cell[][] }`
+- `RowDelta` = `{ "y": int, "cells": Cell[] }` (full row, length = `cols`)
+- `ScreenDelta` = `{ "cursor": { "x": int, "y": int }, "rows": RowDelta[] }`
+
+Notes:
+- Indices are 0-based.
+- `screen_full.screen.rows` is a dense 2D array (`rows[y][x]`).
+- `screen_full` uses the compact tuple format above, not raw protobuf JSON.
+- `screen_delta` may include only cursor changes (`rows` can be empty).
+- `input.kind` maps to `SendText` or `SendKey` using the same key names as the CLI.
 
 Compression/deltas:
 - Enable WebSocket permessage-deflate for JSON frames.
-- For M7, use row-level deltas and periodic `screen_full` resync
-  (on connect/reconnect or every N seconds).
+- Resync rules: on connect, on resize, and whenever the bridge drops deltas due
+  to backpressure (explicit `screen_full` before more deltas).
 
 ### Tailscale Serve integration
 
@@ -487,15 +554,22 @@ explicitly out of scope for this milestone.
 - Vibe tunnel patterns appear to prefer tailnet access plus optional share
   links; we are not implementing share links in M7.
 
-### Open questions (decide before implementation)
+### M7 decisions (final)
 
-- What delta format do we standardize on (row-level vs cell-level), and what
-  `screen_full` resync cadence do we want?
-- Do we need cursor style/blink fields in the proto beyond position?
-- How should we represent wide/combining characters (client `wcwidth` vs
-  explicit width/continuation markers from the server)?
-- Do we expose scrollback in the Web UI during M7, and if so via what RPC?
-- When do we switch from JSON to binary encoding for `screen_delta`?
+- Delta format: row-level full rows; `screen_full` resync on connect, resize, and
+  whenever deltas are dropped due to backpressure.
+- Cursor: block cursor with no blink; visibility is assumed true in M7.
+- Wide/combining: client-side `wcwidth` heuristic (see Rendering considerations);
+  accept limitations until wide metadata is exposed.
+- Scrollback: out of scope for M7 (viewport only).
+- Encoding: JSON frames with permessage-deflate; binary deltas are post-M7.
+
+### Post-M7 considerations
+
+- Add cursor visibility/style fields to the proto or WS schema.
+- Expose wide/continuation metadata in `ScreenCell`.
+- Add scrollback RPC + UI paging.
+- Introduce binary delta frames if JSON payloads become too large.
 
 ### Config Management
 

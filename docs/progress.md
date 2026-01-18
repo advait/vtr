@@ -117,8 +117,10 @@ Deliverables:
 - React + shadcn/ui frontend with Tokyo Night palette and JetBrains Mono.
 - Mobile-first layout: coordinator tree view, attach view, and on-screen input controls.
 - Multi-coordinator discovery via `~/.config/vtr/config.toml` with CLI overrides.
-- Terminal renderer decision implemented (xterm.js or custom screen renderer).
-- Subscribe stream bridge (gRPC -> WS) with reconnect + resync logic.
+- Custom grid renderer implemented (no ANSI parsing).
+- WebSocket protocol (`hello`/`ready`/`screen_full`/`screen_delta`) implemented and documented.
+- Subscribe stream bridge (gRPC -> WS) with row-level deltas, backpressure resync,
+  and resize handling.
 - Tailscale Serve tailnet-only setup documented (no Funnel).
 - UI screenshots captured for mobile + desktop review (shot or equivalent).
 
@@ -126,7 +128,7 @@ Success criteria:
 - Phone and desktop can load the UI, list sessions across coordinators, attach, and send input.
 - Terminal updates stream within 250ms under normal load.
 - Works via Tailscale Serve on tailnet; Funnel not supported in M7.
-- Session exit and disconnects are handled without leaks or broken UI.
+- Session exit, resize, and disconnects are handled without leaks or broken UI.
 - Coordinator tree view is responsive, searchable, and touch-friendly.
 
 Estimated complexity: L.
