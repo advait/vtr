@@ -65,9 +65,11 @@ Estimated complexity: L.
 
 Goal: Expose core session management and screen/input operations over gRPC.
 
+Status: complete (2026-01-18).
+
 Deliverables:
 - gRPC server on Unix socket with `Spawn`, `List`, `Info`, `Kill`, `Remove`.
-- Screen/input RPCs: `GetScreen`, `SendText`, `SendKey`, `Resize`.
+- Screen/input RPCs: `GetScreen`, `SendText`, `SendKey`, `SendBytes`, `Resize`.
 - `cmd/vtr serve` to run coordinator with config flags.
 - gRPC integration tests using a real PTY-backed session.
 
