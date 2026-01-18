@@ -216,19 +216,25 @@ vtr attach <name> [--socket /path/to.sock]  # planned M6 (TUI)
 ```
 
 TUI features (planned for M6):
-- Bubbletea TUI renders the viewport inside a Lipgloss border.
-- Status bar shows session name, coordinator, and time (cwd/process name TBD if available).
+- Bubbletea TUI renders the viewport inside a Lipgloss border with a 1-row status bar.
+- Status bar shows session name, coordinator, and local time (cwd/process name TBD if available).
+- Attach uses the standard session addressing rules (`coordinator:session` or `--socket`).
 - Uses `Subscribe` for real-time screen updates (throttled to 30fps max).
-- Raw mode passthrough for normal typing.
-- Leader key is `Ctrl+b` (tmux-style) for commands:
+- Terminal runs in raw mode; input not bound to leader commands is forwarded via `SendBytes`
+  (or `SendKey` for special keys).
+- `Ctrl+b` enters leader mode; the next key is consumed. `Ctrl+b` then `Ctrl+b` sends a
+  literal `Ctrl+b` to the session. Unknown leader keys show a brief status message and
+  do not send input.
+- Leader key commands:
   - `c` - Create new session (prompt for name only; defaults to current coordinator
-    with j/k selector to change; uses coordinator default shell/cwd)
+    with j/k selector to change; uses coordinator default shell/cwd; attaches to the new session)
   - `d` - Detach (exit TUI, session keeps running)
   - `k` - Kill current session
-  - `n` - Next session (current coordinator)
-  - `p` - Previous session (current coordinator)
-  - `w` - List sessions (current coordinator; fuzzy finder picker using Bubbletea filter component)
-  - `r` - Rename session (modal prompt)
+  - `n` - Next session (current coordinator, name-sorted; includes exited)
+  - `p` - Previous session (current coordinator, name-sorted; includes exited)
+  - `w` - List sessions (current coordinator; fuzzy finder picker using Bubbletea filter component;
+    selection switches sessions)
+- Window resize sends `Resize` with viewport dimensions (terminal size minus border and status bar).
 - Session exit keeps the final screen visible, disables input, and marks the UI
   clearly exited (border color change + EXITED badge with exit code); press
   `q` or `enter` to close the TUI.
@@ -557,10 +563,16 @@ message SubscribeEvent {
 ### Subscribe Stream (planned M6)
 
 - Server-side stream of `SubscribeEvent` for attach and web UI clients.
-- Server always sends an initial full `ScreenUpdate` snapshot so clients can diff.
+- Server always sends an initial full `ScreenUpdate` snapshot so clients can diff (even when
+  `include_screen_updates` is false).
 - `include_screen_updates` controls subsequent full-frame snapshots (throttled to 30fps max).
 - `include_raw_output` emits raw PTY bytes for logging or custom rendering.
+- At least one of `include_screen_updates` or `include_raw_output` must be true; otherwise the
+  server returns `INVALID_ARGUMENT`.
+- If `include_screen_updates` is true, the server sends a final `ScreenUpdate` before
+  `session_exited`; `session_exited` is always the last event before stream close.
 - `session_exited` is sent once with the exit code; the server closes the stream afterward.
+- When clients disconnect or cancel, the server stops streaming and releases resources.
 - Slow clients may skip intermediate frames; the server prioritizes the latest screen state (see Backpressure).
 - Subscribe is receive-only; input still uses `SendText`, `SendKey`, or `SendBytes`.
 

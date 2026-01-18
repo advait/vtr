@@ -87,18 +87,22 @@ Goal: Deliver a tmux-like attach experience for basic workflows with modern UX.
 Status: planned.
 
 Deliverables:
-- Server `Subscribe` RPC implemented with streaming events and backpressure handling.
+- Server `Subscribe` RPC implemented with streaming events, initial snapshot, exit ordering,
+  and backpressure handling.
 - Proto messages finalized for streaming: `SubscribeRequest`, `ScreenUpdate`, `SessionExited`, `SubscribeEvent`.
-- `vtr attach` Bubbletea TUI with Lipgloss border, status bar, and raw-mode passthrough.
-- Leader-based session management: create, detach, kill, next/prev, list picker, rename.
-- Tests for subscribe stream behavior (snapshot cadence, exit event, disconnect handling).
+- `vtr attach` Bubbletea TUI with Lipgloss border, status bar, raw-mode passthrough, and resize handling.
+- Leader-based session management: create (and switch), detach, kill, next/prev (name-sorted),
+  list picker (switch), literal `Ctrl+b` passthrough.
+- Tests for subscribe stream behavior (snapshot cadence/backpressure, final-frame ordering with
+  exit event, disconnect handling).
 
 Success criteria:
 - `vtr attach` renders live output with a border and status bar using Subscribe updates.
 - Leader key commands work reliably without leaking input into the session.
 - Detach returns to the shell while the session keeps running; kill ends the session cleanly.
 - Subscribe streams handle session exit and client disconnects without leaks or crashes.
-- No tabs, splits, copy mode, or mouse support in this milestone.
+- Window resizes update the remote PTY size (border/status bar accounted for).
+- No tabs, splits, copy mode, rename, or mouse support in this milestone.
 
 Estimated complexity: L.
 
