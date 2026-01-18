@@ -267,6 +267,37 @@ static assets, proxies REST/JSON for list/info/spawn/kill, and bridges
   addon for performance on large screens; fall back to `canvas` on mobile.
 - UI: single-column mobile layout, bottom input bar, tap-to-focus, and a
   minimal action tray (Ctrl, Esc, Tab, arrows, PgUp/PgDn).
+- Session navigation: coordinator tree view with expandable groups (see
+  Session Tree View).
+
+### Session Tree View (coordinator -> sessions)
+
+Mobile-first hierarchy:
+- Coordinators render as accordion headers with counts and status badges.
+- Expanding a coordinator shows sessions with state chips (running/exited).
+- Each session row is tap-target sized, with a primary "Attach" action.
+- Provide a global search/filter that matches coordinator or session names.
+
+### Ghostty web/WASM findings
+
+Ghostty includes a WebAssembly build and small browser examples, but no full
+terminal renderer or reusable web UI components:
+- WASM entrypoint and helpers: `ghostty/src/main_wasm.zig`,
+  `ghostty/include/ghostty/vt/wasm.h`.
+- Examples: `ghostty/example/wasm-sgr` (SGR parser) and
+  `ghostty/example/wasm-key-encode` (key encoder).
+- Web canvas font utilities live in `ghostty/src/font/*/web_canvas.zig`.
+
+Recommendation: for M7, use xterm.js with raw output streaming. Revisit
+Ghostty WASM later if we want client-side parsing or custom cell rendering.
+
+### Terminal renderer alternatives
+
+- hterm (Chromium-derived) is a possible alternative but still expects raw
+  output and does not directly integrate with our VT engine.
+- Custom renderer using `GetScreenResponse` or `ScreenUpdate` can align with
+  the Zig VT state but requires font shaping, selection, and input handling.
+- Asciinema-style playback is useful for recordings, not interactive attach.
 
 ### gRPC-Web or WebSocket bridge design
 
@@ -274,6 +305,7 @@ Recommended: server-side bridge in Go, not gRPC-Web.
 
 - gRPC-Web adds an extra proxy layer and is awkward with Unix sockets.
 - A Go HTTP server can hold gRPC streams and expose a simple WS protocol.
+- SSE is viable for read-only streaming but WS is required for input.
 
 Bridge behavior:
 - On attach, call `GetScreen` for a full snapshot and send to client.
@@ -283,6 +315,36 @@ Bridge behavior:
 - Use binary WS frames for `raw_output` and JSON for control events
   (resize, session exit, errors).
 - Backpressure: coalesce output, drop stale frames, and cap per-client buffers.
+
+### WebSocket schema recommendation
+
+Prefer a simple hybrid: JSON text frames for control + binary frames for raw
+output. This mirrors `SubscribeEvent` without protobuf framing overhead.
+
+Client -> server (JSON):
+```json
+{"type":"hello","coordinator":"project-a","session":"codex","cols":120,"rows":40,"want_raw":true,"want_screen":false}
+{"type":"resize","cols":120,"rows":40}
+{"type":"input","kind":"text","data":"ls -la\n"}
+{"type":"input","kind":"key","data":"ctrl+c"}
+```
+
+Server -> client:
+- JSON control frames:
+```json
+{"type":"ready","cols":120,"rows":40}
+{"type":"snapshot","screen":{...GetScreenResponse...}}
+{"type":"session_exited","exit_code":0}
+{"type":"error","code":"not_found","message":"unknown session"}
+```
+- Binary frames: raw output bytes (xterm.js input stream).
+
+Compression/deltas:
+- Enable WebSocket permessage-deflate for JSON frames; raw output is often
+  compressible but avoid base64 to keep overhead low.
+- For M7, rely on raw output streaming with periodic `snapshot` resync
+  (on connect/reconnect or every N seconds). If we need diffs later, add a
+  `screen_patch` message with row-level deltas.
 
 ### Tailscale Serve integration
 
@@ -301,13 +363,10 @@ tailscale funnel --bg https / http://127.0.0.1:8080
 
 Exact flags can vary; verify with `tailscale serve --help`.
 
-### Authentication approach
+### Authentication (M7 simplified)
 
-- Tailnet access: rely on Tailscale Serve ACLs for the default gate.
-- Identity: use `tailscale.LocalClient.WhoIs` (or `TS_AUTHKEY`-scoped ACLs)
-  to log and enforce per-user access if needed.
-- Funnel/public access: require a short-lived share token or session PIN on
-  top of Tailscale. Tokens live in memory and can be revoked.
+No additional auth in M7. Rely on Tailscale Serve tailnet access. If Funnel is
+used, it is public; avoid enabling it unless the risk is acceptable.
 
 ### Notes from modern web terminal patterns
 
@@ -321,10 +380,11 @@ Exact flags can vary; verify with `tailscale serve --help`.
 - Do we want Svelte, Preact, or vanilla JS for the initial UI?
 - Is the terminal renderer xterm.js with raw output, or a custom renderer using
   `ScreenUpdate` diffs?
-- What is the exact WS/SSE message schema (JSON vs protobuf, binary framing)?
+- Do we add a binary frame prefix for future multiplexing, or treat all binary
+  frames as raw output?
 - Do we expose the Web UI from `vtr serve` or via a dedicated `vtr web`?
-- What is the auth model for Funnel/public links (token, PIN, or none)?
-- Should the Web UI support multi-coordinator selection in M7 or single socket?
+- Should M7 show multi-coordinator trees by default or stick to a single socket?
+- Do we allow Funnel in M7 given there is no additional auth?
 
 ### Config Management
 
