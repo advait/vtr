@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -30,11 +31,11 @@ func (s SessionState) String() string {
 }
 
 var (
-	ErrSessionNotFound  = errors.New("session not found")
-	ErrSessionExists    = errors.New("session already exists")
+	ErrSessionNotFound   = errors.New("session not found")
+	ErrSessionExists     = errors.New("session already exists")
 	ErrSessionNotRunning = errors.New("session not running")
-	ErrInvalidName      = errors.New("session name is required")
-	ErrInvalidSize      = errors.New("cols/rows must be > 0")
+	ErrInvalidName       = errors.New("session name is required")
+	ErrInvalidSize       = errors.New("cols/rows must be > 0")
 )
 
 // CoordinatorOptions configures the session coordinator.
@@ -180,6 +181,32 @@ func (c *Coordinator) Info(name string) (*SessionInfo, error) {
 	}
 	info := session.Info()
 	return &info, nil
+}
+
+// List returns a snapshot of all sessions.
+func (c *Coordinator) List() []SessionInfo {
+	c.mu.Lock()
+	sessions := make([]*Session, 0, len(c.sessions))
+	for _, session := range c.sessions {
+		if session != nil {
+			sessions = append(sessions, session)
+		}
+	}
+	c.mu.Unlock()
+
+	out := make([]SessionInfo, 0, len(sessions))
+	for _, session := range sessions {
+		out = append(out, session.Info())
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Name < out[j].Name
+	})
+	return out
+}
+
+// DefaultShell returns the configured shell path.
+func (c *Coordinator) DefaultShell() string {
+	return c.opts.DefaultShell
 }
 
 // Send writes bytes into a running session.

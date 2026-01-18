@@ -1,0 +1,335 @@
+package server
+
+import (
+	"context"
+	"errors"
+	"image/color"
+	"net"
+	"os"
+	"path/filepath"
+	"strings"
+	"unicode/utf8"
+
+	proto "github.com/advait/vtrpc/proto"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
+)
+
+// GRPCServer implements the vtr gRPC service.
+type GRPCServer struct {
+	proto.UnimplementedVTRServer
+	coord *Coordinator
+	shell string
+}
+
+// NewGRPCServer constructs a gRPC server backed by the coordinator.
+func NewGRPCServer(coord *Coordinator) *GRPCServer {
+	shell := "/bin/sh"
+	if coord != nil && coord.DefaultShell() != "" {
+		shell = coord.DefaultShell()
+	}
+	return &GRPCServer{coord: coord, shell: shell}
+}
+
+// ListenUnix creates a Unix socket listener, removing any stale socket file.
+func ListenUnix(socketPath string) (net.Listener, error) {
+	if strings.TrimSpace(socketPath) == "" {
+		return nil, errors.New("grpc: socket path is required")
+	}
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
+		return nil, err
+	}
+	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	return net.Listen("unix", socketPath)
+}
+
+// ServeUnix runs the gRPC server on a Unix socket until ctx is canceled.
+func ServeUnix(ctx context.Context, coord *Coordinator, socketPath string) error {
+	listener, err := ListenUnix(socketPath)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = listener.Close()
+		_ = os.Remove(socketPath)
+	}()
+
+	grpcServer := grpc.NewServer()
+	proto.RegisterVTRServer(grpcServer, NewGRPCServer(coord))
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- grpcServer.Serve(listener)
+	}()
+
+	select {
+	case <-ctx.Done():
+		grpcServer.GracefulStop()
+		err := <-errCh
+		if err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+			return err
+		}
+		return ctx.Err()
+	case err := <-errCh:
+		return err
+	}
+}
+
+func (s *GRPCServer) Spawn(_ context.Context, req *proto.SpawnRequest) (*proto.SpawnResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "spawn request is required")
+	}
+	if req.Name == "" {
+		return nil, status.Error(codes.InvalidArgument, "session name is required")
+	}
+
+	var cmd []string
+	if strings.TrimSpace(req.Command) != "" {
+		cmd = []string{s.shell, "-c", req.Command}
+	}
+
+	cols, err := optionalUint16(req.Cols)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	rows, err := optionalUint16(req.Rows)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	info, err := s.coord.Spawn(req.Name, SpawnOptions{
+		Command:    cmd,
+		WorkingDir: req.WorkingDir,
+		Env:        flattenEnv(req.Env),
+		Cols:       cols,
+		Rows:       rows,
+	})
+	if err != nil {
+		return nil, mapCoordinatorErr(err)
+	}
+
+	return &proto.SpawnResponse{Session: toProtoSession(info)}, nil
+}
+
+func (s *GRPCServer) List(_ context.Context, _ *proto.ListRequest) (*proto.ListResponse, error) {
+	sessions := s.coord.List()
+	out := make([]*proto.Session, 0, len(sessions))
+	for _, info := range sessions {
+		infoCopy := info
+		out = append(out, toProtoSession(&infoCopy))
+	}
+	return &proto.ListResponse{Sessions: out}, nil
+}
+
+func (s *GRPCServer) Info(_ context.Context, req *proto.InfoRequest) (*proto.InfoResponse, error) {
+	if req == nil || req.Name == "" {
+		return nil, status.Error(codes.InvalidArgument, "session name is required")
+	}
+	info, err := s.coord.Info(req.Name)
+	if err != nil {
+		return nil, mapCoordinatorErr(err)
+	}
+	return &proto.InfoResponse{Session: toProtoSession(info)}, nil
+}
+
+func (s *GRPCServer) Kill(_ context.Context, req *proto.KillRequest) (*proto.KillResponse, error) {
+	if req == nil || req.Name == "" {
+		return nil, status.Error(codes.InvalidArgument, "session name is required")
+	}
+	sig, err := parseSignal(req.Signal)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if err := s.coord.Kill(req.Name, sig); err != nil {
+		return nil, mapCoordinatorErr(err)
+	}
+	return &proto.KillResponse{}, nil
+}
+
+func (s *GRPCServer) Remove(_ context.Context, req *proto.RemoveRequest) (*proto.RemoveResponse, error) {
+	if req == nil || req.Name == "" {
+		return nil, status.Error(codes.InvalidArgument, "session name is required")
+	}
+	if err := s.coord.Remove(req.Name); err != nil {
+		return nil, mapCoordinatorErr(err)
+	}
+	return &proto.RemoveResponse{}, nil
+}
+
+func (s *GRPCServer) GetScreen(_ context.Context, req *proto.GetScreenRequest) (*proto.GetScreenResponse, error) {
+	if req == nil || req.Name == "" {
+		return nil, status.Error(codes.InvalidArgument, "session name is required")
+	}
+	snap, err := s.coord.Snapshot(req.Name)
+	if err != nil {
+		return nil, mapCoordinatorErr(err)
+	}
+
+	rows := make([]*proto.ScreenRow, snap.Rows)
+	for row := 0; row < snap.Rows; row++ {
+		cells := make([]*proto.ScreenCell, snap.Cols)
+		for col := 0; col < snap.Cols; col++ {
+			cell := snap.Cells[row*snap.Cols+col]
+			ch := " "
+			if cell.Rune != 0 {
+				ch = string(cell.Rune)
+			}
+			cells[col] = &proto.ScreenCell{
+				Char:       ch,
+				FgColor:    packRGB(cell.Fg),
+				BgColor:    packRGB(cell.Bg),
+				Attributes: uint32(cell.Attrs),
+			}
+		}
+		rows[row] = &proto.ScreenRow{Cells: cells}
+	}
+
+	return &proto.GetScreenResponse{
+		Name:       req.Name,
+		Cols:       int32(snap.Cols),
+		Rows:       int32(snap.Rows),
+		CursorX:    int32(snap.CursorX),
+		CursorY:    int32(snap.CursorY),
+		ScreenRows: rows,
+	}, nil
+}
+
+func (s *GRPCServer) SendText(_ context.Context, req *proto.SendTextRequest) (*proto.SendTextResponse, error) {
+	if req == nil || req.Name == "" {
+		return nil, status.Error(codes.InvalidArgument, "session name is required")
+	}
+	if !utf8.ValidString(req.Text) {
+		return nil, status.Error(codes.InvalidArgument, "text must be valid UTF-8")
+	}
+	if err := s.coord.Send(req.Name, []byte(req.Text)); err != nil {
+		return nil, mapCoordinatorErr(err)
+	}
+	return &proto.SendTextResponse{}, nil
+}
+
+func (s *GRPCServer) SendKey(_ context.Context, req *proto.SendKeyRequest) (*proto.SendKeyResponse, error) {
+	if req == nil || req.Name == "" {
+		return nil, status.Error(codes.InvalidArgument, "session name is required")
+	}
+	seq, err := keyToBytes(req.Key)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if err := s.coord.Send(req.Name, seq); err != nil {
+		return nil, mapCoordinatorErr(err)
+	}
+	return &proto.SendKeyResponse{}, nil
+}
+
+func (s *GRPCServer) SendBytes(_ context.Context, req *proto.SendBytesRequest) (*proto.SendBytesResponse, error) {
+	if req == nil || req.Name == "" {
+		return nil, status.Error(codes.InvalidArgument, "session name is required")
+	}
+	if err := s.coord.Send(req.Name, req.Data); err != nil {
+		return nil, mapCoordinatorErr(err)
+	}
+	return &proto.SendBytesResponse{}, nil
+}
+
+func (s *GRPCServer) Resize(_ context.Context, req *proto.ResizeRequest) (*proto.ResizeResponse, error) {
+	if req == nil || req.Name == "" {
+		return nil, status.Error(codes.InvalidArgument, "session name is required")
+	}
+	cols, err := requiredUint16(req.Cols)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	rows, err := requiredUint16(req.Rows)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if err := s.coord.Resize(req.Name, cols, rows); err != nil {
+		return nil, mapCoordinatorErr(err)
+	}
+	return &proto.ResizeResponse{}, nil
+}
+
+func toProtoSession(info *SessionInfo) *proto.Session {
+	if info == nil {
+		return nil
+	}
+	session := &proto.Session{
+		Name:      info.Name,
+		Status:    toProtoStatus(info.State),
+		Cols:      int32(info.Cols),
+		Rows:      int32(info.Rows),
+		ExitCode:  int32(info.ExitCode),
+		CreatedAt: timestamppb.New(info.CreatedAt),
+	}
+	if info.State != SessionExited {
+		session.ExitCode = 0
+	}
+	if !info.ExitedAt.IsZero() {
+		session.ExitedAt = timestamppb.New(info.ExitedAt)
+	}
+	return session
+}
+
+func toProtoStatus(state SessionState) proto.SessionStatus {
+	switch state {
+	case SessionRunning:
+		return proto.SessionStatus_SESSION_STATUS_RUNNING
+	case SessionExited:
+		return proto.SessionStatus_SESSION_STATUS_EXITED
+	default:
+		return proto.SessionStatus_SESSION_STATUS_UNSPECIFIED
+	}
+}
+
+func mapCoordinatorErr(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, ErrSessionNotFound):
+		return status.Error(codes.NotFound, err.Error())
+	case errors.Is(err, ErrSessionExists):
+		return status.Error(codes.AlreadyExists, err.Error())
+	case errors.Is(err, ErrSessionNotRunning):
+		return status.Error(codes.FailedPrecondition, err.Error())
+	case errors.Is(err, ErrInvalidName), errors.Is(err, ErrInvalidSize):
+		return status.Error(codes.InvalidArgument, err.Error())
+	default:
+		return status.Error(codes.Internal, err.Error())
+	}
+}
+
+func flattenEnv(env map[string]string) []string {
+	if len(env) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(env))
+	for key, value := range env {
+		out = append(out, key+"="+value)
+	}
+	return out
+}
+
+func optionalUint16(v int32) (uint16, error) {
+	if v == 0 {
+		return 0, nil
+	}
+	if v < 0 || v > int32(^uint16(0)) {
+		return 0, errors.New("size must be between 1 and 65535")
+	}
+	return uint16(v), nil
+}
+
+func requiredUint16(v int32) (uint16, error) {
+	if v <= 0 || v > int32(^uint16(0)) {
+		return 0, errors.New("size must be between 1 and 65535")
+	}
+	return uint16(v), nil
+}
+
+func packRGB(c color.RGBA) int32 {
+	return int32(c.R)<<16 | int32(c.G)<<8 | int32(c.B)
+}
