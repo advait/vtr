@@ -52,7 +52,7 @@ Deliverables:
 - `server/coordinator.go` session registry with spawn/kill/rm/info states.
 - `server/pty.go` for PTY lifecycle, resize, and I/O loops.
 - `server/vt.go` that adapts go-ghostty snapshots and scrollback dumps.
-- Tests for spawn/echo, exit codes, and basic screen capture.
+- Tests for spawn/echo, kill/remove, exit codes, and basic screen capture.
 
 Success criteria:
 - Sessions can be spawned, accept input, and exit cleanly.

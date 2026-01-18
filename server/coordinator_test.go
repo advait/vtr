@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"runtime"
 	"strings"
 	"testing"
@@ -124,6 +125,55 @@ func TestExitCode(t *testing.T) {
 	info := waitForState(t, coord, "exit", SessionExited, 2*time.Second)
 	if info.ExitCode != 7 {
 		t.Fatalf("exit code=%d", info.ExitCode)
+	}
+}
+
+func TestKillSession(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty tests not supported on windows")
+	}
+
+	coord := newTestCoordinator()
+	defer coord.Close()
+
+	_, err := coord.Spawn("kill", SpawnOptions{
+		Command: []string{"/bin/sh", "-c", "printf 'ready\\n'; trap 'exit 0' TERM; while true; do sleep 0.1; done"},
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	waitForDumpContains(t, coord, "kill", "ready", 2*time.Second)
+
+	if err := coord.Kill("kill", nil); err != nil {
+		t.Fatalf("Kill: %v", err)
+	}
+
+	waitForState(t, coord, "kill", SessionExited, 2*time.Second)
+}
+
+func TestRemoveSession(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty tests not supported on windows")
+	}
+
+	coord := newTestCoordinator()
+	defer coord.Close()
+
+	_, err := coord.Spawn("remove", SpawnOptions{
+		Command: []string{"/bin/sh", "-c", "printf 'ready\\n'; trap 'exit 0' TERM; while true; do sleep 0.1; done"},
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	waitForDumpContains(t, coord, "remove", "ready", 2*time.Second)
+
+	if err := coord.Remove("remove"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if _, err := coord.Info("remove"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("expected ErrSessionNotFound, got %v", err)
 	}
 }
 

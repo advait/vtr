@@ -45,7 +45,21 @@ func (p *PTY) Write(data []byte) (int, error) {
 	}
 	p.writeMu.Lock()
 	defer p.writeMu.Unlock()
-	return p.file.Write(data)
+	total := 0
+	for len(data) > 0 {
+		n, err := p.file.Write(data)
+		if n > 0 {
+			total += n
+			data = data[n:]
+		}
+		if err != nil {
+			return total, err
+		}
+		if n == 0 {
+			return total, io.ErrShortWrite
+		}
+	}
+	return total, nil
 }
 
 func (p *PTY) Resize(cols, rows uint16) error {

@@ -106,14 +106,6 @@ func (c *Coordinator) Spawn(name string, opts SpawnOptions) (*SessionInfo, error
 		return nil, ErrInvalidName
 	}
 
-	c.mu.Lock()
-	if _, ok := c.sessions[name]; ok {
-		c.mu.Unlock()
-		return nil, ErrSessionExists
-	}
-	c.sessions[name] = nil
-	c.mu.Unlock()
-
 	cmdArgs := opts.Command
 	if len(cmdArgs) == 0 {
 		cmdArgs = []string{c.opts.DefaultShell}
@@ -138,19 +130,33 @@ func (c *Coordinator) Spawn(name string, opts SpawnOptions) (*SessionInfo, error
 		return nil, ErrInvalidSize
 	}
 
+	c.mu.Lock()
+	if _, ok := c.sessions[name]; ok {
+		c.mu.Unlock()
+		return nil, ErrSessionExists
+	}
+	c.sessions[name] = nil
+	c.mu.Unlock()
+
+	reserved := true
+	defer func() {
+		if !reserved {
+			return
+		}
+		c.mu.Lock()
+		if c.sessions[name] == nil {
+			delete(c.sessions, name)
+		}
+		c.mu.Unlock()
+	}()
+
 	vt, err := NewVT(uint32(cols), uint32(rows), c.opts.Scrollback)
 	if err != nil {
-		c.mu.Lock()
-		delete(c.sessions, name)
-		c.mu.Unlock()
 		return nil, err
 	}
 	ptyHandle, err := startPTY(cmd, cols, rows)
 	if err != nil {
 		_ = vt.Close()
-		c.mu.Lock()
-		delete(c.sessions, name)
-		c.mu.Unlock()
 		return nil, err
 	}
 
@@ -159,6 +165,7 @@ func (c *Coordinator) Spawn(name string, opts SpawnOptions) (*SessionInfo, error
 	c.mu.Lock()
 	c.sessions[name] = session
 	c.mu.Unlock()
+	reserved = false
 
 	session.start()
 	info := session.Info()
