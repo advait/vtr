@@ -73,6 +73,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const frame_pointers = b.option(bool, "frame_pointers", "Force frame pointers for sanitizer runs") orelse false;
+    const emit_llvm_ir = b.option(bool, "emit_llvm_ir", "Emit LLVM IR for sanitizer builds") orelse false;
 
     const ghostty_root = b.option(
         []const u8,
@@ -148,6 +149,11 @@ pub fn build(b: *std.Build) void {
         .root_module = shim_module,
         .linkage = .static,
     });
+
+    if (emit_llvm_ir) {
+        const llvm_ir = lib.getEmittedLlvmIr();
+        b.installFile(llvm_ir, "llvm-ir/vtr-ghostty-vt.ll");
+    }
 
     unicode_tables.props_output.addStepDependencies(&lib.step);
     unicode_tables.symbols_output.addStepDependencies(&lib.step);

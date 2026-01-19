@@ -188,3 +188,13 @@ Notes:
 For convenience, this repo includes `go-ghostty/shim/zig-out` build artifacts for
 local tests. Rebuild them after changing the shim or Ghostty sources, or when
 targeting a different platform.
+
+## Sanitizer builds (M9)
+
+Zig 0.15.2 does not expose ASan/LSan flags, so the shim uses a LLVM IR pipeline
+for address sanitizer coverage:
+
+```sh
+make shim-llvm-asan
+go test -asan -tags=asan ./go-ghostty/... ./server/...
+```

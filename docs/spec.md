@@ -1103,8 +1103,10 @@ chmod 660 /var/run/vtr.sock
 
 ### Planned execution (M9)
 
-- Build the shim with Zig 0.15.2 (per shim build.zig.zon) and frame pointers enabled (`-Dframe_pointers=true`).
-- Run `go test -asan` only for CGO-boundary packages (go-ghostty + server VT integration tests).
+- Zig ASan/LSan support is not exposed in Zig 0.15.2 (no `-fsanitize=address` flag), so the shim uses the LLVM IR pipeline for ASan until Zig adds native sanitizer flags.
+- Build the shim with Zig 0.15.2 (per shim build.zig.zon) and frame pointers enabled (`-Dframe_pointers=true`), plus LLVM IR emission (`-Demit_llvm_ir=true`).
+- Compile the emitted IR with clang `-fsanitize=address` and archive it into `go-ghostty/shim/zig-out-asan/` (Make: `shim-llvm-asan`).
+- Run `go test -asan -tags=asan` only for CGO-boundary packages (go-ghostty + server VT integration tests).
 - Use suppression files in `go-ghostty/shim/sanitizers/` via `ASAN_OPTIONS`/`LSAN_OPTIONS` if third-party noise appears.
 
 ## Implementation Plan
