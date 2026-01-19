@@ -1,16 +1,13 @@
 package main
 
 import (
-	"embed"
 	"io/fs"
 	"net/http"
 
+	webassets "github.com/advait/vtrpc/web"
 	"github.com/spf13/cobra"
 	"nhooyr.io/websocket"
 )
-
-//go:embed web/dist/*
-var distFS embed.FS
 
 type webOptions struct {
 	addr string
@@ -32,7 +29,7 @@ func newWebCmd() *cobra.Command {
 }
 
 func runWeb(opts webOptions) error {
-	dist, err := fs.Sub(distFS, "web/dist")
+	dist, err := fs.Sub(webassets.DistFS, "dist")
 	if err != nil {
 		return err
 	}
