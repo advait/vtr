@@ -962,7 +962,7 @@ Key constraint: clients do not see ANSI; they only see gRPC. Mouse mode state mu
   - `utf8`: `ESC[M` with UTF-8 encoded x/y.
   - `urxvt`: `ESC[b;x;yM` with decimal coords.
   - `sgr_pixels`: only valid with pixel coords; if clients only have cell coords,
-    treat as unsupported or fall back to `sgr`.
+    fall back to `sgr`.
 - Modifiers: shift +4, alt +8, ctrl +16; motion adds +32; wheel uses 64/65/66/67.
 - Reference implementation for encoding logic: `ghostty/src/Surface.zig` (`mouseReport`).
 
@@ -1217,3 +1217,9 @@ vtrpc/
 ---
 
 *Last updated: 2026-01-18*
+
+#### SendMouse error handling
+
+- `SendMouse` returns `FAILED_PRECONDITION` error when `MouseEventMode` is `NONE`.
+- No override flag in M8; rogue mouse events indicate client state bugs.
+- Server validates event gating before encoding (e.g., motion only valid for `BUTTON`/`ANY` modes).
