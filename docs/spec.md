@@ -390,8 +390,9 @@ Example flow:
 3. Assert the terminal contains "RED" with the expected red color.
 
 Additional coverage:
-- Emoji grapheme sequences (e.g., U+1F1FA U+1F1F8 flags or ZWJ sequences) render
-  as a single cell and maintain alignment.
+- Single-codepoint emoji and wide CJK glyphs render with correct width and
+  alignment; multi-codepoint grapheme cluster coverage is post-M7 once the
+  proto carries cluster metadata.
 - Ligatures (e.g., `->`, `=>`, `!=`) render when enabled without shifting cell
   boundaries.
 
@@ -558,9 +559,12 @@ Notes:
 - Indices are 0-based.
 - `screen_full.screen.rows` is a dense 2D array (`rows[y][x]`).
 - `screen_full` uses the compact tuple format above, not raw protobuf JSON.
-- `Cell[0]` is a grapheme cluster string; treat it as atomic.
+- `Cell[0]` is a single Unicode codepoint string; treat it as atomic.
 - `screen_delta` may include only cursor changes (`rows` can be empty).
 - `input.kind` maps to `SendText` or `SendKey` using the same key names as the CLI.
+- `hello.session` is required; `hello.coordinator` is optional and follows the
+  standard session-address resolution rules. Errors should send `error` and
+  close the socket.
 
 Compression/deltas:
 - Enable WebSocket permessage-deflate for JSON frames.
