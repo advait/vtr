@@ -78,7 +78,7 @@ pub fn build(b: *std.Build) void {
         []const u8,
         "ghostty",
         "Path to Ghostty checkout",
-    ) orelse "../ghostty";
+    ) orelse "../../ghostty";
 
     const uucode_config_path = joinPath(b.allocator, &.{
         ghostty_root,
