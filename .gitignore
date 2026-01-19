@@ -1,14 +1,40 @@
-# Build output
-bin/
+# Binaries
+/bin/
+/dist/
+/*.exe
+/*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
 
-# IDE
+# Coverage and profiling
+*.cover
+*.prof
+*.trace
+coverage/
+
+# Logs
+*.log
+
+# Vendor and workspace
+/vendor/
+/go.work
+/go.work.sum
+
+# Temp files
+*.swp
+*.swo
+*.tmp
+tmp/
+
+# Editor/OS
 .idea/
 .vscode/
-*.swp
-
-# OS
 .DS_Store
 
 # Ghostty shim build output
 /go-ghostty/shim/zig-out/
 /go-ghostty/shim/.zig-cache/
+/ghostty/
