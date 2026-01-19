@@ -174,11 +174,11 @@ Notes:
 
 ## Build and linking (shim)
 
-- Keep a Ghostty checkout available (submodule or a path like `/tmp/ghostty`).
+- Keep a Ghostty checkout available (submodule at `go-ghostty/ghostty` or a path like `/tmp/ghostty`).
 - Build a small Zig shim library that imports `ghostty-vt` and exports the
   `vtr_ghostty_*` C API. The shim build script should mirror Ghostty's
   `terminal_options` (`artifact = .lib`, `oniguruma = false`, `simd = true/false`).
-- Example build (uses `build.zig` in this repo; default Ghostty path is `../../ghostty`):
+- Example build (uses `build.zig` in this repo; default Ghostty path is `../ghostty`):
   - `cd go-ghostty/shim && zig build -Dghostty=/tmp/ghostty -Doptimize=ReleaseSafe`
   - Output: `zig-out/lib/libvtr-ghostty-vt.a` and `zig-out/include/vtr_ghostty_vt.h`
 - cgo flags (local dev):

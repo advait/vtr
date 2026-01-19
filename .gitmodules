@@ -1,0 +1,4 @@
+[submodule "go-ghostty/ghostty"]
+	path = go-ghostty/ghostty
+	url = https://github.com/ghostty-org/ghostty.git
+	branch = main
