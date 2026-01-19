@@ -932,8 +932,7 @@ Key constraint: clients do not see ANSI; they only see gRPC. Mouse mode state mu
 - These flags are updated by the VT stream when it processes DECSET/DECRST
   for `?9`, `?1000`, `?1002`, `?1003`, `?1005`, `?1006`, `?1015`, `?1016`
   (see `ghostty/src/termio/stream_handler.zig`).
-- Plan: add a shim getter (`vtr_ghostty_terminal_mouse_mode`) and a Go wrapper
-  to read the current mode from the VT.
+- **Approved:** Add `vtr_ghostty_terminal_mouse_mode()` to shim (C header `vtr_ghostty_vt.h` + Zig impl in `vtr_ghostty_vt_shim.zig` + Go wrapper) to read current mode from VT.
 
 #### Broadcasting mouse mode changes
 - Coordinator caches `MouseEventMode` + `MouseFormat` per session.
