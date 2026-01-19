@@ -18,6 +18,7 @@ vtr is a terminal multiplexer designed for the agent era. Each container runs a 
 - Multi-coordinator resolution supports `--socket` and `coordinator:session` with auto-disambiguation via per-coordinator lookup.
 - Grep uses scrollback dumps when available; falls back to screen/viewport dumps if history is unavailable.
 - WaitFor scans output emitted after the request starts using a rolling 1MB buffer.
+- M7 (partial): `vtr web` serves static assets + WS bridge (`hello`/`ready`/`screen_full`/`screen_delta`); REST JSON API and frontend assets are still pending.
 
 ## Architecture
 

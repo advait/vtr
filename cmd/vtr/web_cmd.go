@@ -29,7 +29,24 @@ const (
 )
 
 type webOptions struct {
-	addr string
+	addr         string
+	socket       string
+	coordinators []string
+}
+
+type webResolver struct {
+	coords       []coordinatorRef
+	allowDefault bool
+}
+
+func (r webResolver) coordinators() ([]coordinatorRef, error) {
+	if len(r.coords) == 0 && !r.allowDefault {
+		return nil, errors.New("no coordinators configured")
+	}
+	if r.allowDefault {
+		return coordinatorsOrDefault(r.coords), nil
+	}
+	return r.coords, nil
 }
 
 type wsHello struct {
@@ -150,7 +167,11 @@ func newWebCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&opts.addr, "addr", ":8080", "address to listen on")
+	cmd.Flags().StringVar(&opts.addr, "listen", "127.0.0.1:8080", "address to listen on")
+	cmd.Flags().StringVar(&opts.addr, "addr", "127.0.0.1:8080", "address to listen on (deprecated)")
+	_ = cmd.Flags().MarkDeprecated("addr", "use --listen")
+	cmd.Flags().StringVar(&opts.socket, "socket", "", "path to coordinator socket")
+	cmd.Flags().StringArrayVar(&opts.coordinators, "coordinator", nil, "coordinator socket path or glob (repeatable)")
 
 	return cmd
 }
@@ -161,8 +182,15 @@ func runWeb(opts webOptions) error {
 		return err
 	}
 
+	resolver, err := newWebResolver(opts)
+	if err != nil {
+		return err
+	}
+
 	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", handleWebsocket)
+	wsHandler := handleWebsocket(resolver)
+	mux.HandleFunc("/api/ws", wsHandler)
+	mux.HandleFunc("/ws", wsHandler)
 	mux.Handle("/", http.FileServer(http.FS(dist)))
 
 	srv := &http.Server{
@@ -173,74 +201,76 @@ func runWeb(opts webOptions) error {
 	return srv.ListenAndServe()
 }
 
-func handleWebsocket(w http.ResponseWriter, r *http.Request) {
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		CompressionMode: websocket.CompressionContextTakeover,
-	})
-	if err != nil {
-		return
-	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
+func handleWebsocket(resolver webResolver) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+			CompressionMode: websocket.CompressionContextTakeover,
+		})
+		if err != nil {
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "")
 
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
+		ctx, cancel := context.WithCancel(r.Context())
+		defer cancel()
 
-	sender := &wsSender{conn: conn}
+		sender := &wsSender{conn: conn}
 
-	hello, err := readHello(ctx, conn)
-	if err != nil {
-		_ = sendWSError(ctx, sender, err)
-		return
-	}
-
-	target, err := resolveWebTarget(ctx, hello)
-	if err != nil {
-		_ = sendWSError(ctx, sender, err)
-		return
-	}
-
-	grpcConn, err := dialClient(ctx, target.Coordinator.Path)
-	if err != nil {
-		_ = sendWSError(ctx, sender, err)
-		return
-	}
-	defer grpcConn.Close()
-
-	client := proto.NewVTRClient(grpcConn)
-
-	if hello.Cols > 0 && hello.Rows > 0 {
-		if err := resizeSession(ctx, client, target.Session, hello.Cols, hello.Rows); err != nil {
+		hello, err := readHello(ctx, conn)
+		if err != nil {
 			_ = sendWSError(ctx, sender, err)
 			return
 		}
-	}
 
-	streamCtx, streamCancel := context.WithCancel(ctx)
-	defer streamCancel()
-	stream, err := client.Subscribe(streamCtx, &proto.SubscribeRequest{
-		Name:                 target.Session,
-		IncludeScreenUpdates: true,
-		IncludeRawOutput:     false,
-	})
-	if err != nil {
+		target, err := resolveWebTarget(ctx, hello, resolver)
+		if err != nil {
+			_ = sendWSError(ctx, sender, err)
+			return
+		}
+
+		grpcConn, err := dialClient(ctx, target.Coordinator.Path)
+		if err != nil {
+			_ = sendWSError(ctx, sender, err)
+			return
+		}
+		defer grpcConn.Close()
+
+		client := proto.NewVTRClient(grpcConn)
+
+		if hello.Cols > 0 && hello.Rows > 0 {
+			if err := resizeSession(ctx, client, target.Session, hello.Cols, hello.Rows); err != nil {
+				_ = sendWSError(ctx, sender, err)
+				return
+			}
+		}
+
+		streamCtx, streamCancel := context.WithCancel(ctx)
+		defer streamCancel()
+		stream, err := client.Subscribe(streamCtx, &proto.SubscribeRequest{
+			Name:                 target.Session,
+			IncludeScreenUpdates: true,
+			IncludeRawOutput:     false,
+		})
+		if err != nil {
+			_ = sendWSError(ctx, sender, err)
+			return
+		}
+
+		errCh := make(chan error, 2)
+		go func() {
+			errCh <- streamToWeb(ctx, sender, stream, target)
+		}()
+		go func() {
+			errCh <- handleWebInput(ctx, conn, client, target.Session)
+		}()
+
+		err = <-errCh
+		cancel()
+		if err == nil || errors.Is(err, context.Canceled) || isNormalWSClose(err) {
+			return
+		}
 		_ = sendWSError(ctx, sender, err)
-		return
 	}
-
-	errCh := make(chan error, 2)
-	go func() {
-		errCh <- streamToWeb(ctx, sender, stream, target)
-	}()
-	go func() {
-		errCh <- handleWebInput(ctx, conn, client, target.Session)
-	}()
-
-	err = <-errCh
-	cancel()
-	if err == nil || errors.Is(err, context.Canceled) || isNormalWSClose(err) {
-		return
-	}
-	_ = sendWSError(ctx, sender, err)
 }
 
 func readHello(ctx context.Context, conn *websocket.Conn) (wsHello, error) {
@@ -269,16 +299,11 @@ func readHello(ctx context.Context, conn *websocket.Conn) (wsHello, error) {
 	return hello, nil
 }
 
-func resolveWebTarget(ctx context.Context, hello wsHello) (sessionTarget, error) {
-	cfg, _, err := loadConfigWithPath()
+func resolveWebTarget(ctx context.Context, hello wsHello, resolver webResolver) (sessionTarget, error) {
+	coords, err := resolver.coordinators()
 	if err != nil {
 		return sessionTarget{}, err
 	}
-	coords, err := resolveCoordinatorRefs(cfg)
-	if err != nil {
-		return sessionTarget{}, err
-	}
-	coords = coordinatorsOrDefault(coords)
 
 	if hello.Coordinator != "" {
 		if _, _, ok := parseSessionRef(hello.Session); ok {
@@ -296,6 +321,45 @@ func resolveWebTarget(ctx context.Context, hello wsHello) (sessionTarget, error)
 		return sessionTarget{}, wrapResolveError(err)
 	}
 	return target, nil
+}
+
+func newWebResolver(opts webOptions) (webResolver, error) {
+	if opts.socket != "" && len(opts.coordinators) > 0 {
+		return webResolver{}, errors.New("cannot use --socket with --coordinator")
+	}
+	if opts.socket != "" {
+		return webResolver{
+			coords: []coordinatorRef{{
+				Name: coordinatorName(opts.socket),
+				Path: opts.socket,
+			}},
+		}, nil
+	}
+	if len(opts.coordinators) > 0 {
+		coords, err := resolveCoordinatorOverrides(opts.coordinators)
+		if err != nil {
+			return webResolver{}, err
+		}
+		return webResolver{coords: coords}, nil
+	}
+
+	cfg, _, err := loadConfigWithPath()
+	if err != nil {
+		return webResolver{}, err
+	}
+	coords, err := resolveCoordinatorRefs(cfg)
+	if err != nil {
+		return webResolver{}, err
+	}
+	return webResolver{coords: coords, allowDefault: true}, nil
+}
+
+func resolveCoordinatorOverrides(paths []string) ([]coordinatorRef, error) {
+	cfg := &clientConfig{Coordinators: make([]coordinatorConfig, 0, len(paths))}
+	for _, path := range paths {
+		cfg.Coordinators = append(cfg.Coordinators, coordinatorConfig{Path: path})
+	}
+	return resolveCoordinatorRefs(cfg)
 }
 
 func wrapResolveError(err error) error {

@@ -112,7 +112,7 @@ Estimated complexity: L.
 
 Goal: Deliver a touch-friendly browser UI with live terminal streaming over Tailscale.
 
-Status: planned.
+Status: in progress (partial; web command + WS bridge implemented).
 
 Deliverables:
 - Dedicated `vtr web` command serving static assets + WebSocket bridge.
