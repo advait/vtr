@@ -198,3 +198,5 @@ for address sanitizer coverage:
 make shim-llvm-asan
 go test -asan -tags=asan ./go-ghostty/... ./server/...
 ```
+
+Requires `clang` and `ar` on PATH.
