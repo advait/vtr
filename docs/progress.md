@@ -205,24 +205,25 @@ Estimated complexity: M.
 
 ## M9 - Memory Safety Test Suite
 
-Goal: Comprehensive memory safety test suite for CGO + Zig integration.
+Goal: Focused memory safety test suite for the go-ghostty CGO boundary.
 
 Status: planned.
 
 Deliverables:
-- Sanitizer build path for the Zig shim (ASan + LSan) using Zig 0.13.x (stable) with frame pointers enabled, plus a dedicated `go test` target for CGO-focused tests.
+- Sanitizer build path for the Zig shim (ASan + LSan) using Zig 0.13.x (stable) with frame pointers enabled, plus a dedicated `go test` target for CGO-focused packages.
 - Go race detector job for Go packages that exercise the CGO boundary.
 - CI pipeline jobs for sanitizer + race runs scoped to CGO tests to keep runtime under 5 minutes.
-- `GODEBUG=cgocheck=2` (or `GOEXPERIMENT=cgocheck2` when required) enabled for the sanitizer run.
-- Suppression files (if needed) stored in `go-ghostty/shim/sanitizers/`.
-- Documentation of CGO ownership patterns and safe usage for snapshot/dump allocations.
+- `GODEBUG=cgocheck=2` (and `GOEXPERIMENT=cgocheck2` when required by the Go version) enabled for the sanitizer run.
+- Suppression files (if needed) stored in `go-ghostty/shim/sanitizers/` and wired via `ASAN_OPTIONS`/`LSAN_OPTIONS`.
+- Documentation of CGO ownership patterns and safe usage for snapshot/dump allocations (spec: Memory Safety section).
 
 Success criteria:
 - Sanitizer run reports zero actionable findings in `go-ghostty` paths and finishes within the 5-minute CI budget.
-- `go test -race ./...` passes on supported platforms in CI.
+- `go test -race` passes for CGO-boundary packages on supported platforms in CI.
 - Docs describe allocator ownership and required free calls at the boundary.
 
 Notes:
-- Valgrind intentionally skipped due to latency constraints.
+- Scope: CGO boundary only (go-ghostty + server VT integration tests), Linux CI for sanitizer support.
+- Valgrind intentionally skipped due to latency constraints; sanitizers + cgocheck cover the actionable classes.
 
 Estimated complexity: M.

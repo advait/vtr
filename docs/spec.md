@@ -1084,6 +1084,29 @@ chmod 660 /var/run/vtr.sock
 - Raw bytes: CLI accepts hex and decodes to bytes; server enforces length limit (1MB max)
 - Patterns: regex validated (RE2); WaitFor/WaitForIdle honor timeouts
 
+## Memory Safety (M9)
+
+### CGO ownership and lifetimes (go-ghostty)
+
+- `vtr_ghostty_terminal_new` allocates a terminal handle; Go owns it and must call `vtr_ghostty_terminal_free` once (`Terminal.Close`).
+- `vtr_ghostty_terminal_feed` does not retain the `data` pointer; bytes are read during the call only.
+- `vtr_ghostty_terminal_snapshot` allocates `rows*cols` cells via the allocator argument (or default when NULL); callers must copy the data and then call `vtr_ghostty_snapshot_free` with the same allocator.
+- `vtr_ghostty_terminal_dump` allocates `vtr_ghostty_bytes_t` via the allocator argument (or default when NULL); callers must copy the bytes and then call `vtr_ghostty_bytes_free`.
+- The Go wrapper copies C memory into Go slices/strings before freeing; no Go pointers are stored in C; callers must serialize access (Terminal is not thread-safe).
+
+### Tooling and rationale
+
+- ASan/LSan: catches native heap errors (buffer overflows, use-after-free, leaks) in the Zig shim + Ghostty VT code.
+- `cgocheck2`: detects Go pointer rule violations at the CGO boundary; enable via `GODEBUG=cgocheck=2` with `GOEXPERIMENT=cgocheck2` when required by the Go version.
+- `go test -race`: validates Go-side concurrency around VT access; scope to CGO-boundary packages.
+- Valgrind is intentionally skipped due to runtime costs; sanitizer runs must stay under the 5-minute CI budget.
+
+### Planned execution (M9)
+
+- Build the shim with Zig 0.13.x using ASan and frame pointers (`omit_frame_pointer = false` in the shim build).
+- Run `go test` only for CGO-boundary packages (go-ghostty + server VT integration tests).
+- Use suppression files in `go-ghostty/shim/sanitizers/` via `ASAN_OPTIONS`/`LSAN_OPTIONS` if third-party noise appears.
+
 ## Implementation Plan
 
 ### Phase 1: Server Core (done in M3)
