@@ -1103,8 +1103,8 @@ chmod 660 /var/run/vtr.sock
 
 ### Planned execution (M9)
 
-- Build the shim with Zig 0.13.x using ASan and frame pointers (`omit_frame_pointer = false` in the shim build).
-- Run `go test` only for CGO-boundary packages (go-ghostty + server VT integration tests).
+- Build the shim with Zig 0.15.2 (per shim build.zig.zon) and frame pointers enabled (`-Dframe_pointers=true`).
+- Run `go test -asan` only for CGO-boundary packages (go-ghostty + server VT integration tests).
 - Use suppression files in `go-ghostty/shim/sanitizers/` via `ASAN_OPTIONS`/`LSAN_OPTIONS` if third-party noise appears.
 
 ## Implementation Plan

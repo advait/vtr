@@ -72,12 +72,13 @@ fn addUnicodeTables(
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const frame_pointers = b.option(bool, "frame_pointers", "Force frame pointers for sanitizer runs") orelse false;
 
     const ghostty_root = b.option(
         []const u8,
         "ghostty",
         "Path to Ghostty checkout",
-    ) orelse "../../ghostty";
+    ) orelse "../ghostty";
 
     const uucode_config_path = joinPath(b.allocator, &.{
         ghostty_root,
@@ -136,6 +137,11 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     shim_module.addImport("ghostty-vt", vt_module);
+
+    if (frame_pointers) {
+        vt_module.omit_frame_pointer = false;
+        shim_module.omit_frame_pointer = false;
+    }
 
     const lib = b.addLibrary(.{
         .name = "vtr-ghostty-vt",

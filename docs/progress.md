@@ -210,7 +210,7 @@ Goal: Focused memory safety test suite for the go-ghostty CGO boundary.
 Status: planned.
 
 Deliverables:
-- Sanitizer build path for the Zig shim (ASan + LSan) using Zig 0.13.x (stable) with frame pointers enabled, plus a dedicated `go test` target for CGO-focused packages.
+- Sanitizer build path for the Zig shim (ASan + LSan) using Zig 0.15.2 (per shim build.zig.zon) with frame pointers enabled, plus a dedicated `go test` target for CGO-focused packages.
 - Go race detector job for Go packages that exercise the CGO boundary.
 - CI pipeline jobs for sanitizer + race runs scoped to CGO tests to keep runtime under 5 minutes.
 - `GODEBUG=cgocheck=2` (and `GOEXPERIMENT=cgocheck2` when required by the Go version) enabled for the sanitizer run.
