@@ -23,6 +23,10 @@ coverage/
 /go.work
 /go.work.sum
 
+# Web UI
+/web/node_modules/
+/web/.vite/
+
 # Temp files
 *.swp
 *.swo
@@ -38,3 +42,9 @@ tmp/
 /go-ghostty/shim/zig-out/
 /go-ghostty/shim/zig-out-asan/
 /go-ghostty/shim/.zig-cache/
+
+# bv (beads viewer) local config and caches
+.bv/
+
+# Generated protobuf stubs
+/proto/*.pb.go
