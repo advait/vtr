@@ -1,7 +1,7 @@
 [tools]
 go = "1.25.3"
 zig = "0.15.2"
-vfox:clang = "19.1.7"
+"vfox:clang" = "19.1.7"
 
 [tasks.shim]
 run = "cd go-ghostty/shim && zig build"
