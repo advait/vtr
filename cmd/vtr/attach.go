@@ -1202,19 +1202,20 @@ type footerView struct {
 	exited    bool
 }
 
-type leaderHint struct {
+type legendSegment struct {
 	key   string
 	label string
 }
 
-var leaderHints = []leaderHint{
-	{key: "w", label: "list"},
-	{key: "j", label: "next"},
-	{key: "k", label: "prev"},
-	{key: "c", label: "create"},
-	{key: "d", label: "detach"},
-	{key: "x", label: "kill"},
-	{key: "Ctrl+b", label: "send"},
+var leaderLegend = []legendSegment{
+	{key: "g", label: "LOCK"},
+	{key: "p", label: "PANE"},
+	{key: "t", label: "TAB"},
+	{key: "n", label: "RESIZE"},
+	{key: "h", label: "MOVE"},
+	{key: "s", label: "SEARCH"},
+	{key: "o", label: "SESSION"},
+	{key: "q", label: "QUIT"},
 }
 
 const borderOverlayOffset = 1
@@ -1259,10 +1260,12 @@ func renderFooterSegments(view footerView) (string, string) {
 	}
 	right := ""
 	switch {
+	case view.leader:
+		right = renderLeaderLegend()
 	case view.exited:
 		right = renderExitHints()
 	case view.statusMsg == "":
-		right = renderLeaderHints(view.leader)
+		right = renderLeaderHint()
 	}
 	if right != "" {
 		right = " " + right + " "
@@ -1270,27 +1273,33 @@ func renderFooterSegments(view footerView) (string, string) {
 	return left, right
 }
 
-func renderLeaderHints(active bool) string {
-	if !active {
-		return renderHintSegment("Ctrl+b", "leader")
+func renderLeaderHint() string {
+	return renderLegendSegment("b", "LEADER")
+}
+
+func renderLeaderLegend() string {
+	segments := make([]string, 0, len(leaderLegend))
+	for _, hint := range leaderLegend {
+		segments = append(segments, renderLegendSegment(hint.key, hint.label))
 	}
-	segments := make([]string, 0, len(leaderHints))
-	for _, hint := range leaderHints {
-		segments = append(segments, renderHintSegment(hint.key, hint.label))
-	}
-	return strings.Join(segments, "  ")
+	return joinLegendSegments(segments)
 }
 
 func renderExitHints() string {
 	segments := []string{
-		renderHintSegment("q", "quit"),
-		renderHintSegment("Ctrl+b", "leader"),
+		renderLegendSegment("q", "QUIT"),
+		renderLegendSegment("b", "LEADER"),
 	}
-	return strings.Join(segments, "  ")
+	return joinLegendSegments(segments)
 }
 
-func renderHintSegment(key, label string) string {
-	return fmt.Sprintf("%s %s %s", attachHintKeyStyle.Render(key), attachHintChevronStyle.Render(">"), label)
+func renderLegendSegment(key, label string) string {
+	return fmt.Sprintf("%s %s", attachHintKeyStyle.Render("Ctrl + "+key), label)
+}
+
+func joinLegendSegments(segments []string) string {
+	sep := attachHintChevronStyle.Render(">")
+	return strings.Join(segments, " "+sep+" ")
 }
 
 func renderBorderOverlay(content string, width, height int, borderStyle lipgloss.Style, headerLeft, headerRight, footerLeft, footerRight string) string {
