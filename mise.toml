@@ -61,8 +61,23 @@ run = "protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grp
 sources = ["proto/vtr.proto"]
 outputs = ["proto/vtr.pb.go", "proto/vtr_grpc.pb.go"]
 
+[tasks.web-build]
+run = "cd web && bun install && bun run build"
+sources = [
+  "web/index.html",
+  "web/package.json",
+  "web/bun.lock",
+  "web/postcss.config.js",
+  "web/tailwind.config.ts",
+  "web/tsconfig.json",
+  "web/tsconfig.node.json",
+  "web/vite.config.ts",
+  "web/src/**",
+]
+outputs = ["web/dist/index.html"]
+
 [tasks.build]
-depends = ["proto", "shim"]
+depends = ["proto", "shim", "web-build"]
 run = "go build -o bin/vtr ./cmd/vtr"
 env = { CGO_ENABLED = "1", CC = "clang", CXX = "clang++" }
 sources = [
@@ -124,7 +139,7 @@ sources = [
 outputs = ["bin/.mise-test-sanitize-cgo.stamp"]
 
 [tasks.test-web-e2e]
-depends = ["proto", "shim"]
+depends = ["proto", "shim", "web-build"]
 run = "cd web && bun install && bunx playwright install chromium && bun run test:e2e && mkdir -p ../bin && touch ../bin/.mise-test-web-e2e.stamp"
 sources = [
   "go.mod",
