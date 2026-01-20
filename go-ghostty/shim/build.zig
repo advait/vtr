@@ -152,7 +152,8 @@ pub fn build(b: *std.Build) void {
 
     if (emit_llvm_ir) {
         const llvm_ir = lib.getEmittedLlvmIr();
-        b.installFile(llvm_ir, "llvm-ir/vtr-ghostty-vt.ll");
+        const install_llvm_ir = b.addInstallFile(llvm_ir, "llvm-ir/vtr-ghostty-vt.ll");
+        b.getInstallStep().dependOn(&install_llvm_ir.step);
     }
 
     unicode_tables.props_output.addStepDependencies(&lib.step);
