@@ -227,3 +227,20 @@ Notes:
 - Valgrind intentionally skipped due to latency constraints; sanitizers + cgocheck cover the actionable classes.
 
 Estimated complexity: M.
+
+## M10 - Build System (mise)
+
+Goal: Standardize tool versions and task automation via mise.
+
+Status: in progress.
+
+Deliverables:
+- `mise.toml` with Go/Zig/clang versions and tasks for `shim`, `build`, `test`, and `all`.
+- Onboarding steps documented: `mise trust`, `mise install`, `mise run all`.
+- Docs align CGO toolchain env vars (`CGO_ENABLED`, `CC`, `CXX`) with build/test tasks.
+
+Success criteria:
+- `mise run all` builds the shim and runs tests end-to-end.
+- Tool versions match `go.mod` and `go-ghostty/shim/build.zig.zon`.
+
+Estimated complexity: S.

@@ -1143,6 +1143,8 @@ M10 standardizes the build system on mise for tool versions and task automation.
 - Tool version management via `mise.toml` (replaces asdf, nvm, etc.); cached installs are built in.
 - Tasks defined under `[tasks]` with dependencies (`depends`) and optional `env` vars.
 - `mise run <task>` executes tasks; use a single command for the full pipeline: `mise run all`.
+- Onboarding: `mise trust`, `mise install`, then `mise run all`.
+- CGO builds use explicit toolchain env vars (`CGO_ENABLED`, `CC`, `CXX`) for consistent clang usage.
 
 ### mise.toml (project)
 
@@ -1150,6 +1152,7 @@ M10 standardizes the build system on mise for tool versions and task automation.
 [tools]
 go = "1.25.3"
 zig = "0.15.2"
+"vfox:clang" = "19.1.7"
 
 [tasks.shim]
 run = "cd go-ghostty/shim && zig build"
@@ -1157,10 +1160,12 @@ run = "cd go-ghostty/shim && zig build"
 [tasks.build]
 depends = ["shim"]
 run = "go build -o bin/vtr ./cmd/vtr"
+env = { CGO_ENABLED = "1", CC = "clang", CXX = "clang++" }
 
 [tasks.test]
 depends = ["shim"]
 run = "go test ./..."
+env = { CGO_ENABLED = "1", CC = "clang", CXX = "clang++" }
 
 [tasks.all]
 depends = ["build", "test"]
