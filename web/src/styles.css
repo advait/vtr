@@ -53,11 +53,16 @@ textarea {
   white-space: pre;
 }
 
-.terminal-surface {
+.terminal-surface,
+.terminal-surface * {
   user-select: none;
   -webkit-user-select: none;
   -moz-user-select: none;
+}
+
+.terminal-surface {
   -webkit-touch-callout: none;
+  -webkit-user-drag: none;
 }
 
 @media (min-width: 768px) {

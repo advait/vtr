@@ -146,21 +146,12 @@ export function TerminalView({
       return;
     }
     terminalRef.current?.focus({ preventScroll: true });
-    const rect = containerRef.current.getBoundingClientRect();
-    const col = clamp(
-      Math.floor((event.clientX - rect.left - padding) / cellSize.width),
-      0,
-      screen.cols - 1,
-    );
-    const row = clamp(
-      Math.floor((event.clientY - rect.top - padding) / cellSize.height),
-      0,
-      screen.rows - 1,
-    );
-    selectingRef.current = true;
-    const next = { start: { row, col }, end: { row, col } };
-    selectionStartRef.current = next;
-    setSelection(next);
+    event.preventDefault();
+    selectingRef.current = false;
+    selectionStartRef.current = null;
+    if (selection) {
+      setSelection(null);
+    }
   };
 
   const handleMouseMove = (event: React.MouseEvent<HTMLDivElement>) => {
@@ -313,6 +304,8 @@ export function TerminalView({
             aria-label="terminal"
             ref={terminalRef}
             onMouseDown={handleMouseDown}
+            onSelectStart={(event) => event.preventDefault()}
+            onDragStart={(event) => event.preventDefault()}
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
             onMouseLeave={handleMouseLeave}
