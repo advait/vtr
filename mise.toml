@@ -1,6 +1,12 @@
 [tools]
 go = "1.25.3"
 zig = "0.15.2"
+clang = "19.1.8"
+
+[env]
+CGO_ENABLED = "1"
+CC = "clang"
+CXX = "clang++"
 
 [tasks.shim]
 run = "cd go-ghostty/shim && zig build"
