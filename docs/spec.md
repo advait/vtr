@@ -1164,7 +1164,7 @@ zig = "0.15.2"
 run = "cd go-ghostty/shim && zig build -Dghostty=${GHOSTTY_ROOT:-../ghostty}"
 
 [tasks.shim-sanitize]
-run = "cd go-ghostty/shim && zig build -Dghostty=${GHOSTTY_ROOT:-../ghostty} -Doptimize=Debug -Dframe_pointers=true"
+run = "cd go-ghostty/shim && zig build -Dghostty=${GHOSTTY_ROOT:-../ghostty} -Doptimize=Debug -Dframe_pointers=true && mkdir -p zig-out && touch zig-out/.shim-sanitize.stamp"
 
 [tasks.shim-llvm-ir]
 run = "cd go-ghostty/shim && zig build -Dghostty=${GHOSTTY_ROOT:-../ghostty} -Doptimize=Debug -Dframe_pointers=true -Demit_llvm_ir=true"
@@ -1177,22 +1177,22 @@ run = "mkdir -p go-ghostty/shim/zig-out-asan/lib go-ghostty/shim/zig-out-asan/in
 run = "protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative proto/vtr.proto"
 
 [tasks.build]
-depends = ["shim"]
+depends = ["proto", "shim"]
 run = "go build -o bin/vtr ./cmd/vtr"
 env = { CGO_ENABLED = "1", CC = "clang", CXX = "clang++" }
 
 [tasks.test]
-depends = ["shim"]
-run = "go test ./..."
+depends = ["proto", "shim"]
+run = "go test ./... && mkdir -p bin && touch bin/.mise-test.stamp"
 env = { CGO_ENABLED = "1", CC = "clang", CXX = "clang++" }
 
 [tasks.test-race-cgo]
-depends = ["shim"]
-run = "CGO_ENABLED=1 CC=clang CXX=clang++ go test -race ./go-ghostty/... ./server/..."
+depends = ["proto", "shim"]
+run = "CGO_ENABLED=1 CC=clang CXX=clang++ go test -race ./go-ghostty/... ./server/... && mkdir -p bin && touch bin/.mise-test-race-cgo.stamp"
 
 [tasks.test-sanitize-cgo]
-depends = ["shim-llvm-asan"]
-run = "GODEBUG=cgocheck=2 GOEXPERIMENT=${GOEXPERIMENT:-cgocheck2} ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:suppressions=go-ghostty/shim/sanitizers/asan.supp LSAN_OPTIONS=suppressions=go-ghostty/shim/sanitizers/lsan.supp CGO_ENABLED=1 CC=clang CXX=clang++ go test -asan -tags=asan ./go-ghostty/... ./server/..."
+depends = ["proto", "shim-llvm-asan"]
+run = "GODEBUG=cgocheck=2 GOEXPERIMENT=${GOEXPERIMENT:-cgocheck2} ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:suppressions=go-ghostty/shim/sanitizers/asan.supp LSAN_OPTIONS=suppressions=go-ghostty/shim/sanitizers/lsan.supp CGO_ENABLED=1 CC=clang CXX=clang++ go test -asan -tags=asan ./go-ghostty/... ./server/... && mkdir -p bin && touch bin/.mise-test-sanitize-cgo.stamp"
 
 [tasks.all]
 depends = ["build", "test"]
@@ -1233,6 +1233,14 @@ run = "rm -rf bin/ && rm -f proto/*.pb.go"
 2. Raw mode passthrough
 3. Leader key bindings
 4. Window decoration
+
+### Phase 4b: TUI Streaming Updates
+
+1. Update streaming proto to match `docs/streaming.md` (frame_id/base_frame_id/is_keyframe, ScreenDelta/RowDelta) and regenerate Go stubs.
+2. Subscribe: send initial keyframe only when `include_screen_updates` is true; include frame IDs; send final keyframe before `session_exited`.
+3. Implement latest-only coalescing for screen updates (drop stale frames; keyframe on resync, resize, and periodic cadence).
+4. TUI attach: track current `frame_id`, apply keyframes, drop mismatched deltas, and resubscribe on desync.
+5. Tests: frame ID monotonicity, latest-only behavior, resize keyframe, final-frame ordering, and TUI keyframe handling.
 
 ### Phase 5: Web UI (M7)
 
