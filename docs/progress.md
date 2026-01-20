@@ -14,13 +14,13 @@ Status: complete (2026-01-18).
 Deliverables:
 - `go.mod`/`go.sum` with baseline dependencies pinned.
 - `proto/vtr.proto` checked in with initial service/messages from spec.
-- Build scripts: `Makefile` or `taskfile` for `proto`, `build`, `test`.
+- Build scripts: `mise.toml` tasks for `proto`, `build`, `test`.
 - Minimal `cmd/vtr` skeleton for future CLI/server split.
 - `docs/progress.md` created and referenced in `docs/agent-meta.md`.
 
 Success criteria:
 - `go test ./...` passes (even if only empty packages).
-- `make proto` (or equivalent) generates Go stubs locally without manual steps.
+- `mise run proto` generates Go stubs locally without manual steps.
 - Repo layout matches `docs/spec.md` structure.
 
 Estimated complexity: S.
@@ -211,19 +211,19 @@ Status: planned.
 
 Deliverables:
 - Sanitizer build path for the Zig shim (ASan + LSan) using Zig 0.15.2 (per shim build.zig.zon) with frame pointers enabled, plus a dedicated `go test` target for CGO-focused packages. Until Zig exposes ASan/LSan flags, use the LLVM IR + clang pipeline.
-- Go race detector job for Go packages that exercise the CGO boundary.
-- CI pipeline jobs for sanitizer + race runs scoped to CGO tests to keep runtime under 5 minutes.
+- Go race detector task for Go packages that exercise the CGO boundary.
+- Local sanitizer + race tasks scoped to CGO tests to keep runtime under 5 minutes.
 - `GODEBUG=cgocheck=2` (and `GOEXPERIMENT=cgocheck2` when required by the Go version) enabled for the sanitizer run.
 - Suppression files (if needed) stored in `go-ghostty/shim/sanitizers/` and wired via `ASAN_OPTIONS`/`LSAN_OPTIONS`.
 - Documentation of CGO ownership patterns and safe usage for snapshot/dump allocations (spec: Memory Safety section).
 
 Success criteria:
-- Sanitizer run reports zero actionable findings in `go-ghostty` paths and finishes within the 5-minute CI budget.
-- `go test -race` passes for CGO-boundary packages on supported platforms in CI.
+- Sanitizer run reports zero actionable findings in `go-ghostty` paths and finishes within the 5-minute local budget.
+- `go test -race` passes for CGO-boundary packages on supported platforms.
 - Docs describe allocator ownership and required free calls at the boundary.
 
 Notes:
-- Scope: CGO boundary only (go-ghostty + server VT integration tests), Linux CI for sanitizer support.
+- Scope: CGO boundary only (go-ghostty + server VT integration tests), Linux host for sanitizer support.
 - Valgrind intentionally skipped due to latency constraints; sanitizers + cgocheck cover the actionable classes.
 
 Estimated complexity: M.
@@ -232,7 +232,7 @@ Estimated complexity: M.
 
 Goal: Standardize tool versions and task automation via mise.
 
-Status: in progress.
+Status: complete.
 
 Deliverables:
 - `mise.toml` with Go/Zig/clang versions and tasks for `shim`, `build`, `test`, and `all`.

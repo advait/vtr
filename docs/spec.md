@@ -1129,13 +1129,13 @@ chmod 660 /var/run/vtr.sock
 - ASan/LSan: catches native heap errors (buffer overflows, use-after-free, leaks) in the Zig shim + Ghostty VT code.
 - `cgocheck2`: detects Go pointer rule violations at the CGO boundary; enable via `GODEBUG=cgocheck=2` with `GOEXPERIMENT=cgocheck2` when required by the Go version.
 - `go test -race`: validates Go-side concurrency around VT access; scope to CGO-boundary packages.
-- Valgrind is intentionally skipped due to runtime costs; sanitizer runs must stay under the 5-minute CI budget.
+- Valgrind is intentionally skipped due to runtime costs; sanitizer runs should stay under a reasonable local runtime budget.
 
 ### Planned execution (M9)
 
 - Zig ASan/LSan support is not exposed in Zig 0.15.2 (no `-fsanitize=address` flag), so the shim uses the LLVM IR pipeline for ASan until Zig adds native sanitizer flags.
 - Build the shim with Zig 0.15.2 (per shim build.zig.zon) and frame pointers enabled (`-Dframe_pointers=true`), plus LLVM IR emission (`-Demit_llvm_ir=true`).
-- Compile the emitted IR with clang `-fsanitize=address` and archive it into `go-ghostty/shim/zig-out-asan/` (Make: `shim-llvm-asan`).
+- Compile the emitted IR with clang `-fsanitize=address` and archive it into `go-ghostty/shim/zig-out-asan/` (`mise run shim-llvm-asan`).
 - Run `go test -asan -tags=asan` only for CGO-boundary packages (go-ghostty + server VT integration tests).
 - Use suppression files in `go-ghostty/shim/sanitizers/` via `ASAN_OPTIONS`/`LSAN_OPTIONS` if third-party noise appears.
 
@@ -1150,6 +1150,7 @@ M10 standardizes the build system on mise for tool versions and task automation.
 - `mise run <task>` executes tasks; use a single command for the full pipeline: `mise run all`.
 - Onboarding: `mise trust`, `mise install`, then `mise run all`.
 - CGO builds use explicit toolchain env vars (`CGO_ENABLED`, `CC`, `CXX`) for consistent clang usage.
+- Sanitizer and race targets are exposed as mise tasks (no Makefile).
 
 ### mise.toml (project)
 
@@ -1160,7 +1161,20 @@ zig = "0.15.2"
 "vfox:clang" = "19.1.7"
 
 [tasks.shim]
-run = "cd go-ghostty/shim && zig build"
+run = "cd go-ghostty/shim && zig build -Dghostty=${GHOSTTY_ROOT:-../ghostty}"
+
+[tasks.shim-sanitize]
+run = "cd go-ghostty/shim && zig build -Dghostty=${GHOSTTY_ROOT:-../ghostty} -Doptimize=Debug -Dframe_pointers=true"
+
+[tasks.shim-llvm-ir]
+run = "cd go-ghostty/shim && zig build -Dghostty=${GHOSTTY_ROOT:-../ghostty} -Doptimize=Debug -Dframe_pointers=true -Demit_llvm_ir=true"
+
+[tasks.shim-llvm-asan]
+depends = ["shim-llvm-ir"]
+run = "mkdir -p go-ghostty/shim/zig-out-asan/lib go-ghostty/shim/zig-out-asan/include && clang -x ir -c -fsanitize=address -fno-omit-frame-pointer -fPIC -o go-ghostty/shim/zig-out-asan/lib/vtr-ghostty-vt-asan.o go-ghostty/shim/zig-out/llvm-ir/vtr-ghostty-vt.ll && ar rcs go-ghostty/shim/zig-out-asan/lib/libvtr-ghostty-vt.a go-ghostty/shim/zig-out-asan/lib/vtr-ghostty-vt-asan.o && cp go-ghostty/shim/zig-out/include/vtr_ghostty_vt.h go-ghostty/shim/zig-out-asan/include/"
+
+[tasks.proto]
+run = "protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative proto/vtr.proto"
 
 [tasks.build]
 depends = ["shim"]
@@ -1172,8 +1186,19 @@ depends = ["shim"]
 run = "go test ./..."
 env = { CGO_ENABLED = "1", CC = "clang", CXX = "clang++" }
 
+[tasks.test-race-cgo]
+depends = ["shim"]
+run = "CGO_ENABLED=1 CC=clang CXX=clang++ go test -race ./go-ghostty/... ./server/..."
+
+[tasks.test-sanitize-cgo]
+depends = ["shim-llvm-asan"]
+run = "GODEBUG=cgocheck=2 GOEXPERIMENT=${GOEXPERIMENT:-cgocheck2} ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:suppressions=go-ghostty/shim/sanitizers/asan.supp LSAN_OPTIONS=suppressions=go-ghostty/shim/sanitizers/lsan.supp CGO_ENABLED=1 CC=clang CXX=clang++ go test -asan -tags=asan ./go-ghostty/... ./server/..."
+
 [tasks.all]
 depends = ["build", "test"]
+
+[tasks.clean]
+run = "rm -rf bin/ && rm -f proto/*.pb.go"
 ```
 
 ## Implementation Plan
@@ -1270,8 +1295,7 @@ vtrpc/
 │   └── wait.go
 ├── web/                 # Web UI (M7 planned)
 ├── go.mod
-├── go.sum
-└── Makefile
+└── go.sum
 ```
 
 ## Dependencies

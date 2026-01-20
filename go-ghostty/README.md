@@ -195,8 +195,8 @@ Zig 0.15.2 does not expose ASan/LSan flags, so the shim uses a LLVM IR pipeline
 for address sanitizer coverage:
 
 ```sh
-make shim-llvm-asan
-go test -asan -tags=asan ./go-ghostty/... ./server/...
+mise run shim-llvm-asan
+mise run test-sanitize-cgo
 ```
 
 Requires `clang` and `ar` on PATH.
