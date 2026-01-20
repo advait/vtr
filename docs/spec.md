@@ -1270,6 +1270,8 @@ run = "rm -rf bin/ && rm -f proto/*.pb.go"
 
 ```
 vtrpc/
+├── .beads/              # beads issue tracker data
+├── AGENTS.md
 ├── cmd/
 │   └── vtr/
 │       ├── attach.go
@@ -1284,7 +1286,6 @@ vtrpc/
 │       └── version.go
 ├── docs/
 │   ├── spec.md
-│   ├── progress.md
 │   └── agent-meta.md
 ├── go-ghostty/
 │   ├── ghostty.go

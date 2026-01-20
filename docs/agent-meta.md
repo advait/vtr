@@ -14,7 +14,7 @@ How this project is being developed with AI agents.
 - Maintain documentation quality
 
 **Workflow:**
-1. Load current milestone from `docs/progress.md`
+1. Load current milestone from beads (e.g., `br list --pretty` or `br graph --all`)
 2. Send task to Codex with clear scope
 3. Monitor progress, approve network/file operations as needed
 4. On completion: commit, run fresh eyes review, advance to next milestone
@@ -48,6 +48,6 @@ Each milestone must be:
 | File | Purpose |
 |------|---------|
 | `docs/spec.md` | Protocol and architecture spec |
-| `docs/progress.md` | Milestone tracking and status |
+| `.beads/` | Milestone tracking, tasks, and status (beads) |
 | `docs/agent-meta.md` | This file |
 | `go-ghostty/README.md` | VT engine integration design |
