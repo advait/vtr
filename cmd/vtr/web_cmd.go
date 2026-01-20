@@ -2,11 +2,16 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
+	"os"
+	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -104,6 +109,7 @@ func runWeb(opts webOptions) error {
 	wsHandler := handleWebsocket(resolver)
 	mux.HandleFunc("/api/ws", wsHandler)
 	mux.HandleFunc("/ws", wsHandler)
+	mux.HandleFunc("/api/sessions", handleWebSessions(resolver))
 	mux.Handle("/", http.FileServer(http.FS(dist)))
 
 	srv := &http.Server{
@@ -111,13 +117,60 @@ func runWeb(opts webOptions) error {
 		Handler: mux,
 	}
 
+	url := webURL(opts.addr)
+	fmt.Printf("vtr web listening on %s\n", url)
+	if err := openBrowser(url); err != nil {
+		fmt.Fprintf(os.Stderr, "vtr web: unable to open browser: %v\n", err)
+	}
+
 	return srv.ListenAndServe()
+}
+
+func webURL(addr string) string {
+	if strings.Contains(addr, "://") {
+		return addr
+	}
+	host := addr
+	port := ""
+	if splitHost, splitPort, err := net.SplitHostPort(addr); err == nil {
+		host = splitHost
+		port = splitPort
+	}
+	if port == "" {
+		return "http://" + addr
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
+		host = "[" + host + "]"
+	}
+	return fmt.Sprintf("http://%s:%s", host, port)
+}
+
+func openBrowser(url string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "windows":
+		cmd = exec.Command("cmd", "/c", "start", url)
+	default:
+		cmd = exec.Command("xdg-open", url)
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go func() {
+		_ = cmd.Wait()
+	}()
+	return nil
 }
 
 func handleWebsocket(resolver webResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-			CompressionMode: websocket.CompressionContextTakeover,
+			CompressionMode: websocket.CompressionDisabled,
 		})
 		if err != nil {
 			return
@@ -176,6 +229,87 @@ func handleWebsocket(resolver webResolver) http.HandlerFunc {
 			return
 		}
 		_ = sendWSError(ctx, sender, err)
+	}
+}
+
+type webSession struct {
+	Name     string `json:"name"`
+	Status   string `json:"status"`
+	Cols     int32  `json:"cols"`
+	Rows     int32  `json:"rows"`
+	ExitCode int32  `json:"exit_code,omitempty"`
+}
+
+type webCoordinator struct {
+	Name     string       `json:"name"`
+	Path     string       `json:"path"`
+	Sessions []webSession `json:"sessions"`
+	Error    string       `json:"error,omitempty"`
+}
+
+type webSessionsResponse struct {
+	Coordinators []webCoordinator `json:"coordinators"`
+}
+
+func handleWebSessions(resolver webResolver) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		coords, err := resolver.coordinators()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		out := webSessionsResponse{Coordinators: make([]webCoordinator, 0, len(coords))}
+		for _, coord := range coords {
+			entry := webCoordinator{Name: coord.Name, Path: coord.Path}
+			ctx, cancel := context.WithTimeout(r.Context(), rpcTimeout)
+			conn, err := dialClient(ctx, coord.Path)
+			cancel()
+			if err != nil {
+				entry.Error = err.Error()
+				out.Coordinators = append(out.Coordinators, entry)
+				continue
+			}
+			client := proto.NewVTRClient(conn)
+			ctx, cancel = context.WithTimeout(r.Context(), rpcTimeout)
+			resp, err := client.List(ctx, &proto.ListRequest{})
+			cancel()
+			_ = conn.Close()
+			if err != nil {
+				entry.Error = err.Error()
+				out.Coordinators = append(out.Coordinators, entry)
+				continue
+			}
+			entry.Sessions = make([]webSession, 0, len(resp.Sessions))
+			for _, session := range resp.Sessions {
+				status := "unknown"
+				switch session.GetStatus() {
+				case proto.SessionStatus_SESSION_STATUS_RUNNING:
+					status = "running"
+				case proto.SessionStatus_SESSION_STATUS_EXITED:
+					status = "exited"
+				}
+				entry.Sessions = append(entry.Sessions, webSession{
+					Name:     session.GetName(),
+					Status:   status,
+					Cols:     session.GetCols(),
+					Rows:     session.GetRows(),
+					ExitCode: session.GetExitCode(),
+				})
+			}
+			out.Coordinators = append(out.Coordinators, entry)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		enc := json.NewEncoder(w)
+		if err := enc.Encode(out); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 	}
 }
 
