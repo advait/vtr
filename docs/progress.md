@@ -82,6 +82,47 @@ Success criteria:
 
 Estimated complexity: M.
 
+## M4 - CLI Client Core
+
+Goal: Provide a usable CLI for core operations against a single coordinator.
+
+Status: complete (2026-01-18).
+
+Deliverables:
+- CLI commands: `ls`, `spawn`, `info`, `screen`, `send`, `key`, `raw`,
+  `resize`, `kill`, `rm`.
+- Client config loader for `~/.config/vtr/config.toml`.
+- Human and JSON output formats for key commands.
+- CLI end-to-end test that spawns a session and validates screen output.
+
+Success criteria:
+- `vtr ls` and `vtr spawn` work against a running coordinator.
+- `vtr screen` renders a correct viewport in human mode.
+- CLI flags map cleanly to gRPC requests and errors surface clearly.
+
+Estimated complexity: M.
+
+## M5 - MVP: Advanced Operations + Multi-Coordinator
+
+Goal: Ship the agent-ready MVP with grep/wait/idle and coordinator discovery.
+
+Status: complete (2026-01-18).
+
+Deliverables:
+- Server RPCs: `Grep`, `WaitFor`, `WaitForIdle` with timeout handling.
+- CLI commands: `grep`, `wait`, `idle`.
+- Multi-coordinator resolution (`vtr config resolve`, `coordinator:session`).
+- Tests for grep context, wait timeouts, and idle detection.
+- Updated docs describing MVP usage and limitations.
+
+Success criteria:
+- Agents can spawn, send input, and block on output/idle via CLI.
+- Grep returns correct line numbers and context slices.
+- Multi-coordinator ambiguity errors are deterministic and user-friendly.
+- `go test ./...` passes with core and advanced RPC coverage.
+
+Estimated complexity: M.
+
 ## M6 - Attach TUI (Bubbletea)
 
 Goal: Deliver a tmux-like attach experience for basic workflows with modern UX.
@@ -134,47 +175,6 @@ Success criteria:
 - Coordinator tree view is responsive, searchable, and touch-friendly.
 
 Estimated complexity: L.
-
-## M4 - CLI Client Core
-
-Goal: Provide a usable CLI for core operations against a single coordinator.
-
-Status: complete (2026-01-18).
-
-Deliverables:
-- CLI commands: `ls`, `spawn`, `info`, `screen`, `send`, `key`, `raw`,
-  `resize`, `kill`, `rm`.
-- Client config loader for `~/.config/vtr/config.toml`.
-- Human and JSON output formats for key commands.
-- CLI end-to-end test that spawns a session and validates screen output.
-
-Success criteria:
-- `vtr ls` and `vtr spawn` work against a running coordinator.
-- `vtr screen` renders a correct viewport in human mode.
-- CLI flags map cleanly to gRPC requests and errors surface clearly.
-
-Estimated complexity: M.
-
-## M5 - MVP: Advanced Operations + Multi-Coordinator
-
-Goal: Ship the agent-ready MVP with grep/wait/idle and coordinator discovery.
-
-Status: complete (2026-01-18).
-
-Deliverables:
-- Server RPCs: `Grep`, `WaitFor`, `WaitForIdle` with timeout handling.
-- CLI commands: `grep`, `wait`, `idle`.
-- Multi-coordinator resolution (`vtr config resolve`, `coordinator:session`).
-- Tests for grep context, wait timeouts, and idle detection.
-- Updated docs describing MVP usage and limitations.
-
-Success criteria:
-- Agents can spawn, send input, and block on output/idle via CLI.
-- Grep returns correct line numbers and context slices.
-- Multi-coordinator ambiguity errors are deterministic and user-friendly.
-- `go test ./...` passes with core and advanced RPC coverage.
-
-Estimated complexity: M.
 
 ## M8 - Attach TUI Mouse Support
 

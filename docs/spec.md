@@ -677,7 +677,7 @@ service VTR {
   rpc SendText(SendTextRequest) returns (SendTextResponse);
   rpc SendKey(SendKeyRequest) returns (SendKeyResponse);
   rpc SendBytes(SendBytesRequest) returns (SendBytesResponse);
-  rpc SendMouse(SendMouseRequest) returns (SendMouseResponse);
+  // SendMouse planned for M8.
   rpc Resize(ResizeRequest) returns (ResizeResponse);
   
   // Blocking operations
@@ -782,6 +782,55 @@ message WaitForIdleResponse {
   bool timed_out = 2;
 }
 
+message SubscribeRequest {
+  string name = 1;
+  bool include_screen_updates = 2;
+  bool include_raw_output = 3;
+}
+
+message ScreenUpdate {
+  GetScreenResponse screen = 1;
+}
+
+message SessionExited {
+  int32 exit_code = 1;
+}
+
+message SubscribeEvent {
+  oneof event {
+    ScreenUpdate screen_update = 1;
+    bytes raw_output = 2;
+    SessionExited session_exited = 3;
+  }
+}
+```
+
+### Subscribe Stream (M6)
+
+- Server-side stream of `SubscribeEvent` for attach and web UI clients.
+- Server always sends an initial full `ScreenUpdate` snapshot so clients can diff (even when
+  `include_screen_updates` is false).
+- `include_screen_updates` controls subsequent full-frame snapshots; updates are emitted on new
+  output and coalesced to 30fps max.
+- `include_raw_output` emits raw PTY bytes for logging or custom rendering; raw output starts at
+  subscription time and is buffered up to 1MB (older bytes are dropped on overflow).
+- At least one of `include_screen_updates` or `include_raw_output` must be true; otherwise the
+  server returns `INVALID_ARGUMENT`.
+- If `include_screen_updates` is true, the server sends a final `ScreenUpdate` before
+  `session_exited`; `session_exited` is always the last event before stream close.
+- M8: `mouse_mode_changed` will be emitted on Subscribe start and whenever the app enables or disables
+  mouse tracking; clients gate mouse input on this event.
+- `session_exited` is sent once with the exit code; the server closes the stream afterward.
+- When clients disconnect or cancel, the server stops streaming and releases resources.
+- Slow clients may skip intermediate frames; the server prioritizes the latest screen state (see Backpressure).
+- Subscribe is receive-only; input uses `SendText`, `SendKey`, `SendBytes` (SendMouse planned in M8).
+
+### Mouse Support (M8) Design
+
+Key constraint: clients do not see ANSI; they only see gRPC. Mouse mode state must be owned by the coordinator.
+
+#### Planned proto additions (M8, not in current proto)
+```protobuf
 enum MouseEventMode {
   MOUSE_EVENT_MODE_UNSPECIFIED = 0;
   MOUSE_EVENT_MODE_NONE = 1;
@@ -839,54 +888,7 @@ message MouseModeChanged {
   MouseEventMode event_mode = 2;
   MouseFormat format = 3;
 }
-
-message SubscribeRequest {
-  string name = 1;
-  bool include_screen_updates = 2;
-  bool include_raw_output = 3;
-}
-
-message ScreenUpdate {
-  GetScreenResponse screen = 1;
-}
-
-message SessionExited {
-  int32 exit_code = 1;
-}
-
-message SubscribeEvent {
-  oneof event {
-    ScreenUpdate screen_update = 1;
-    bytes raw_output = 2;
-    SessionExited session_exited = 3;
-    MouseModeChanged mouse_mode_changed = 4;
-  }
-}
 ```
-
-### Subscribe Stream (M6)
-
-- Server-side stream of `SubscribeEvent` for attach and web UI clients.
-- Server always sends an initial full `ScreenUpdate` snapshot so clients can diff (even when
-  `include_screen_updates` is false).
-- `include_screen_updates` controls subsequent full-frame snapshots; updates are emitted on new
-  output and coalesced to 30fps max.
-- `include_raw_output` emits raw PTY bytes for logging or custom rendering; raw output starts at
-  subscription time and is buffered up to 1MB (older bytes are dropped on overflow).
-- At least one of `include_screen_updates` or `include_raw_output` must be true; otherwise the
-  server returns `INVALID_ARGUMENT`.
-- If `include_screen_updates` is true, the server sends a final `ScreenUpdate` before
-  `session_exited`; `session_exited` is always the last event before stream close.
-- `mouse_mode_changed` is emitted on Subscribe start and whenever the app enables or disables
-  mouse tracking; clients gate mouse input on this event.
-- `session_exited` is sent once with the exit code; the server closes the stream afterward.
-- When clients disconnect or cancel, the server stops streaming and releases resources.
-- Slow clients may skip intermediate frames; the server prioritizes the latest screen state (see Backpressure).
-- Subscribe is receive-only; input uses `SendText`, `SendKey`, `SendBytes`, or `SendMouse`.
-
-### Mouse Support (M8) Design
-
-Key constraint: clients do not see ANSI; they only see gRPC. Mouse mode state must be owned by the coordinator.
 
 #### Ghostty mouse mode state
 - Ghostty tracks the active mouse event mode and format in `terminal.flags`:
