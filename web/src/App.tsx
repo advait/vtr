@@ -255,15 +255,8 @@ export default function App() {
 
       <main className="flex min-h-[calc(100vh-72px)] flex-col gap-4 px-4 pt-4 pb-[calc(1rem+env(safe-area-inset-bottom))] lg:flex-row">
         <aside className="flex w-full flex-col gap-4 lg:w-80">
-          <div className="flex-1 rounded-lg border border-tn-border bg-tn-panel">
-            <div className="border-b border-tn-border px-4 py-3">
-              <Input
-                placeholder="Filter coordinators or sessions"
-                value={filter}
-                onChange={(event) => setFilter(event.target.value)}
-              />
-            </div>
-            <ScrollArea className="h-full max-h-[420px] lg:max-h-none">
+          <div className="flex min-h-0 flex-1 flex-col rounded-lg border border-tn-border bg-tn-panel">
+            <ScrollArea className="flex-1 max-h-[420px] lg:max-h-none">
               <div className="px-4 py-3">
                 <CoordinatorTree
                   coordinators={coordinators}
@@ -276,6 +269,13 @@ export default function App() {
                 />
               </div>
             </ScrollArea>
+            <div className="border-t border-tn-border px-4 py-3">
+              <Input
+                placeholder="Filter coordinators or sessions"
+                value={filter}
+                onChange={(event) => setFilter(event.target.value)}
+              />
+            </div>
           </div>
         </aside>
 
