@@ -1,4 +1,10 @@
+# vtr Specification
 
+> Headless terminal multiplexer: container PTYs stream bytes to a central VT engine inside the coordinator. gRPC exposes screen state + I/O to heterogeneous clients (agent CLI, web UI). Decouples PTY lifecycle from rendering.
+
+## docs
+
+See `docs/*.md` for deeper documentation starting with `docs/spec.md`.
 
 <!-- br-agent-instructions-v1 -->
 
