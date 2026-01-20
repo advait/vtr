@@ -162,8 +162,8 @@ Deliverables:
 - Multi-coordinator discovery via `~/.config/vtr/config.toml` with CLI overrides.
 - Custom grid renderer implemented (no ANSI parsing).
 - WebSocket protocol using protobuf `Any` frames (SubscribeRequest/SubscribeEvent) implemented and documented.
-- Subscribe stream bridge (gRPC -> WS) with row-level deltas, backpressure resync,
-  and resize handling.
+- Subscribe stream bridge (gRPC -> WS) with full-screen updates and resize
+  handling (row-level deltas deferred).
 - Tailscale Serve tailnet-only setup documented (no Funnel).
 - UI screenshots captured for mobile + desktop review (shot or equivalent).
 

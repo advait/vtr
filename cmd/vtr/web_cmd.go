@@ -320,31 +320,31 @@ func handleWebInput(ctx context.Context, conn *websocket.Conn, client proto.VTRC
 		switch m := msg.(type) {
 		case *proto.SendTextRequest:
 			ctxTimeout, cancel := context.WithTimeout(ctx, rpcTimeout)
-			defer cancel()
 			_, err := client.SendText(ctxTimeout, &proto.SendTextRequest{
 				Name: session,
 				Text: m.GetText(),
 			})
+			cancel()
 			if err != nil {
 				return err
 			}
 		case *proto.SendKeyRequest:
 			ctxTimeout, cancel := context.WithTimeout(ctx, rpcTimeout)
-			defer cancel()
 			_, err := client.SendKey(ctxTimeout, &proto.SendKeyRequest{
 				Name: session,
 				Key:  m.GetKey(),
 			})
+			cancel()
 			if err != nil {
 				return err
 			}
 		case *proto.SendBytesRequest:
 			ctxTimeout, cancel := context.WithTimeout(ctx, rpcTimeout)
-			defer cancel()
 			_, err := client.SendBytes(ctxTimeout, &proto.SendBytesRequest{
 				Name: session,
 				Data: m.GetData(),
 			})
+			cancel()
 			if err != nil {
 				return err
 			}
