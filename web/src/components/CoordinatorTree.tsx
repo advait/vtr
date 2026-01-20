@@ -39,6 +39,22 @@ function statusBadge(status: SessionInfo["status"]) {
   }
 }
 
+function orderSessions(sessions: SessionInfo[]) {
+  const running: SessionInfo[] = [];
+  const unknown: SessionInfo[] = [];
+  const exited: SessionInfo[] = [];
+  for (const session of sessions) {
+    if (session.status === "running") {
+      running.push(session);
+    } else if (session.status === "exited") {
+      exited.push(session);
+    } else {
+      unknown.push(session);
+    }
+  }
+  return [...running, ...unknown, ...exited];
+}
+
 export function CoordinatorTree({
   coordinators,
   filter,
@@ -56,9 +72,9 @@ export function CoordinatorTree({
           `${coord.name}:${session.name}`.toLowerCase().includes(normalizedFilter)
         );
         if (coord.name.toLowerCase().includes(normalizedFilter)) {
-          return { ...coord, sessions: coord.sessions };
+          return { ...coord, sessions: orderSessions(coord.sessions) };
         }
-        return { ...coord, sessions: matchedSessions };
+        return { ...coord, sessions: orderSessions(matchedSessions) };
       })
       .filter((coord) => coord.sessions.length > 0);
   }, [coordinators, normalizedFilter]);
