@@ -342,21 +342,39 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 	offset, outputCh, _ := session.outputState()
 	includeScreen := req.IncludeScreenUpdates
 	includeRaw := req.IncludeRawOutput
+	resizeCh := session.resizeState()
+	sentInitialScreen := false
 
-	snap, err := s.coord.Snapshot(req.Name)
-	if err != nil {
-		return mapCoordinatorErr(err)
-	}
-	if err := stream.Send(&proto.SubscribeEvent{
-		Event: &proto.SubscribeEvent_ScreenUpdate{
-			ScreenUpdate: &proto.ScreenUpdate{Screen: screenResponseFromSnapshot(req.Name, snap)},
-		},
-	}); err != nil {
-		return err
+	if includeScreen {
+		snap, err := s.coord.Snapshot(req.Name)
+		if err != nil {
+			return mapCoordinatorErr(err)
+		}
+		if err := stream.Send(&proto.SubscribeEvent{
+			Event: &proto.SubscribeEvent_ScreenUpdate{
+				ScreenUpdate: keyframeUpdateFromSnapshot(session, req.Name, snap),
+			},
+		}); err != nil {
+			return err
+		}
+		sentInitialScreen = true
 	}
 
 	info := session.Info()
 	if info.State == SessionExited {
+		if includeScreen && !sentInitialScreen {
+			snap, err := s.coord.Snapshot(req.Name)
+			if err != nil {
+				return mapCoordinatorErr(err)
+			}
+			if err := stream.Send(&proto.SubscribeEvent{
+				Event: &proto.SubscribeEvent_ScreenUpdate{
+					ScreenUpdate: keyframeUpdateFromSnapshot(session, req.Name, snap),
+				},
+			}); err != nil {
+				return err
+			}
+		}
 		return stream.Send(&proto.SubscribeEvent{
 			Event: &proto.SubscribeEvent_SessionExited{
 				SessionExited: &proto.SessionExited{ExitCode: int32(info.ExitCode)},
@@ -406,7 +424,7 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 				}
 				if err := stream.Send(&proto.SubscribeEvent{
 					Event: &proto.SubscribeEvent_ScreenUpdate{
-						ScreenUpdate: &proto.ScreenUpdate{Screen: screenResponseFromSnapshot(req.Name, snap)},
+						ScreenUpdate: keyframeUpdateFromSnapshot(session, req.Name, snap),
 					},
 				}); err != nil {
 					return err
@@ -439,6 +457,11 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 			if includeScreen {
 				pendingScreen = true
 			}
+		case <-resizeCh:
+			if includeScreen {
+				pendingScreen = true
+			}
+			resizeCh = session.resizeState()
 		case <-tick:
 			if includeScreen && pendingScreen {
 				snap, err := s.coord.Snapshot(req.Name)
@@ -447,7 +470,7 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 				}
 				if err := stream.Send(&proto.SubscribeEvent{
 					Event: &proto.SubscribeEvent_ScreenUpdate{
-						ScreenUpdate: &proto.ScreenUpdate{Screen: screenResponseFromSnapshot(req.Name, snap)},
+						ScreenUpdate: keyframeUpdateFromSnapshot(session, req.Name, snap),
 					},
 				}); err != nil {
 					return err
@@ -568,6 +591,18 @@ func screenResponseFromSnapshot(name string, snap *Snapshot) *proto.GetScreenRes
 		CursorX:    int32(snap.CursorX),
 		CursorY:    int32(snap.CursorY),
 		ScreenRows: rows,
+	}
+}
+
+func keyframeUpdateFromSnapshot(session *Session, name string, snap *Snapshot) *proto.ScreenUpdate {
+	if session == nil {
+		return nil
+	}
+	return &proto.ScreenUpdate{
+		FrameId:     session.nextFrameID(),
+		BaseFrameId: 0,
+		IsKeyframe:  true,
+		Screen:      screenResponseFromSnapshot(name, snap),
 	}
 }
 

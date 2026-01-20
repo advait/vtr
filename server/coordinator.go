@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -391,6 +392,11 @@ type Session struct {
 	outputTotal int64
 	outputCh    chan struct{}
 	lastOutput  time.Time
+
+	resizeMu sync.Mutex
+	resizeCh chan struct{}
+
+	frameID uint64
 }
 
 func newSession(name string, cols, rows uint16, vt *VT, ptyHandle *PTY) *Session {
@@ -404,6 +410,7 @@ func newSession(name string, cols, rows uint16, vt *VT, ptyHandle *PTY) *Session
 		state:      SessionRunning,
 		exitCh:     make(chan struct{}),
 		outputCh:   make(chan struct{}),
+		resizeCh:   make(chan struct{}),
 		lastOutput: time.Now(),
 	}
 }
@@ -456,6 +463,26 @@ func (s *Session) SetSize(cols, rows uint16) {
 	s.cols = cols
 	s.rows = rows
 	s.mu.Unlock()
+	s.signalResize()
+}
+
+func (s *Session) nextFrameID() uint64 {
+	return atomic.AddUint64(&s.frameID, 1)
+}
+
+func (s *Session) resizeState() <-chan struct{} {
+	s.resizeMu.Lock()
+	ch := s.resizeCh
+	s.resizeMu.Unlock()
+	return ch
+}
+
+func (s *Session) signalResize() {
+	s.resizeMu.Lock()
+	ch := s.resizeCh
+	close(ch)
+	s.resizeCh = make(chan struct{})
+	s.resizeMu.Unlock()
 }
 
 func (s *Session) WaitExited(timeout time.Duration) bool {

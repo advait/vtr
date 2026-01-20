@@ -514,8 +514,8 @@ func TestGRPCSubscribeInitialSnapshot(t *testing.T) {
 	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
 	stream, err := client.Subscribe(ctx, &proto.SubscribeRequest{
 		Name:                 "grpc-subscribe",
-		IncludeScreenUpdates: false,
-		IncludeRawOutput:     true,
+		IncludeScreenUpdates: true,
+		IncludeRawOutput:     false,
 	})
 	if err != nil {
 		cancel()
@@ -529,6 +529,9 @@ func TestGRPCSubscribeInitialSnapshot(t *testing.T) {
 	update := event.GetScreenUpdate()
 	if update == nil || update.Screen == nil {
 		t.Fatalf("expected initial screen update, got %+v", event)
+	}
+	if !update.IsKeyframe || update.BaseFrameId != 0 || update.FrameId == 0 {
+		t.Fatalf("expected keyframe with frame_id set, got %+v", update)
 	}
 	screen := screenToString(update.Screen)
 	if !strings.Contains(screen, "ready") {
@@ -571,6 +574,10 @@ func TestGRPCSubscribeRawOutput(t *testing.T) {
 		if err != nil {
 			cancel()
 			t.Fatalf("Recv: %v", err)
+		}
+		if update := event.GetScreenUpdate(); update != nil {
+			cancel()
+			t.Fatalf("unexpected screen update for raw-only subscribe: %+v", update)
 		}
 		if data := event.GetRawOutput(); len(data) > 0 {
 			if strings.Contains(string(data), "raw-output") {
@@ -627,6 +634,9 @@ func TestGRPCSubscribeExitEvent(t *testing.T) {
 			t.Fatalf("Recv: %v", err)
 		}
 		if update := event.GetScreenUpdate(); update != nil {
+			if !update.IsKeyframe || update.BaseFrameId != 0 || update.FrameId == 0 {
+				t.Fatalf("expected keyframe with frame_id set, got %+v", update)
+			}
 			lastScreen = screenToString(update.Screen)
 			sawScreen = true
 			continue

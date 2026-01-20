@@ -200,7 +200,24 @@ message SubscribeRequest {
 }
 
 message ScreenUpdate {
-  GetScreenResponse screen = 1;
+  uint64 frame_id = 1;
+  uint64 base_frame_id = 2;  // 0 for keyframes
+  bool is_keyframe = 3;
+  GetScreenResponse screen = 4;  // full snapshot when is_keyframe
+  ScreenDelta delta = 5;  // row-level deltas when !is_keyframe
+}
+
+message ScreenDelta {
+  int32 cols = 1;
+  int32 rows = 2;
+  int32 cursor_x = 3;
+  int32 cursor_y = 4;
+  repeated RowDelta row_deltas = 5;  // full-row replacements
+}
+
+message RowDelta {
+  int32 row = 1;  // 0-based row index
+  ScreenRow row_data = 2;  // full row after update
 }
 
 message SessionExited {

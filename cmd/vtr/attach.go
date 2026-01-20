@@ -25,6 +25,7 @@ type attachModel struct {
 	stream       proto.VTR_SubscribeClient
 	streamCancel context.CancelFunc
 	streamID     int
+	frameID      uint64
 
 	width          int
 	height         int
@@ -229,7 +230,11 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		if update := msg.event.GetScreenUpdate(); update != nil {
-			m.screen = update.Screen
+			next, cmd := applyScreenUpdate(m, update)
+			m = next
+			if cmd != nil {
+				return m, cmd
+			}
 			return m, waitSubscribeCmd(m.stream, m.streamID)
 		}
 		if exited := msg.event.GetSessionExited(); exited != nil {
@@ -754,6 +759,7 @@ func switchSession(m attachModel, msg sessionSwitchMsg) (attachModel, tea.Cmd) {
 	m.streamID++
 	m.session = msg.name
 	m.screen = nil
+	m.frameID = 0
 	m.exited = false
 	m.exitCode = 0
 	m.leaderActive = false
@@ -762,6 +768,76 @@ func switchSession(m attachModel, msg sessionSwitchMsg) (attachModel, tea.Cmd) {
 	m.createInput.Blur()
 	m.statusMsg = fmt.Sprintf("attached to %s", msg.name)
 	m.statusUntil = time.Now().Add(2 * time.Second)
+	cmds := []tea.Cmd{startSubscribeCmd(m.client, m.session, m.streamID)}
+	if m.viewportWidth > 0 && m.viewportHeight > 0 {
+		cmds = append(cmds, resizeCmd(m.client, m.session, m.viewportWidth, m.viewportHeight))
+	}
+	return m, tea.Batch(cmds...)
+}
+
+func applyScreenUpdate(m attachModel, update *proto.ScreenUpdate) (attachModel, tea.Cmd) {
+	if update == nil {
+		return m, nil
+	}
+	if update.IsKeyframe {
+		if update.Screen != nil {
+			m.screen = update.Screen
+		}
+		m.frameID = update.FrameId
+		return m, nil
+	}
+	if update.BaseFrameId == 0 || update.FrameId == 0 {
+		return resubscribe(m, "invalid delta frame")
+	}
+	if m.frameID == 0 || update.BaseFrameId != m.frameID {
+		return resubscribe(m, "stream desync")
+	}
+	screen, err := applyScreenDelta(m.screen, update.Delta)
+	if err != nil {
+		return resubscribe(m, "delta apply failed")
+	}
+	m.screen = screen
+	m.frameID = update.FrameId
+	return m, nil
+}
+
+func applyScreenDelta(screen *proto.GetScreenResponse, delta *proto.ScreenDelta) (*proto.GetScreenResponse, error) {
+	if screen == nil || delta == nil {
+		return nil, fmt.Errorf("missing screen or delta")
+	}
+	cols := int(delta.GetCols())
+	rows := int(delta.GetRows())
+	if cols <= 0 || rows <= 0 {
+		return nil, fmt.Errorf("invalid delta size")
+	}
+	if int(screen.Cols) != cols || int(screen.Rows) != rows || len(screen.ScreenRows) != rows {
+		return nil, fmt.Errorf("delta size mismatch")
+	}
+	screen.Cols = int32(cols)
+	screen.Rows = int32(rows)
+	screen.CursorX = delta.CursorX
+	screen.CursorY = delta.CursorY
+	for _, rowDelta := range delta.RowDeltas {
+		rowIdx := int(rowDelta.Row)
+		if rowIdx < 0 || rowIdx >= rows {
+			return nil, fmt.Errorf("row delta out of range")
+		}
+		screen.ScreenRows[rowIdx] = rowDelta.RowData
+	}
+	return screen, nil
+}
+
+func resubscribe(m attachModel, reason string) (attachModel, tea.Cmd) {
+	if m.streamCancel != nil {
+		m.streamCancel()
+		m.streamCancel = nil
+	}
+	m.streamID++
+	m.frameID = 0
+	if reason != "" {
+		m.statusMsg = fmt.Sprintf("resync: %s", reason)
+		m.statusUntil = time.Now().Add(2 * time.Second)
+	}
 	cmds := []tea.Cmd{startSubscribeCmd(m.client, m.session, m.streamID)}
 	if m.viewportWidth > 0 && m.viewportHeight > 0 {
 		cmds = append(cmds, resizeCmd(m.client, m.session, m.viewportWidth, m.viewportHeight))

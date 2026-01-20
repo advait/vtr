@@ -149,6 +149,27 @@ Success criteria:
 
 Estimated complexity: L.
 
+## M6.5 - TUI Streaming Updates
+
+Goal: Align TUI streaming behavior with the unified streaming design.
+
+Status: planned.
+
+Deliverables:
+- Proto updates for streaming: `frame_id`, `base_frame_id`, `is_keyframe`, `ScreenDelta`, `RowDelta`.
+- Subscribe stream sends initial keyframe only when `include_screen_updates` is true.
+- Keyframe-only emission for M7, with delta semantics defined for post-M7.
+- Latest-only coalescing under backpressure with periodic keyframes and keyframe-on-resize.
+- TUI attach tracks `frame_id`, applies keyframes, drops mismatched deltas, and resubscribes on desync.
+- Tests for frame monotonicity, latest-only behavior, resize keyframes, and final-frame ordering.
+
+Success criteria:
+- TUI renders correctly using keyframes and handles resync without manual refresh.
+- Slow clients receive the latest frame without blocking the server stream indefinitely.
+- Subscribe semantics match `docs/streaming.md` and WebSocket bridge behavior.
+
+Estimated complexity: M.
+
 ## M7 - Web UI (Mobile-First)
 
 Goal: Deliver a touch-friendly browser UI with live terminal streaming over Tailscale.
@@ -173,6 +194,34 @@ Success criteria:
 - Works via Tailscale Serve on tailnet; Funnel not supported in M7.
 - Session exit, resize, and disconnects are handled without leaks or broken UI.
 - Coordinator tree view is responsive, searchable, and touch-friendly.
+
+Estimated complexity: L.
+
+## M7.1 - Web UI Streaming Updates
+
+Goal: Bring the in-repo Web UI up to date with the M7 streaming specs and ship a working, maintainable frontend.
+
+Status: planned.
+
+Deliverables:
+- Add in-repo Web UI source (`web/` app source + build tooling) using React + shadcn/ui with Bun + Vite, and ensure `web/dist` is generated for `vtr web`.
+- Implement the Tokyo Night UI spec (layout, typography, colors, spacing, mobile-first behavior) with 44px touch targets and responsive layout.
+- Build the coordinator tree view with search/filter, session status chips, and attach flow.
+- Implement the WS protobuf client using `Any` frames with the documented hello/subscribe/input/error flow, reconnect/resubscribe handling, and resize-on-attach.
+- Render terminal grid from `ScreenUpdate` without ANSI parsing; handle cursor/attributes, run-based rendering, font-load cell measurement (no layout jumps), ligatures, wide-char heuristics, and selection/copy.
+- Implement keyframe rendering now and delta handling (`frame_id`, `base_frame_id`, `is_keyframe`, `row_deltas`) for forward compatibility once proto/server updates land.
+- Handle session exit, disconnect/reconnect states, resize, and backpressure (latest-only rendering).
+- Input UX: tap-to-focus, paste, soft-key action tray (Ctrl/Esc/Tab/arrows/PgUp/PgDn), and a bottom input bar for mobile.
+- Add E2E coverage or a documented manual test plan that validates ANSI->screen rendering, resync behavior, and color/attribute correctness.
+- Document build/run steps and capture UI screenshots for mobile + desktop review.
+- Align WS server behavior with docs where needed (compression default, error frames, resize flow).
+
+Success criteria:
+- `vtr web` serves a functional UI from `web/dist` with no manual steps.
+- Phone/desktop can list sessions, attach, see live screen updates, and send input reliably.
+- Rendering stays in sync across reconnects/resizes; deltas apply correctly when enabled.
+- UI matches the Tokyo Night spec, avoids layout jumps on font load, and meets the performance goals.
+- Test coverage or documented manual steps exist for streaming, resync, and renderer correctness.
 
 Estimated complexity: L.
 
