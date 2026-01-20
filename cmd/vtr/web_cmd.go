@@ -9,9 +9,12 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -30,6 +33,8 @@ type webOptions struct {
 	addr         string
 	socket       string
 	coordinators []string
+	dev          bool
+	devServer    string
 }
 
 type webResolver struct {
@@ -76,7 +81,10 @@ func (s *wsSender) sendProto(ctx context.Context, msg goproto.Message) error {
 }
 
 func newWebCmd() *cobra.Command {
-	opts := webOptions{}
+	opts := webOptions{
+		dev:       envBool("VTR_WEB_DEV", false),
+		devServer: envString("VTR_WEB_DEV_SERVER", defaultViteDevServer),
+	}
 	cmd := &cobra.Command{
 		Use:   "web",
 		Short: "Serve the web UI",
@@ -90,16 +98,13 @@ func newWebCmd() *cobra.Command {
 	_ = cmd.Flags().MarkDeprecated("addr", "use --listen")
 	cmd.Flags().StringVar(&opts.socket, "socket", "", "path to coordinator socket")
 	cmd.Flags().StringArrayVar(&opts.coordinators, "coordinator", nil, "coordinator socket path or glob (repeatable)")
+	cmd.Flags().BoolVar(&opts.dev, "dev", opts.dev, "serve the web UI via the Vite dev server (HMR)")
+	cmd.Flags().StringVar(&opts.devServer, "dev-server", opts.devServer, "Vite dev server URL for --dev")
 
 	return cmd
 }
 
 func runWeb(opts webOptions) error {
-	dist, err := fs.Sub(webassets.DistFS, "dist")
-	if err != nil {
-		return err
-	}
-
 	resolver, err := newWebResolver(opts)
 	if err != nil {
 		return err
@@ -110,7 +115,20 @@ func runWeb(opts webOptions) error {
 	mux.HandleFunc("/api/ws", wsHandler)
 	mux.HandleFunc("/ws", wsHandler)
 	mux.HandleFunc("/api/sessions", handleWebSessions(resolver))
-	mux.Handle("/", http.FileServer(http.FS(dist)))
+	if opts.dev {
+		proxy, target, err := newViteProxy(opts.devServer)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("vtr web dev proxying to %s\n", target.String())
+		mux.Handle("/", proxy)
+	} else {
+		dist, err := fs.Sub(webassets.DistFS, "dist")
+		if err != nil {
+			return err
+		}
+		mux.Handle("/", http.FileServer(http.FS(dist)))
+	}
 
 	srv := &http.Server{
 		Addr:    opts.addr,
@@ -124,6 +142,58 @@ func runWeb(opts webOptions) error {
 	}
 
 	return srv.ListenAndServe()
+}
+
+const defaultViteDevServer = "http://127.0.0.1:5173"
+
+func envBool(name string, fallback bool) bool {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(raw)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func envString(name, fallback string) string {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback
+	}
+	return raw
+}
+
+func newViteProxy(raw string) (*httputil.ReverseProxy, *url.URL, error) {
+	target, err := parseDevServerURL(raw)
+	if err != nil {
+		return nil, nil, err
+	}
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		http.Error(w, fmt.Sprintf("vtr web dev proxy error: %v", err), http.StatusBadGateway)
+	}
+	return proxy, target, nil
+}
+
+func parseDevServerURL(raw string) (*url.URL, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return nil, errors.New("dev server URL is required when --dev is set")
+	}
+	if !strings.Contains(value, "://") {
+		value = "http://" + value
+	}
+	target, err := url.Parse(value)
+	if err != nil {
+		return nil, err
+	}
+	if target.Scheme == "" || target.Host == "" {
+		return nil, fmt.Errorf("invalid dev server URL %q", raw)
+	}
+	return target, nil
 }
 
 func webURL(addr string) string {

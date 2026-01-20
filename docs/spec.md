@@ -271,6 +271,9 @@ and input still flow over the WebSocket protobuf protocol.
 - CLI overrides: `--socket /path` for a single coordinator or `--coordinator`
   (repeatable path/glob) to replace config discovery.
 - `--listen` controls the HTTP bind address (default: `127.0.0.1:8080`).
+- Dev mode (HMR): run `cd web && bun install && bun run dev`, then
+  `vtr web --dev` to proxy the UI through Vite. Override the dev server with
+  `--dev-server` (or `VTR_WEB_DEV_SERVER`); `VTR_WEB_DEV=1` enables dev mode.
 
 ### HTTP API (M7)
 
