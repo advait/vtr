@@ -1087,9 +1087,8 @@ M10 standardizes the build system on mise for tool versions and task automation.
 
 ```toml
 [tools]
-go = "1.23"
-zig = "0.13"
-node = "22"
+go = "1.25.3"
+zig = "0.15.2"
 
 [tasks.shim]
 run = "cd go-ghostty/shim && zig build"
