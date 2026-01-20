@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,6 +17,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type attachModel struct {
@@ -48,6 +53,26 @@ type attachModel struct {
 
 	now time.Time
 	err error
+}
+
+const (
+	attrBold          uint32 = 0x01
+	attrItalic        uint32 = 0x02
+	attrUnderline     uint32 = 0x04
+	attrFaint         uint32 = 0x08
+	attrBlink         uint32 = 0x10
+	attrInverse       uint32 = 0x20
+	attrInvisible     uint32 = 0x40
+	attrStrikethrough uint32 = 0x80
+	attrOverline      uint32 = 0x100
+)
+
+type cellStyle struct {
+	fg    int32
+	bg    int32
+	fgSet bool
+	bgSet bool
+	attrs uint32
 }
 
 type subscribeStartMsg struct {
@@ -161,10 +186,15 @@ func newAttachCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			client := proto.NewVTRClient(conn)
+			if err := ensureSessionExists(client, target.Session); err != nil {
+				_ = conn.Close()
+				return err
+			}
 
 			model := attachModel{
 				conn:             conn,
-				client:           proto.NewVTRClient(conn),
+				client:           client,
 				coordinator:      target.Coordinator,
 				coords:           coords,
 				session:          target.Session,
@@ -194,6 +224,52 @@ func newAttachCmd() *cobra.Command {
 	}
 	addSocketFlag(cmd, &socket)
 	return cmd
+}
+
+func ensureSessionExists(client proto.VTRClient, name string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
+	defer cancel()
+	_, err := client.Info(ctx, &proto.InfoRequest{Name: name})
+	if err == nil {
+		return nil
+	}
+	if status.Code(err) != codes.NotFound {
+		return err
+	}
+	ok, err := confirmCreateSession(name)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("session %q not found", name)
+	}
+	ctx, cancel = context.WithTimeout(context.Background(), rpcTimeout)
+	defer cancel()
+	_, err = client.Spawn(ctx, &proto.SpawnRequest{Name: name})
+	if err != nil && status.Code(err) != codes.AlreadyExists {
+		return err
+	}
+	return nil
+}
+
+func confirmCreateSession(name string) (bool, error) {
+	reader := bufio.NewReader(os.Stdin)
+	for {
+		fmt.Fprintf(os.Stderr, "Session %q not found. Create it? [Y/n] ", name)
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return false, err
+		}
+		answer := strings.TrimSpace(strings.ToLower(line))
+		switch answer {
+		case "", "y", "yes":
+			return true, nil
+		case "n", "no":
+			return false, nil
+		default:
+			fmt.Fprintln(os.Stderr, "Please answer yes or no.")
+		}
+	}
 }
 
 func (m attachModel) Init() tea.Cmd {
@@ -340,7 +416,7 @@ func (m attachModel) View() string {
 	case m.listActive:
 		content = renderSessionList(m)
 	default:
-		content = renderScreen(m.screen, m.viewportWidth, m.viewportHeight)
+		content = renderScreen(m.screen, m.viewportWidth, m.viewportHeight, m.now)
 	}
 	border := attachBorderStyle
 	if m.exited {
@@ -857,41 +933,159 @@ func viewportSize(width, height int) (int, int) {
 	return cols, rows
 }
 
-func renderScreen(screen *proto.GetScreenResponse, width, height int) string {
+func renderScreen(screen *proto.GetScreenResponse, width, height int, now time.Time) string {
 	if width <= 0 || height <= 0 {
 		return ""
 	}
+	cursorX, cursorY := -1, -1
+	if screen != nil {
+		cursorX = int(screen.CursorX)
+		cursorY = int(screen.CursorY)
+	}
+	cursorOn := true
 	lines := make([]string, height)
 	for row := 0; row < height; row++ {
 		var screenRow *proto.ScreenRow
 		if screen != nil && row < len(screen.ScreenRows) {
 			screenRow = screen.ScreenRows[row]
 		}
-		lines[row] = renderRow(screenRow, width)
+		lines[row] = renderRow(screenRow, width, row, cursorX, cursorY, cursorOn)
 	}
 	return strings.Join(lines, "\n")
 }
 
-func renderRow(row *proto.ScreenRow, width int) string {
+func renderRow(row *proto.ScreenRow, width int, rowIdx, cursorX, cursorY int, cursorOn bool) string {
 	if width <= 0 {
 		return ""
 	}
-	var b strings.Builder
-	b.Grow(width)
 	if row == nil {
+		var b strings.Builder
+		b.Grow(width + 8)
+		b.WriteString("\x1b[0m")
 		for i := 0; i < width; i++ {
 			b.WriteByte(' ')
 		}
+		b.WriteString("\x1b[0m")
 		return b.String()
 	}
+	var b strings.Builder
+	b.Grow(width * 4)
+	b.WriteString("\x1b[0m")
+	lastStyle := cellStyle{}
+	styleSet := false
 	for col := 0; col < width; col++ {
-		if col < len(row.Cells) && row.Cells[col] != nil && row.Cells[col].Char != "" {
-			b.WriteString(row.Cells[col].Char)
-			continue
+		cell := (*proto.ScreenCell)(nil)
+		if col < len(row.Cells) {
+			cell = row.Cells[col]
 		}
-		b.WriteByte(' ')
+		style, ch := styleFromCell(cell)
+		if cursorOn && rowIdx == cursorY && col == cursorX {
+			style = cursorStyle(style)
+		}
+		if !styleSet || style != lastStyle {
+			writeStyleSGR(&b, style)
+			lastStyle = style
+			styleSet = true
+		}
+		b.WriteString(ch)
 	}
+	b.WriteString("\x1b[0m")
 	return b.String()
+}
+
+func styleFromCell(cell *proto.ScreenCell) (cellStyle, string) {
+	ch := " "
+	if cell == nil {
+		return cellStyle{}, ch
+	}
+	if cell.Char != "" {
+		ch = cell.Char
+	}
+	attrs := cell.Attributes &^ attrInverse
+	fgSet := cell.FgColor != 0
+	bgSet := cell.BgColor != 0
+	return cellStyle{
+		fg:    cell.FgColor,
+		bg:    cell.BgColor,
+		fgSet: fgSet,
+		bgSet: bgSet,
+		attrs: attrs,
+	}, ch
+}
+
+func cursorStyle(style cellStyle) cellStyle {
+	if style.fgSet || style.bgSet {
+		style.fg, style.bg = style.bg, style.fg
+		style.fgSet = true
+		style.bgSet = true
+		return style
+	}
+	style.attrs |= attrInverse
+	return style
+}
+
+func writeStyleSGR(b *strings.Builder, style cellStyle) {
+	b.WriteString("\x1b[0")
+	first := false
+	attrs := style.attrs
+	if attrs&attrBold != 0 {
+		writeSGRInt(b, &first, 1)
+	}
+	if attrs&attrFaint != 0 {
+		writeSGRInt(b, &first, 2)
+	}
+	if attrs&attrItalic != 0 {
+		writeSGRInt(b, &first, 3)
+	}
+	if attrs&attrUnderline != 0 {
+		writeSGRInt(b, &first, 4)
+	}
+	if attrs&attrBlink != 0 {
+		writeSGRInt(b, &first, 5)
+	}
+	if attrs&attrInverse != 0 {
+		writeSGRInt(b, &first, 7)
+	}
+	if attrs&attrInvisible != 0 {
+		writeSGRInt(b, &first, 8)
+	}
+	if attrs&attrStrikethrough != 0 {
+		writeSGRInt(b, &first, 9)
+	}
+	if attrs&attrOverline != 0 {
+		writeSGRInt(b, &first, 53)
+	}
+	if style.fgSet {
+		fgR, fgG, fgB := unpackRGB(style.fg)
+		writeSGRInt(b, &first, 38)
+		writeSGRInt(b, &first, 2)
+		writeSGRInt(b, &first, fgR)
+		writeSGRInt(b, &first, fgG)
+		writeSGRInt(b, &first, fgB)
+	}
+	if style.bgSet {
+		bgR, bgG, bgB := unpackRGB(style.bg)
+		writeSGRInt(b, &first, 48)
+		writeSGRInt(b, &first, 2)
+		writeSGRInt(b, &first, bgR)
+		writeSGRInt(b, &first, bgG)
+		writeSGRInt(b, &first, bgB)
+	}
+	b.WriteByte('m')
+}
+
+func writeSGRInt(b *strings.Builder, first *bool, value int) {
+	if *first {
+		*first = false
+	} else {
+		b.WriteByte(';')
+	}
+	b.WriteString(strconv.Itoa(value))
+}
+
+func unpackRGB(value int32) (int, int, int) {
+	v := uint32(value)
+	return int((v >> 16) & 0xff), int((v >> 8) & 0xff), int(v & 0xff)
 }
 
 func renderSessionList(m attachModel) string {
