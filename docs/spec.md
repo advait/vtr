@@ -18,7 +18,7 @@ vtr is a terminal multiplexer designed for the agent era. Each container runs a 
 - Multi-coordinator resolution supports `--socket` and `coordinator:session` with auto-disambiguation via per-coordinator lookup.
 - Grep uses scrollback dumps when available; falls back to screen/viewport dumps if history is unavailable.
 - WaitFor scans output emitted after the request starts using a rolling 1MB buffer.
-- M7 (partial): `vtr web` serves static assets + WS bridge (`hello`/`ready`/`screen_full`/`screen_delta`); REST JSON API and frontend assets are still pending.
+- M7 (partial): `vtr web` serves static assets + WS bridge using protobuf `Any` frames (SubscribeRequest/SubscribeEvent); REST JSON API and frontend assets are still pending.
 
 ## Architecture
 
@@ -259,9 +259,9 @@ Web UI server (Go HTTP)
 Coordinators (vtr serve)
 ```
 
-The Web UI runs as a dedicated `vtr web` command. It serves static assets,
-proxies REST/JSON for list/info/spawn/kill, and bridges `Subscribe` streaming
-to WebSocket.
+The Web UI runs as a dedicated `vtr web` command. It serves static assets and
+bridges `Subscribe` streaming + input over WebSocket using protobuf frames.
+M7 does not include a REST/JSON API.
 
 ### Command and configuration
 
@@ -273,33 +273,9 @@ to WebSocket.
 
 ### HTTP API (M7)
 
-The web server exposes a minimal JSON API for listing coordinators/sessions and
-basic lifecycle operations. All endpoints live under `/api` and reuse the CLI
-JSON shapes where possible.
-
-Endpoints:
-- `GET /api/coordinators` → `{ "coordinators": [{ "name": "project-a", "path": "/var/run/project-a.sock" }] }`
-- `GET /api/sessions?coordinator=project-a` → `{ "sessions": [...] }` (same as `vtr ls --json`)
-- `GET /api/sessions/{name}?coordinator=project-a` → `{ "session": ... }` (same as `vtr info --json`)
-- `POST /api/sessions` → spawn (maps to `SpawnRequest`)
-- `POST /api/sessions/{name}/kill` → `{ "ok": true }`
-- `DELETE /api/sessions/{name}?coordinator=project-a` → `{ "ok": true }`
-
-Spawn request body (JSON):
-```json
-{
-  "name": "codex",
-  "command": "/bin/bash",
-  "working_dir": "/workspace",
-  "env": { "FOO": "bar" },
-  "cols": 120,
-  "rows": 40,
-  "coordinator": "project-a"
-}
-```
-
-`coordinator` is optional for requests that accept it; if omitted, the server
-uses the standard session-address resolution rules and errors on ambiguity.
+No HTTP JSON API in M7. Session lifecycle and input flow over the WebSocket
+protobuf protocol; listing/spawn/kill will be added later via a WS RPC envelope
+or a small REST layer if needed.
 
 ### Frontend stack (decision)
 
@@ -370,7 +346,7 @@ Visual QA:
   session exits or the socket is down.
 - Input feel: tap-to-focus is reliable; paste works; on-screen controls and
   keyboard input never fight for focus.
-- Performance: row-level updates apply within a frame budget; avoid per-cell DOM
+- Performance: screen updates apply within a frame budget; avoid per-cell DOM
   churn by using run-based rendering.
 - Fit-and-finish: crisp borders, consistent spacing, 44px tap targets, and
   readable contrast across all states.
@@ -460,12 +436,10 @@ Screen cell semantics:
 
 - Web clients render directly from `ScreenRow`/`ScreenCell` data.
 - `Subscribe` streams `ScreenUpdate` (structured grid), not raw output bytes.
-- The web server computes row-level deltas from full screens and emits
-  `screen_delta` events to reduce payload size.
-- Row diff: if any cell in a row changes (char/fg/bg/attrs), send the full row
-  in the delta; no per-cell diffs in M7.
-- Renderer state is a `rows x cols` grid plus cursor state. `screen_full`
-  replaces the grid; `screen_delta` replaces only the listed rows.
+- The web server forwards `SubscribeEvent` frames as-is over WebSocket.
+- Renderer state is a `rows x cols` grid plus cursor state; each `ScreenUpdate`
+  replaces the grid.
+- Row-level deltas are a post-M7 optimization.
 
 ### Rendering considerations
 
@@ -512,65 +486,48 @@ Recommended: server-side bridge in Go, not gRPC-Web.
 
 Bridge behavior:
 - WS endpoint: `GET /api/ws`.
-- First client frame must be `hello`. The server resolves the coordinator/session
-  and returns `error` on ambiguity.
-- If `hello` includes `cols`/`rows`, the server calls `Resize` before the initial
-  `GetScreen`. If the size changes later, the server sends a new `screen_full`.
-- Start `Subscribe` with `include_screen_updates` enabled.
-- Convert each `ScreenUpdate` to row deltas against the last sent snapshot and
-  emit `screen_delta` events.
-- Backpressure: keep only the latest snapshot per client. If deltas are dropped,
-  send a `screen_full` resync before further deltas.
-- `session_exited` is the final event; the server closes the WS afterward.
+- Frames are binary protobuf `google.protobuf.Any` messages.
+- First client frame must be `SubscribeRequest` (name can use `coordinator:session`
+  when multiple coordinators are configured). The server resolves the target or
+  returns a `google.rpc.Status` error on ambiguity.
+- Client input frames use `ResizeRequest`, `SendTextRequest`, `SendKeyRequest`,
+  or `SendBytesRequest` wrapped in `Any`.
+- Server frames are `SubscribeEvent` wrapped in `Any` (full `ScreenUpdate` +
+  `SessionExited`). `google.rpc.Status` is sent on protocol/resolve errors, then
+  the socket closes.
 
 ### WebSocket API (M7)
 
-Prefer JSON text frames for both control and screen updates in M7. If payloads
-grow too large, add a binary `screen_delta` frame (protobuf or custom) later.
+Frames are binary protobuf `google.protobuf.Any`. The embedded message type
+identifies the payload.
 
 Message flow:
-1. Client sends `hello`.
-2. Server replies with `ready`, then `screen_full`.
-3. Server streams `screen_delta` until `session_exited`.
+1. Client sends `SubscribeRequest` (Any).
+2. Client may send `ResizeRequest` immediately after to set initial size.
+3. Server streams `SubscribeEvent` (Any) until `SessionExited`.
+4. On error, server sends `google.rpc.Status` (Any) and closes the socket.
 
-Client -> server (JSON):
-```json
-{"type":"hello","coordinator":"project-a","session":"codex","cols":3,"rows":1}
-{"type":"resize","cols":3,"rows":1}
-{"type":"input","kind":"text","data":"ls -la\n"}
-{"type":"input","kind":"key","data":"ctrl+c"}
-```
+Client -> server (Any-wrapped protobuf):
+- `vtr.SubscribeRequest { name: "project-a:codex", include_screen_updates: true }`
+- `vtr.ResizeRequest { cols: 120, rows: 40 }`
+- `vtr.SendTextRequest { text: "ls -la\n" }`
+- `vtr.SendKeyRequest { key: "ctrl+c" }`
 
-Server -> client (JSON):
-```json
-{"type":"ready","coordinator":"project-a","session":"codex","cols":3,"rows":1}
-{"type":"screen_full","screen":{...}}
-{"type":"screen_delta","delta":{"cursor":{"x":2,"y":0},"rows":[{"y":0,"cells":[["R",16711680,0,1],["E",16711680,0,1],["D",16711680,0,1]]}]}}
-{"type":"session_exited","exit_code":0}
-{"type":"error","code":"not_found","message":"unknown session"}
-```
-
-Screen payload schema:
-- `Cell` = `[char, fg_color, bg_color, attributes]`
-- `ScreenSnapshot` = `{ "cols": int, "rows": int, "cursor": { "x": int, "y": int }, "rows": Cell[][] }`
-- `RowDelta` = `{ "y": int, "cells": Cell[] }` (full row, length = `cols`)
-- `ScreenDelta` = `{ "cursor": { "x": int, "y": int }, "rows": RowDelta[] }`
+Server -> client (Any-wrapped protobuf):
+- `vtr.SubscribeEvent { screen_update: { screen: GetScreenResponse{...} } }`
+- `vtr.SubscribeEvent { session_exited: { exit_code: 0 } }`
+- `google.rpc.Status { code: 5, message: "unknown session" }`
 
 Notes:
+- `SubscribeRequest.name` is required; it may include `coordinator:session` to
+  disambiguate when multiple coordinators are configured.
+- `ResizeRequest` is optional and can be sent after the initial `SubscribeRequest`.
+- `SubscribeEvent` currently carries full screens; row-level deltas are
+  deferred.
 - Indices are 0-based.
-- `screen_full.screen.rows` is a dense 2D array (`rows[y][x]`).
-- `screen_full` uses the compact tuple format above, not raw protobuf JSON.
-- `Cell[0]` is a single Unicode codepoint string; treat it as atomic.
-- `screen_delta` may include only cursor changes (`rows` can be empty).
-- `input.kind` maps to `SendText` or `SendKey` using the same key names as the CLI.
-- `hello.session` is required; `hello.coordinator` is optional and follows the
-  standard session-address resolution rules. Errors should send `error` and
-  close the socket.
 
-Compression/deltas:
-- Enable WebSocket permessage-deflate for JSON frames.
-- Resync rules: on connect, on resize, and whenever the bridge drops deltas due
-  to backpressure (explicit `screen_full` before more deltas).
+Compression:
+- Enable WebSocket permessage-deflate for binary frames if needed.
 
 ### Tailscale Serve integration
 
@@ -596,20 +553,20 @@ explicitly out of scope for this milestone.
 
 ### M7 decisions (final)
 
-- Delta format: row-level full rows; `screen_full` resync on connect, resize, and
-  whenever deltas are dropped due to backpressure.
+- Delta format: full-screen `SubscribeEvent` updates in M7; row-level deltas
+  deferred.
 - Cursor: block cursor with no blink; visibility is assumed true in M7.
 - Wide/combining: client-side `wcwidth` heuristic (see Rendering considerations);
   accept limitations until wide metadata is exposed.
 - Scrollback: out of scope for M7 (viewport only).
-- Encoding: JSON frames with permessage-deflate; binary deltas are post-M7.
+- Encoding: protobuf `Any` frames; permessage-deflate optional.
 
 ### Post-M7 considerations
 
 - Add cursor visibility/style fields to the proto or WS schema.
 - Expose wide/continuation metadata and grapheme cluster text in `ScreenCell`.
 - Add scrollback RPC + UI paging.
-- Introduce binary delta frames if JSON payloads become too large.
+- Add row-level delta frames for `SubscribeEvent` updates.
 
 ### Config Management
 
@@ -1151,7 +1108,7 @@ chmod 660 /var/run/vtr.sock
 
 1. React + shadcn/ui frontend with Tokyo Night palette and JetBrains Mono
 2. Bun + Vite dev tooling and HMR workflow
-3. Custom grid renderer using `ScreenUpdate` deltas (no ANSI parsing)
+3. Custom grid renderer using `ScreenUpdate` frames (no ANSI parsing; deltas optional)
 4. WebSocket -> gRPC bridge in `vtr web`
 5. Multi-coordinator tree view from `~/.config/vtr/config.toml`
 6. Tailnet-only Tailscale Serve integration

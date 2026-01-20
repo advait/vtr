@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,18 +13,12 @@ import (
 	proto "github.com/advait/vtrpc/proto"
 	webassets "github.com/advait/vtrpc/web"
 	"github.com/spf13/cobra"
+	statuspb "google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	goproto "google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
 	"nhooyr.io/websocket"
-)
-
-const (
-	wsCodeNotFound        = "not_found"
-	wsCodeAlreadyExists   = "already_exists"
-	wsCodeNotRunning      = "not_running"
-	wsCodeInternal        = "internal_error"
-	wsCodeInvalidArgument = "invalid_argument"
-	wsCodeAmbiguous       = "ambiguous"
 )
 
 type webOptions struct {
@@ -49,85 +42,8 @@ func (r webResolver) coordinators() ([]coordinatorRef, error) {
 	return r.coords, nil
 }
 
-type wsHello struct {
-	Type        string `json:"type"`
-	Coordinator string `json:"coordinator,omitempty"`
-	Session     string `json:"session"`
-	Cols        int32  `json:"cols,omitempty"`
-	Rows        int32  `json:"rows,omitempty"`
-}
-
-type wsClientMessage struct {
-	Type string `json:"type"`
-	Kind string `json:"kind,omitempty"`
-	Data string `json:"data,omitempty"`
-	Cols int32  `json:"cols,omitempty"`
-	Rows int32  `json:"rows,omitempty"`
-}
-
-type wsReady struct {
-	Type        string `json:"type"`
-	Coordinator string `json:"coordinator"`
-	Session     string `json:"session"`
-	Cols        int32  `json:"cols"`
-	Rows        int32  `json:"rows"`
-}
-
-type wsErrorMessage struct {
-	Type    string `json:"type"`
-	Code    string `json:"code"`
-	Message string `json:"message"`
-}
-
-type wsCursor struct {
-	X int32 `json:"x"`
-	Y int32 `json:"y"`
-}
-
-type wsScreenSnapshot struct {
-	Cols   int32      `json:"cols"`
-	Cursor wsCursor   `json:"cursor"`
-	Rows   [][]wsCell `json:"rows"`
-}
-
-type wsScreenFullMessage struct {
-	Type   string           `json:"type"`
-	Screen wsScreenSnapshot `json:"screen"`
-}
-
-type wsRowDelta struct {
-	Y     int32    `json:"y"`
-	Cells []wsCell `json:"cells"`
-}
-
-type wsScreenDelta struct {
-	Cursor wsCursor     `json:"cursor"`
-	Rows   []wsRowDelta `json:"rows"`
-}
-
-type wsScreenDeltaMessage struct {
-	Type  string        `json:"type"`
-	Delta wsScreenDelta `json:"delta"`
-}
-
-type wsSessionExitedMessage struct {
-	Type     string `json:"type"`
-	ExitCode int32  `json:"exit_code"`
-}
-
-type wsCell struct {
-	Char       string
-	FgColor    int32
-	BgColor    int32
-	Attributes uint32
-}
-
-func (c wsCell) MarshalJSON() ([]byte, error) {
-	return json.Marshal([]any{c.Char, c.FgColor, c.BgColor, c.Attributes})
-}
-
 type wsProtocolError struct {
-	Code    string
+	Code    codes.Code
 	Message string
 }
 
@@ -140,21 +56,18 @@ type wsSender struct {
 	mu   sync.Mutex
 }
 
-func (s *wsSender) sendJSON(ctx context.Context, value any) error {
-	payload, err := json.Marshal(value)
+func (s *wsSender) sendProto(ctx context.Context, msg goproto.Message) error {
+	envelope, err := anypb.New(msg)
+	if err != nil {
+		return err
+	}
+	payload, err := goproto.Marshal(envelope)
 	if err != nil {
 		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.conn.Write(ctx, websocket.MessageText, payload)
-}
-
-type wsScreenState struct {
-	cols     int32
-	rows     int32
-	cursor   wsCursor
-	rowsData [][]wsCell
+	return s.conn.Write(ctx, websocket.MessageBinary, payload)
 }
 
 func newWebCmd() *cobra.Command {
@@ -222,7 +135,7 @@ func handleWebsocket(resolver webResolver) http.HandlerFunc {
 			return
 		}
 
-		target, err := resolveWebTarget(ctx, hello, resolver)
+		target, err := resolveWebTarget(ctx, hello.GetName(), resolver)
 		if err != nil {
 			_ = sendWSError(ctx, sender, err)
 			return
@@ -237,19 +150,12 @@ func handleWebsocket(resolver webResolver) http.HandlerFunc {
 
 		client := proto.NewVTRClient(grpcConn)
 
-		if hello.Cols > 0 && hello.Rows > 0 {
-			if err := resizeSession(ctx, client, target.Session, hello.Cols, hello.Rows); err != nil {
-				_ = sendWSError(ctx, sender, err)
-				return
-			}
-		}
-
 		streamCtx, streamCancel := context.WithCancel(ctx)
 		defer streamCancel()
 		stream, err := client.Subscribe(streamCtx, &proto.SubscribeRequest{
 			Name:                 target.Session,
-			IncludeScreenUpdates: true,
-			IncludeRawOutput:     false,
+			IncludeScreenUpdates: hello.GetIncludeScreenUpdates(),
+			IncludeRawOutput:     hello.GetIncludeRawOutput(),
 		})
 		if err != nil {
 			_ = sendWSError(ctx, sender, err)
@@ -258,7 +164,7 @@ func handleWebsocket(resolver webResolver) http.HandlerFunc {
 
 		errCh := make(chan error, 2)
 		go func() {
-			errCh <- streamToWeb(ctx, sender, stream, target)
+			errCh <- streamToWeb(ctx, sender, stream)
 		}()
 		go func() {
 			errCh <- handleWebInput(ctx, conn, client, target.Session)
@@ -273,50 +179,54 @@ func handleWebsocket(resolver webResolver) http.HandlerFunc {
 	}
 }
 
-func readHello(ctx context.Context, conn *websocket.Conn) (wsHello, error) {
+func readHello(ctx context.Context, conn *websocket.Conn) (*proto.SubscribeRequest, error) {
 	msgType, data, err := conn.Read(ctx)
 	if err != nil {
-		return wsHello{}, err
+		return nil, err
 	}
-	if msgType != websocket.MessageText {
-		return wsHello{}, wsProtocolError{Code: wsCodeInvalidArgument, Message: "hello must be text"}
+	if msgType != websocket.MessageBinary {
+		return nil, wsProtocolError{Code: codes.InvalidArgument, Message: "hello must be a protobuf binary frame"}
 	}
-	var hello wsHello
-	if err := json.Unmarshal(data, &hello); err != nil {
-		return wsHello{}, wsProtocolError{Code: wsCodeInvalidArgument, Message: "invalid hello JSON"}
+	msg, err := unmarshalAny(data)
+	if err != nil {
+		return nil, err
 	}
-	if hello.Type != "hello" {
-		return wsHello{}, wsProtocolError{Code: wsCodeInvalidArgument, Message: "expected hello message"}
+	hello, ok := msg.(*proto.SubscribeRequest)
+	if !ok {
+		return nil, wsProtocolError{Code: codes.InvalidArgument, Message: "expected SubscribeRequest hello"}
 	}
-	hello.Session = strings.TrimSpace(hello.Session)
-	hello.Coordinator = strings.TrimSpace(hello.Coordinator)
-	if hello.Session == "" {
-		return wsHello{}, wsProtocolError{Code: wsCodeInvalidArgument, Message: "session is required"}
+	hello.Name = strings.TrimSpace(hello.Name)
+	if hello.Name == "" {
+		return nil, wsProtocolError{Code: codes.InvalidArgument, Message: "session is required"}
 	}
-	if hello.Cols < 0 || hello.Rows < 0 {
-		return wsHello{}, wsProtocolError{Code: wsCodeInvalidArgument, Message: "cols and rows must be >= 0"}
+	if !hello.IncludeScreenUpdates && !hello.IncludeRawOutput {
+		return nil, wsProtocolError{Code: codes.InvalidArgument, Message: "subscribe requires screen updates or raw output"}
 	}
 	return hello, nil
 }
 
-func resolveWebTarget(ctx context.Context, hello wsHello, resolver webResolver) (sessionTarget, error) {
+func unmarshalAny(data []byte) (goproto.Message, error) {
+	var envelope anypb.Any
+	if err := goproto.Unmarshal(data, &envelope); err != nil {
+		return nil, wsProtocolError{Code: codes.InvalidArgument, Message: "invalid protobuf frame"}
+	}
+	msg, err := anypb.UnmarshalNew(&envelope, goproto.UnmarshalOptions{})
+	if err != nil {
+		return nil, wsProtocolError{Code: codes.InvalidArgument, Message: "unsupported message type"}
+	}
+	return msg, nil
+}
+
+func resolveWebTarget(ctx context.Context, sessionRef string, resolver webResolver) (sessionTarget, error) {
 	coords, err := resolver.coordinators()
 	if err != nil {
 		return sessionTarget{}, err
 	}
-
-	if hello.Coordinator != "" {
-		if _, _, ok := parseSessionRef(hello.Session); ok {
-			return sessionTarget{}, wsProtocolError{Code: wsCodeInvalidArgument, Message: "session must not include coordinator prefix"}
-		}
-		coord, err := findCoordinatorByName(coords, hello.Coordinator)
-		if err != nil {
-			return sessionTarget{}, wrapResolveError(err)
-		}
-		return sessionTarget{Coordinator: coord, Session: hello.Session}, nil
+	sessionRef = strings.TrimSpace(sessionRef)
+	if sessionRef == "" {
+		return sessionTarget{}, wsProtocolError{Code: codes.InvalidArgument, Message: "session is required"}
 	}
-
-	target, err := resolveSessionTarget(ctx, coords, "", hello.Session)
+	target, err := resolveSessionTarget(ctx, coords, "", sessionRef)
 	if err != nil {
 		return sessionTarget{}, wrapResolveError(err)
 	}
@@ -370,9 +280,11 @@ func wrapResolveError(err error) error {
 	lower := strings.ToLower(msg)
 	switch {
 	case strings.Contains(lower, "ambiguous") || strings.Contains(lower, "multiple coordinators"):
-		return wsProtocolError{Code: wsCodeAmbiguous, Message: msg}
-	case strings.Contains(lower, "not found") || strings.Contains(lower, "unknown coordinator") || strings.Contains(lower, "no coordinators configured"):
-		return wsProtocolError{Code: wsCodeNotFound, Message: msg}
+		return wsProtocolError{Code: codes.InvalidArgument, Message: msg}
+	case strings.Contains(lower, "not found") || strings.Contains(lower, "unknown coordinator"):
+		return wsProtocolError{Code: codes.NotFound, Message: msg}
+	case strings.Contains(lower, "no coordinators configured"):
+		return wsProtocolError{Code: codes.FailedPrecondition, Message: msg}
 	default:
 		return err
 	}
@@ -380,7 +292,7 @@ func wrapResolveError(err error) error {
 
 func resizeSession(ctx context.Context, client proto.VTRClient, session string, cols, rows int32) error {
 	if cols <= 0 || rows <= 0 {
-		return wsProtocolError{Code: wsCodeInvalidArgument, Message: "resize requires cols and rows"}
+		return wsProtocolError{Code: codes.InvalidArgument, Message: "resize requires cols and rows"}
 	}
 	ctxTimeout, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
@@ -398,56 +310,55 @@ func handleWebInput(ctx context.Context, conn *websocket.Conn, client proto.VTRC
 		if err != nil {
 			return err
 		}
-		if msgType != websocket.MessageText {
-			return wsProtocolError{Code: wsCodeInvalidArgument, Message: "messages must be text"}
+		if msgType != websocket.MessageBinary {
+			return wsProtocolError{Code: codes.InvalidArgument, Message: "messages must be protobuf binary frames"}
 		}
-		var msg wsClientMessage
-		if err := json.Unmarshal(data, &msg); err != nil {
-			return wsProtocolError{Code: wsCodeInvalidArgument, Message: "invalid message JSON"}
+		msg, err := unmarshalAny(data)
+		if err != nil {
+			return err
 		}
-		switch msg.Type {
-		case "input":
-			if err := handleInputMessage(ctx, client, session, msg); err != nil {
+		switch m := msg.(type) {
+		case *proto.SendTextRequest:
+			ctxTimeout, cancel := context.WithTimeout(ctx, rpcTimeout)
+			defer cancel()
+			_, err := client.SendText(ctxTimeout, &proto.SendTextRequest{
+				Name: session,
+				Text: m.GetText(),
+			})
+			if err != nil {
 				return err
 			}
-		case "resize":
-			if err := resizeSession(ctx, client, session, msg.Cols, msg.Rows); err != nil {
+		case *proto.SendKeyRequest:
+			ctxTimeout, cancel := context.WithTimeout(ctx, rpcTimeout)
+			defer cancel()
+			_, err := client.SendKey(ctxTimeout, &proto.SendKeyRequest{
+				Name: session,
+				Key:  m.GetKey(),
+			})
+			if err != nil {
+				return err
+			}
+		case *proto.SendBytesRequest:
+			ctxTimeout, cancel := context.WithTimeout(ctx, rpcTimeout)
+			defer cancel()
+			_, err := client.SendBytes(ctxTimeout, &proto.SendBytesRequest{
+				Name: session,
+				Data: m.GetData(),
+			})
+			if err != nil {
+				return err
+			}
+		case *proto.ResizeRequest:
+			if err := resizeSession(ctx, client, session, m.GetCols(), m.GetRows()); err != nil {
 				return err
 			}
 		default:
-			return wsProtocolError{Code: wsCodeInvalidArgument, Message: fmt.Sprintf("unknown message type %q", msg.Type)}
+			return wsProtocolError{Code: codes.InvalidArgument, Message: fmt.Sprintf("unsupported message type %T", msg)}
 		}
 	}
 }
 
-func handleInputMessage(ctx context.Context, client proto.VTRClient, session string, msg wsClientMessage) error {
-	kind := strings.TrimSpace(msg.Kind)
-	switch kind {
-	case "text":
-		ctxTimeout, cancel := context.WithTimeout(ctx, rpcTimeout)
-		defer cancel()
-		_, err := client.SendText(ctxTimeout, &proto.SendTextRequest{
-			Name: session,
-			Text: msg.Data,
-		})
-		return err
-	case "key":
-		ctxTimeout, cancel := context.WithTimeout(ctx, rpcTimeout)
-		defer cancel()
-		_, err := client.SendKey(ctxTimeout, &proto.SendKeyRequest{
-			Name: session,
-			Key:  msg.Data,
-		})
-		return err
-	default:
-		return wsProtocolError{Code: wsCodeInvalidArgument, Message: fmt.Sprintf("unknown input kind %q", msg.Kind)}
-	}
-}
-
-func streamToWeb(ctx context.Context, sender *wsSender, stream proto.VTR_SubscribeClient, target sessionTarget) error {
-	var prev wsScreenState
-	hasPrev := false
-	readySent := false
+func streamToWeb(ctx context.Context, sender *wsSender, stream proto.VTR_SubscribeClient) error {
 	for {
 		event, err := stream.Recv()
 		if err != nil {
@@ -456,185 +367,44 @@ func streamToWeb(ctx context.Context, sender *wsSender, stream proto.VTR_Subscri
 			}
 			return err
 		}
-		switch ev := event.Event.(type) {
-		case *proto.SubscribeEvent_ScreenUpdate:
-			screen := ev.ScreenUpdate.GetScreen()
-			if screen == nil {
-				continue
-			}
-			current := screenStateFromProto(screen)
-			if !readySent {
-				ready := wsReady{
-					Type:        "ready",
-					Coordinator: target.Coordinator.Name,
-					Session:     target.Session,
-					Cols:        current.cols,
-					Rows:        current.rows,
-				}
-				if err := sender.sendJSON(ctx, ready); err != nil {
-					return err
-				}
-				readySent = true
-			}
-			if !hasPrev || prev.cols != current.cols || prev.rows != current.rows {
-				msg := wsScreenFullMessage{
-					Type: "screen_full",
-					Screen: wsScreenSnapshot{
-						Cols:   current.cols,
-						Cursor: current.cursor,
-						Rows:   current.rowsData,
-					},
-				}
-				if err := sender.sendJSON(ctx, msg); err != nil {
-					return err
-				}
-				prev = current
-				hasPrev = true
-				continue
-			}
-			rowDeltas := diffScreenRows(prev.rowsData, current.rowsData)
-			cursorChanged := prev.cursor != current.cursor
-			if cursorChanged || len(rowDeltas) > 0 {
-				msg := wsScreenDeltaMessage{
-					Type: "screen_delta",
-					Delta: wsScreenDelta{
-						Cursor: current.cursor,
-						Rows:   rowDeltas,
-					},
-				}
-				if err := sender.sendJSON(ctx, msg); err != nil {
-					return err
-				}
-			}
-			prev = current
-		case *proto.SubscribeEvent_SessionExited:
-			msg := wsSessionExitedMessage{
-				Type:     "session_exited",
-				ExitCode: ev.SessionExited.GetExitCode(),
-			}
-			if err := sender.sendJSON(ctx, msg); err != nil {
-				return err
-			}
-			return nil
-		case *proto.SubscribeEvent_RawOutput:
-			// Ignored for the web bridge.
+		if err := sender.sendProto(ctx, event); err != nil {
+			return err
 		}
 	}
-}
-
-func screenStateFromProto(screen *proto.GetScreenResponse) wsScreenState {
-	cols := screen.GetCols()
-	rows := screen.GetRows()
-	if cols < 0 {
-		cols = 0
-	}
-	if rows < 0 {
-		rows = 0
-	}
-	rowCount := int(rows)
-	colCount := int(cols)
-	rowsData := make([][]wsCell, rowCount)
-	screenRows := screen.GetScreenRows()
-	for y := 0; y < rowCount; y++ {
-		rowCells := make([]wsCell, colCount)
-		if y < len(screenRows) {
-			cells := screenRows[y].GetCells()
-			for x := 0; x < colCount; x++ {
-				if x < len(cells) {
-					rowCells[x] = wsCellFromProto(cells[x])
-				}
-			}
-		}
-		rowsData[y] = rowCells
-	}
-	return wsScreenState{
-		cols:     cols,
-		rows:     rows,
-		cursor:   wsCursor{X: screen.GetCursorX(), Y: screen.GetCursorY()},
-		rowsData: rowsData,
-	}
-}
-
-func wsCellFromProto(cell *proto.ScreenCell) wsCell {
-	if cell == nil {
-		return wsCell{}
-	}
-	return wsCell{
-		Char:       cell.GetChar(),
-		FgColor:    cell.GetFgColor(),
-		BgColor:    cell.GetBgColor(),
-		Attributes: cell.GetAttributes(),
-	}
-}
-
-func diffScreenRows(prev, current [][]wsCell) []wsRowDelta {
-	rowCount := len(current)
-	if rowCount == 0 {
-		return nil
-	}
-	deltas := make([]wsRowDelta, 0, rowCount)
-	for y := 0; y < rowCount; y++ {
-		row := current[y]
-		if y >= len(prev) || !rowsEqual(prev[y], row) {
-			deltas = append(deltas, wsRowDelta{Y: int32(y), Cells: row})
-		}
-	}
-	return deltas
-}
-
-func rowsEqual(left, right []wsCell) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for i := range left {
-		if left[i] != right[i] {
-			return false
-		}
-	}
-	return true
 }
 
 func sendWSError(ctx context.Context, sender *wsSender, err error) error {
-	if err == nil {
+	status := wsErrorStatus(err)
+	if status == nil {
 		return nil
 	}
-	code := wsErrorCode(err)
-	if code == "" {
-		return nil
-	}
-	return sender.sendJSON(ctx, wsErrorMessage{
-		Type:    "error",
-		Code:    code,
-		Message: err.Error(),
-	})
+	return sender.sendProto(ctx, status)
 }
 
-func wsErrorCode(err error) string {
+func wsErrorStatus(err error) *statuspb.Status {
 	if err == nil {
-		return ""
+		return nil
+	}
+	if errors.Is(err, context.Canceled) {
+		return nil
 	}
 	var wsErr wsProtocolError
 	if errors.As(err, &wsErr) {
-		return wsErr.Code
-	}
-	if errors.Is(err, context.Canceled) {
-		return ""
-	}
-	if st, ok := status.FromError(err); ok {
-		switch st.Code() {
-		case codes.NotFound:
-			return wsCodeNotFound
-		case codes.AlreadyExists:
-			return wsCodeAlreadyExists
-		case codes.FailedPrecondition:
-			return wsCodeNotRunning
-		case codes.InvalidArgument:
-			return wsCodeInvalidArgument
-		default:
-			return wsCodeInternal
+		return &statuspb.Status{
+			Code:    int32(wsErr.Code),
+			Message: wsErr.Message,
 		}
 	}
-	return wsCodeInternal
+	if st, ok := status.FromError(err); ok {
+		return &statuspb.Status{
+			Code:    int32(st.Code()),
+			Message: st.Message(),
+		}
+	}
+	return &statuspb.Status{
+		Code:    int32(codes.Internal),
+		Message: err.Error(),
+	}
 }
 
 func isNormalWSClose(err error) bool {

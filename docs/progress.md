@@ -112,7 +112,7 @@ Estimated complexity: L.
 
 Goal: Deliver a touch-friendly browser UI with live terminal streaming over Tailscale.
 
-Status: in progress (partial; web command + WS bridge implemented).
+Status: in progress (partial; web command + protobuf WS bridge implemented).
 
 Deliverables:
 - Dedicated `vtr web` command serving static assets + WebSocket bridge.
@@ -120,7 +120,7 @@ Deliverables:
 - Mobile-first layout: coordinator tree view, attach view, and on-screen input controls.
 - Multi-coordinator discovery via `~/.config/vtr/config.toml` with CLI overrides.
 - Custom grid renderer implemented (no ANSI parsing).
-- WebSocket protocol (`hello`/`ready`/`screen_full`/`screen_delta`) implemented and documented.
+- WebSocket protocol using protobuf `Any` frames (SubscribeRequest/SubscribeEvent) implemented and documented.
 - Subscribe stream bridge (gRPC -> WS) with row-level deltas, backpressure resync,
   and resize handling.
 - Tailscale Serve tailnet-only setup documented (no Funnel).
