@@ -18,7 +18,7 @@ vtr is a terminal multiplexer designed for the agent era. Each container runs a 
 - Multi-coordinator resolution supports `--socket` and `coordinator:session` with auto-disambiguation via per-coordinator lookup.
 - Grep uses scrollback dumps when available; falls back to screen/viewport dumps if history is unavailable.
 - WaitFor scans output emitted after the request starts using a rolling 1MB buffer.
-- M7 (partial): `vtr web` serves static assets + WS bridge using protobuf `Any` frames (SubscribeRequest/SubscribeEvent); REST JSON API and frontend assets are still pending.
+- M7 (partial): `vtr web` serves static assets from `web/dist` plus a WS bridge using protobuf `Any` frames (SubscribeRequest/SubscribeEvent); a minimal JSON listing endpoint is available at `/api/sessions` while lifecycle APIs remain pending.
 
 ## Architecture
 
@@ -261,7 +261,8 @@ Coordinators (vtr serve)
 
 The Web UI runs as a dedicated `vtr web` command. It serves static assets and
 bridges `Subscribe` streaming + input over WebSocket using protobuf frames.
-M7 does not include a REST/JSON API.
+M7 includes a minimal JSON listing endpoint (`/api/sessions`); session lifecycle
+and input still flow over the WebSocket protobuf protocol.
 
 ### Command and configuration
 
@@ -273,9 +274,12 @@ M7 does not include a REST/JSON API.
 
 ### HTTP API (M7)
 
-No HTTP JSON API in M7. Session lifecycle and input flow over the WebSocket
-protobuf protocol; listing/spawn/kill will be added later via a WS RPC envelope
-or a small REST layer if needed.
+Minimal HTTP JSON API for session listing:
+
+- `GET /api/sessions` returns `{"coordinators":[{"name","path","sessions":[{"name","status","cols","rows","exit_code"}]}]}`.
+
+Session lifecycle (spawn/kill/remove) and input flow over the WebSocket protobuf
+protocol; additional HTTP endpoints can be added later if needed.
 
 ### Frontend stack (decision)
 
@@ -530,6 +534,11 @@ Bridge behavior:
 
 Frames are binary protobuf `google.protobuf.Any`. The embedded message type
 identifies the payload.
+
+Endpoint:
+- `GET /api/ws` (alias: `/ws`).
+
+Compression: disabled server-side by default.
 
 Message flow:
 1. Client sends `SubscribeRequest` (Any).
