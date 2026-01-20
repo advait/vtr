@@ -1073,6 +1073,39 @@ chmod 660 /var/run/vtr.sock
 - Run `go test -asan -tags=asan` only for CGO-boundary packages (go-ghostty + server VT integration tests).
 - Use suppression files in `go-ghostty/shim/sanitizers/` via `ASAN_OPTIONS`/`LSAN_OPTIONS` if third-party noise appears.
 
+## Build System (M10)
+
+M10 standardizes the build system on mise for tool versions and task automation.
+
+### Goals
+
+- Tool version management via `mise.toml` (replaces asdf, nvm, etc.); cached installs are built in.
+- Tasks defined under `[tasks]` with dependencies (`depends`) and optional `env` vars.
+- `mise run <task>` executes tasks; use a single command for the full pipeline: `mise run all`.
+
+### mise.toml (project)
+
+```toml
+[tools]
+go = "1.23"
+zig = "0.13"
+node = "22"
+
+[tasks.shim]
+run = "cd go-ghostty/shim && zig build"
+
+[tasks.build]
+depends = ["shim"]
+run = "go build -o bin/vtr ./cmd/vtr"
+
+[tasks.test]
+depends = ["shim"]
+run = "go test ./..."
+
+[tasks.all]
+depends = ["build", "test"]
+```
+
 ## Implementation Plan
 
 ### Phase 1: Server Core (done in M3)
