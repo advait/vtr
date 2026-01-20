@@ -9,6 +9,18 @@ without dedicated test tooling.
 - `vtr` binary available (use `go run ./cmd/vtr` from repo root).
 - `web/dist` exists (run `cd web && bun install && bun run build` if needed).
 
+## Build and Run
+
+```bash
+cd web
+bun install
+bun run build
+
+cd ..
+go run ./cmd/vtr serve --socket /tmp/vtr.sock
+go run ./cmd/vtr web --socket /tmp/vtr.sock --listen 127.0.0.1:8080
+```
+
 ## Setup
 
 1. Start a coordinator:
@@ -83,3 +95,22 @@ to render correctly.
 - Run `exit` in the session.
 
 Expected: UI shows the session as exited and disables input.
+
+## Screenshots
+
+- Capture with Playwright:
+
+```bash
+cd web
+CAPTURE_SCREENSHOTS=1 bunx playwright test web-ui-screenshots.spec.ts
+```
+
+Artifacts are stored in `docs/screenshots/`:
+- `docs/screenshots/web-ui-mobile-390.png`
+- `docs/screenshots/web-ui-desktop-1280.png`
+
+## Known Limitations (M7)
+
+- Web UI does not spawn/kill/remove sessions; it only attaches to existing ones.
+- Scrollback streaming is not implemented (keyframes only).
+- Mouse input is not supported.
