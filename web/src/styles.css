@@ -1,0 +1,77 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --tn-bg: #1a1b26;
+  --tn-bg-alt: #16161e;
+  --tn-panel: #1f2335;
+  --tn-panel-2: #24283b;
+  --tn-border: #414868;
+  --tn-text: #c0caf5;
+  --tn-text-dim: #9aa5ce;
+  --tn-muted: #565f89;
+  --tn-accent: #7aa2f7;
+  --tn-cyan: #7dcfff;
+  --tn-green: #9ece6a;
+  --tn-orange: #ff9e64;
+  --tn-red: #f7768e;
+  --tn-purple: #bb9af7;
+  --tn-yellow: #e0af68;
+  --terminal-font-size: 14px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--tn-bg);
+  color: var(--tn-text);
+  min-height: 100vh;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+button, input, textarea {
+  font-family: inherit;
+}
+
+.terminal-grid {
+  font-variant-ligatures: contextual;
+  font-feature-settings: "liga" 1, "calt" 1;
+  line-height: var(--cell-h, 1.45);
+  font-size: var(--terminal-font-size, 14px);
+  white-space: pre;
+}
+
+@media (min-width: 768px) {
+  :root {
+    --terminal-font-size: 15px;
+  }
+}
+
+.terminal-row {
+  display: flex;
+  flex-wrap: nowrap;
+}
+
+.terminal-run {
+  white-space: pre;
+}
+
+.terminal-cursor {
+  position: absolute;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.terminal-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}

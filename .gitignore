@@ -26,6 +26,8 @@ coverage/
 # Web UI
 /web/node_modules/
 /web/.vite/
+/web/test-results/
+/web/playwright-report/
 
 # Temp files
 *.swp
