@@ -517,8 +517,11 @@ Bridge behavior:
   a keyframe.
 - Latest-only policy: under backpressure the server keeps only the newest pending
   `ScreenUpdate` per subscriber and drops older unsent frames; no client ACKs.
-- Server keeps a small ring buffer of recent keyframes/deltas for resync; sends
-  periodic keyframes and on new subscriptions (resubscribe is the resync request).
+- When coalescing, the server must ensure any delta is based on the last frame
+  it sent to that subscriber; otherwise it sends a keyframe.
+- Server keeps a small ring buffer of recent keyframes (and deltas post-M7) for
+  resync; sends periodic keyframes and on new subscriptions (resubscribe is the
+  resync request).
 - Compression: off by default for local/Tailscale; for remote links prefer
   transport-level compression (gRPC/HTTP; for WebSocket, consider permessage-deflate
   only after benchmarking). App-level zstd requires explicit framing/negotiation (future).
@@ -868,7 +871,8 @@ message SubscribeEvent {
 - If `include_screen_updates` is true, the server sends an initial keyframe
   `ScreenUpdate` snapshot so clients start from a known state.
 - `include_screen_updates` controls subsequent `ScreenUpdate` frames (keyframes or deltas); updates are emitted on new
-  output and coalesced to 30fps max.
+  output and coalesced to 30fps max. M7 sends keyframes only; deltas are
+  post-M7.
 - `include_raw_output` emits raw PTY bytes for logging or custom rendering; raw output starts at
   subscription time and is buffered up to 1MB (older bytes are dropped on overflow).
 - At least one of `include_screen_updates` or `include_raw_output` must be true; otherwise the
@@ -1051,7 +1055,8 @@ For attach and web UI:
 - Screen updates are output-driven and throttled to 30fps max.
 - Latest-only policy: per subscriber, keep only the newest pending `ScreenUpdate` under
   backpressure; no client ACKs.
-- Server keeps a small ring buffer of recent keyframes/deltas for resync; falls back to keyframes when base frames are missing.
+- Server keeps a small ring buffer of recent keyframes (deltas post-M7) for
+  resync; falls back to keyframes when base frames are missing.
 - Keyframes are sent periodically and on new subscriptions/resubscribe.
 - Raw output is buffered up to 1MB for subscribers that request it.
 
