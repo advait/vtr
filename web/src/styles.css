@@ -49,6 +49,13 @@ button, input, textarea {
   white-space: pre;
 }
 
+.terminal-surface {
+  user-select: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -webkit-touch-callout: none;
+}
+
 @media (min-width: 768px) {
   :root {
     --terminal-font-size: 15px;

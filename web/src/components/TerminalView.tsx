@@ -296,7 +296,7 @@ export function TerminalView({
           }}
         >
           <div
-            className="relative h-full w-full"
+            className="relative h-full w-full terminal-surface"
             tabIndex={0}
             role="textbox"
             aria-label="terminal"
