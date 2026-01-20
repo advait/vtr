@@ -539,6 +539,139 @@ func TestGRPCSubscribeInitialSnapshot(t *testing.T) {
 	}
 }
 
+func TestGRPCSubscribeFrameIDMonotonic(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty tests not supported on windows")
+	}
+
+	client, cleanup := startGRPCTestServer(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	_, err := client.Spawn(ctx, &proto.SpawnRequest{
+		Name:    "grpc-subscribe-frames",
+		Command: "sleep 0.1; printf 'one\\n'; sleep 0.1; printf 'two\\n'; sleep 0.2",
+	})
+	cancel()
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	ctx, cancel = context.WithTimeout(context.Background(), 3*time.Second)
+	stream, err := client.Subscribe(ctx, &proto.SubscribeRequest{
+		Name:                 "grpc-subscribe-frames",
+		IncludeScreenUpdates: true,
+		IncludeRawOutput:     false,
+	})
+	if err != nil {
+		cancel()
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	var frames []uint64
+	for len(frames) < 2 {
+		event, err := stream.Recv()
+		if err != nil {
+			cancel()
+			t.Fatalf("Recv: %v", err)
+		}
+		update := event.GetScreenUpdate()
+		if update == nil {
+			continue
+		}
+		if !update.IsKeyframe || update.BaseFrameId != 0 || update.FrameId == 0 {
+			cancel()
+			t.Fatalf("expected keyframe with frame_id set, got %+v", update)
+		}
+		frames = append(frames, update.FrameId)
+	}
+	cancel()
+	if frames[1] <= frames[0] {
+		t.Fatalf("expected frame IDs to increase, got %v", frames)
+	}
+}
+
+func TestGRPCSubscribeResizeKeyframe(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty tests not supported on windows")
+	}
+
+	client, cleanup := startGRPCTestServer(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	_, err := client.Spawn(ctx, &proto.SpawnRequest{
+		Name:    "grpc-subscribe-resize",
+		Command: "sleep 0.5",
+	})
+	cancel()
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	ctx, cancel = context.WithTimeout(context.Background(), 3*time.Second)
+	stream, err := client.Subscribe(ctx, &proto.SubscribeRequest{
+		Name:                 "grpc-subscribe-resize",
+		IncludeScreenUpdates: true,
+		IncludeRawOutput:     false,
+	})
+	if err != nil {
+		cancel()
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	event, err := stream.Recv()
+	if err != nil {
+		cancel()
+		t.Fatalf("Recv: %v", err)
+	}
+	update := event.GetScreenUpdate()
+	if update == nil || update.Screen == nil {
+		cancel()
+		t.Fatalf("expected initial screen update, got %+v", event)
+	}
+	initialFrame := update.FrameId
+
+	ctxResize, cancelResize := context.WithTimeout(context.Background(), 2*time.Second)
+	_, err = client.Resize(ctxResize, &proto.ResizeRequest{
+		Name: "grpc-subscribe-resize",
+		Cols: 100,
+		Rows: 40,
+	})
+	cancelResize()
+	if err != nil {
+		cancel()
+		t.Fatalf("Resize: %v", err)
+	}
+
+	var resized *proto.ScreenUpdate
+	for {
+		event, err := stream.Recv()
+		if err != nil {
+			cancel()
+			t.Fatalf("Recv: %v", err)
+		}
+		update := event.GetScreenUpdate()
+		if update == nil || update.Screen == nil {
+			continue
+		}
+		if update.Screen.Cols == 100 && update.Screen.Rows == 40 {
+			resized = update
+			break
+		}
+	}
+	cancel()
+	if resized == nil {
+		t.Fatalf("expected resize keyframe update")
+	}
+	if !resized.IsKeyframe || resized.BaseFrameId != 0 || resized.FrameId == 0 {
+		t.Fatalf("expected keyframe with frame_id set, got %+v", resized)
+	}
+	if resized.FrameId <= initialFrame {
+		t.Fatalf("expected resize frame_id to increase, got %d then %d", initialFrame, resized.FrameId)
+	}
+}
+
 func TestGRPCSubscribeRawOutput(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("pty tests not supported on windows")
