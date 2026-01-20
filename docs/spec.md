@@ -435,12 +435,13 @@ Screen cell semantics:
 ### Terminal renderer (decision: custom grid, no ANSI parsing)
 
 - Web clients render directly from `ScreenRow`/`ScreenCell` data.
-- `Subscribe` streams `ScreenUpdate` (structured grid), not raw output bytes.
+- `Subscribe` streams `ScreenUpdate` (structured grid) and can optionally include
+  raw PTY bytes for logging/custom rendering; web clients should use `ScreenUpdate`.
 - The web server forwards `SubscribeEvent` frames as-is over WebSocket.
 - Renderer state is a `rows x cols` grid plus cursor state; `ScreenUpdate`
   frames advance it from current state to desired state.
 - Keyframes replace the full grid; deltas replace only listed rows (see
-  Streaming State Model).
+  Streaming semantics).
 - M7 emits keyframes only; delta emission is a post-M7 optimization.
 
 ### Rendering considerations
@@ -494,20 +495,33 @@ Bridge behavior:
   returns a `google.rpc.Status` error on ambiguity.
 - Client input frames use `ResizeRequest`, `SendTextRequest`, `SendKeyRequest`,
   or `SendBytesRequest` wrapped in `Any`.
-- Server frames are `SubscribeEvent` wrapped in `Any` (ScreenUpdate keyframes/deltas +
-  `SessionExited`). `google.rpc.Status` is sent on protocol/resolve errors, then
-  the socket closes.
+- Server frames are `SubscribeEvent` wrapped in `Any` (`ScreenUpdate` keyframes/deltas,
+  optional `raw_output`, + `SessionExited`). `google.rpc.Status` is sent on
+  protocol/resolve errors, then the socket closes.
 
 ### Streaming semantics (Subscribe + WebSocket)
 
 - gRPC Subscribe and WebSocket bridge share identical streaming semantics and message fields.
-- CURRENT STATE: the client's rendered grid for its last applied `frame_id`.
-- DESIRED STATE: the server's latest authoritative grid for `frame_id`.
-- `ScreenUpdate` advances current to desired; `is_keyframe` carries a full snapshot, deltas replace listed rows and update cursor/size metadata.
-- `frame_id` increments per authoritative screen state; `base_frame_id` is the state the delta was computed from (0 for keyframes).
-- Latest-only policy: under backpressure the server drops stale frames; no client ACKs.
-- Server keeps a small ring buffer of recent keyframes/deltas for resync; sends periodic keyframes and on new subscriptions (resubscribe is the resync request).
-- Compression: none for local/Tailscale; optional app-level zstd for remote links.
+- CURRENT STATE: the client's rendered grid after applying the last `ScreenUpdate`
+  it processed (frame_id N).
+- DESIRED STATE: the server's latest authoritative grid (frame_id M).
+- `ScreenUpdate` advances current to desired; `is_keyframe` carries a full
+  snapshot (`screen` set, `delta` unset), deltas carry absolute size/cursor and
+  replace only listed rows (full row replacements; unlisted rows are unchanged).
+- `frame_id` is monotonic and increments per authoritative screen state; clients
+  may observe gaps and must not assume contiguous IDs. `base_frame_id` is
+  meaningful only for deltas and refers to the frame the delta was computed from
+  (set to 0 for keyframes).
+- Server emits deltas only when `base_frame_id` matches the last frame it sent to
+  that subscriber; otherwise it sends a keyframe to resync. Resizes should force
+  a keyframe.
+- Latest-only policy: under backpressure the server keeps only the newest pending
+  `ScreenUpdate` per subscriber and drops older unsent frames; no client ACKs.
+- Server keeps a small ring buffer of recent keyframes/deltas for resync; sends
+  periodic keyframes and on new subscriptions (resubscribe is the resync request).
+- Compression: off by default for local/Tailscale; for remote links prefer
+  transport-level compression (gRPC/HTTP; for WebSocket, consider permessage-deflate
+  only after benchmarking). App-level zstd requires explicit framing/negotiation (future).
 
 ### WebSocket API (M7)
 
@@ -528,6 +542,7 @@ Client -> server (Any-wrapped protobuf):
 
 Server -> client (Any-wrapped protobuf):
 - `vtr.SubscribeEvent { screen_update: { frame_id: 42, base_frame_id: 0, is_keyframe: true, screen: GetScreenResponse{...} } }`
+- `vtr.SubscribeEvent { raw_output: "ls -la\n" }`
 - `vtr.SubscribeEvent { session_exited: { exit_code: 0 } }`
 - `google.rpc.Status { code: 5, message: "unknown session" }`
 
@@ -537,14 +552,19 @@ Notes:
 - `ResizeRequest` is optional and can be sent after the initial `SubscribeRequest`.
 - `SubscribeEvent` carries `ScreenUpdate` frames with `frame_id`, `base_frame_id`,
   and `is_keyframe`. Keyframes include `screen`; deltas use `delta` row updates.
+- `frame_id` is monotonic; clients may observe gaps and must not assume contiguous IDs.
+- Deltas carry absolute `cols`/`rows`/cursor and `row_deltas` full-row replacements;
+  unlisted rows are unchanged and `row_deltas` may be empty.
 - Clients apply deltas only when `base_frame_id` matches their current state;
-  otherwise they wait for the next keyframe (latest-only policy).
+  otherwise they drop deltas and wait for the next keyframe (or resubscribe to
+  force one).
 - Indices are 0-based.
 
 Compression:
-- For local/Tailscale sessions, default to no compression to minimize CPU and latency.
-- For remote links, prefer app-level zstd on `ScreenUpdate` payloads.
-- Avoid double compression with permessage-deflate unless benchmarks show a net win.
+- Default to no compression for local/Tailscale to minimize CPU and latency.
+- For remote links, prefer transport-level compression (gRPC/HTTP); for WebSocket,
+  consider permessage-deflate only after benchmarking.
+- Avoid double compression; app-level zstd requires explicit framing/negotiation (future).
 
 ### Tailscale Serve integration
 
@@ -570,13 +590,15 @@ explicitly out of scope for this milestone.
 
 ### M7 decisions (final)
 
-- Delta format: `ScreenUpdate` supports keyframes and row-level deltas; M7 emits keyframes only.
-- Streaming semantics: latest-only policy (drop stale frames), no client ACKs; keyframes periodic and on resubscribe.
+- Delta format: `ScreenUpdate` supports keyframes and row-level `row_deltas`; M7 emits keyframes only.
+- Streaming semantics: latest-only policy (drop stale frames per subscriber), no client ACKs;
+  keyframes periodic, on resubscribe, and when base frames are missing.
 - Cursor: block cursor with no blink; visibility is assumed true in M7.
 - Wide/combining: client-side `wcwidth` heuristic (see Rendering considerations);
   accept limitations until wide metadata is exposed.
 - Scrollback: out of scope for M7 (viewport only).
-- Encoding: protobuf `Any` frames; app-level zstd optional, no permessage-deflate by default.
+- Encoding: protobuf `Any` frames; compression off by default. Use transport-level
+  compression for remote links; permessage-deflate only after benchmarking.
 
 ### Post-M7 considerations
 
@@ -808,7 +830,7 @@ message SubscribeRequest {
 
 message ScreenUpdate {
   uint64 frame_id = 1;
-  uint64 base_frame_id = 2;  // 0 for keyframes
+  uint64 base_frame_id = 2;  // meaningful only for deltas; 0 for keyframes
   bool is_keyframe = 3;
   GetScreenResponse screen = 4;  // full snapshot when is_keyframe
   ScreenDelta delta = 5;  // row-level deltas when !is_keyframe
@@ -819,12 +841,12 @@ message ScreenDelta {
   int32 rows = 2;
   int32 cursor_x = 3;
   int32 cursor_y = 4;
-  repeated RowDelta rows = 5;
+  repeated RowDelta row_deltas = 5;  // full-row replacements
 }
 
 message RowDelta {
-  int32 row = 1;
-  ScreenRow row_data = 2;
+  int32 row = 1;  // 0-based row index
+  ScreenRow row_data = 2;  // full row after update
 }
 
 message SessionExited {
@@ -843,21 +865,23 @@ message SubscribeEvent {
 ### Subscribe Stream (M6)
 
 - Server-side stream of `SubscribeEvent` for attach and web UI clients.
-- Server always sends an initial keyframe `ScreenUpdate` snapshot so clients start from a known state (even when
-  `include_screen_updates` is false).
+- If `include_screen_updates` is true, the server sends an initial keyframe
+  `ScreenUpdate` snapshot so clients start from a known state.
 - `include_screen_updates` controls subsequent `ScreenUpdate` frames (keyframes or deltas); updates are emitted on new
   output and coalesced to 30fps max.
 - `include_raw_output` emits raw PTY bytes for logging or custom rendering; raw output starts at
   subscription time and is buffered up to 1MB (older bytes are dropped on overflow).
 - At least one of `include_screen_updates` or `include_raw_output` must be true; otherwise the
   server returns `INVALID_ARGUMENT`.
+- If `include_screen_updates` is false, no `ScreenUpdate` frames are sent; clients
+  needing a snapshot should call `GetScreen` separately.
 - If `include_screen_updates` is true, the server sends a final keyframe `ScreenUpdate` before
   `session_exited`; `session_exited` is always the last event before stream close.
 - M8: `mouse_mode_changed` will be emitted on Subscribe start and whenever the app enables or disables
   mouse tracking; clients gate mouse input on this event.
 - `session_exited` is sent once with the exit code; the server closes the stream afterward.
 - When clients disconnect or cancel, the server stops streaming and releases resources.
-- Slow clients may skip intermediate frames; latest-only policy applies (see Backpressure).
+- Slow clients may skip intermediate `ScreenUpdate` frames; latest-only policy applies (see Backpressure).
 - Subscribe is receive-only; input uses `SendText`, `SendKey`, `SendBytes` (SendMouse planned in M8).
 
 ### Mouse Support (M8) Design
@@ -1025,7 +1049,8 @@ Agents use `GetScreen()`, `WaitFor()`, `WaitForIdle()` — natural backpressure 
 
 For attach and web UI:
 - Screen updates are output-driven and throttled to 30fps max.
-- Latest-only policy: server drops stale frames under backpressure; no client ACKs.
+- Latest-only policy: per subscriber, keep only the newest pending `ScreenUpdate` under
+  backpressure; no client ACKs.
 - Server keeps a small ring buffer of recent keyframes/deltas for resync; falls back to keyframes when base frames are missing.
 - Keyframes are sent periodically and on new subscriptions/resubscribe.
 - Raw output is buffered up to 1MB for subscribers that request it.
