@@ -68,10 +68,14 @@ function styleFromCell(cell: Cell, selected: boolean): React.CSSProperties {
   if (cell.attrs & ATTR_INVISIBLE) {
     fg = bg;
   }
+  const isInvisible = (cell.attrs & ATTR_INVISIBLE) !== 0;
   const style: React.CSSProperties = {
-    color: colorFromInt(fg),
+    color: fg === 0 ? "var(--tn-text)" : colorFromInt(fg),
     backgroundColor: bg === 0 ? "var(--tn-bg-alt)" : colorFromInt(bg)
   };
+  if (isInvisible) {
+    style.color = style.backgroundColor;
+  }
   if (cell.attrs & ATTR_BOLD) {
     style.fontWeight = 600;
   }
