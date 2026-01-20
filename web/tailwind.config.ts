@@ -1,7 +1,7 @@
 import type { Config } from "tailwindcss";
 
 export default {
-  content: ["./index.html", "./src/**/*.{ts,tsx}"] ,
+  content: ["./index.html", "./src/**/*.{ts,tsx}"],
   theme: {
     extend: {
       colors: {
@@ -19,21 +19,15 @@ export default {
         "tn-orange": "var(--tn-orange)",
         "tn-red": "var(--tn-red)",
         "tn-purple": "var(--tn-purple)",
-        "tn-yellow": "var(--tn-yellow)"
+        "tn-yellow": "var(--tn-yellow)",
       },
       fontFamily: {
-        mono: [
-          "JetBrains Mono",
-          "ui-monospace",
-          "SFMono-Regular",
-          "Menlo",
-          "monospace"
-        ]
+        mono: ["JetBrains Mono", "ui-monospace", "SFMono-Regular", "Menlo", "monospace"],
       },
       boxShadow: {
-        panel: "0 0 0 1px var(--tn-border) inset"
-      }
-    }
+        panel: "0 0 0 1px var(--tn-border) inset",
+      },
+    },
   },
-  plugins: []
+  plugins: [],
 } satisfies Config;

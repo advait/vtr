@@ -1,4 +1,4 @@
-import * as React from "react";
+import type * as React from "react";
 import { cn } from "../../lib/utils";
 
 export type BadgeProps = React.HTMLAttributes<HTMLSpanElement> & {
@@ -14,7 +14,7 @@ export function Badge({ className, variant = "default", ...props }: BadgeProps) 
         variant === "green" && "bg-tn-green/20 text-tn-green",
         variant === "red" && "bg-tn-red/20 text-tn-red",
         variant === "yellow" && "bg-tn-yellow/20 text-tn-yellow",
-        className
+        className,
       )}
       {...props}
     />

@@ -1,13 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { decodeAny, encodeAny, SubscribeEvent } from "./proto";
+import { decodeAny, encodeAny, type SubscribeEvent } from "./proto";
 
-export type StreamStatus =
-  | "idle"
-  | "connecting"
-  | "open"
-  | "reconnecting"
-  | "error"
-  | "closed";
+export type StreamStatus = "idle" | "connecting" | "open" | "reconnecting" | "error" | "closed";
 
 type StreamOptions = {
   includeRawOutput?: boolean;
@@ -55,7 +49,7 @@ export function useVtrStream(sessionName: string | null, options: StreamOptions)
       if (!sessionName) return;
       sendProto("vtr.SendTextRequest", { name: sessionName, text });
     },
-    [sendProto, sessionName]
+    [sendProto, sessionName],
   );
 
   const sendKey = useCallback(
@@ -63,7 +57,7 @@ export function useVtrStream(sessionName: string | null, options: StreamOptions)
       if (!sessionName) return;
       sendProto("vtr.SendKeyRequest", { name: sessionName, key });
     },
-    [sendProto, sessionName]
+    [sendProto, sessionName],
   );
 
   const sendBytes = useCallback(
@@ -71,7 +65,7 @@ export function useVtrStream(sessionName: string | null, options: StreamOptions)
       if (!sessionName) return;
       sendProto("vtr.SendBytesRequest", { name: sessionName, data });
     },
-    [sendProto, sessionName]
+    [sendProto, sessionName],
   );
 
   const resize = useCallback(
@@ -79,7 +73,7 @@ export function useVtrStream(sessionName: string | null, options: StreamOptions)
       if (!sessionName) return;
       sendProto("vtr.ResizeRequest", { name: sessionName, cols, rows });
     },
-    [sendProto, sessionName]
+    [sendProto, sessionName],
   );
 
   useEffect(() => {
@@ -99,7 +93,7 @@ export function useVtrStream(sessionName: string | null, options: StreamOptions)
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
       setState((prev) => ({
-        status: prev.status === "reconnecting" ? "reconnecting" : "connecting"
+        status: prev.status === "reconnecting" ? "reconnecting" : "connecting",
       }));
 
       ws.addEventListener("open", () => {
@@ -110,7 +104,7 @@ export function useVtrStream(sessionName: string | null, options: StreamOptions)
         const hello = encodeAny("vtr.SubscribeRequest", {
           name: sessionName,
           include_screen_updates: true,
-          include_raw_output: options.includeRawOutput ?? false
+          include_raw_output: options.includeRawOutput ?? false,
         });
         ws.send(hello);
         setState({ status: "open" });
@@ -139,7 +133,10 @@ export function useVtrStream(sessionName: string | null, options: StreamOptions)
           return;
         }
         if (event.data instanceof Blob) {
-          event.data.arrayBuffer().then(handleData).catch(() => {});
+          event.data
+            .arrayBuffer()
+            .then(handleData)
+            .catch(() => {});
         }
       });
 
@@ -183,6 +180,6 @@ export function useVtrStream(sessionName: string | null, options: StreamOptions)
     sendText,
     sendKey,
     sendBytes,
-    resize
+    resize,
   };
 }

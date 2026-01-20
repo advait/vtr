@@ -1,10 +1,10 @@
-import { test, expect, type Page } from "@playwright/test";
-import { spawn, execFile } from "node:child_process";
-import { promises as fsPromises, existsSync } from "node:fs";
+import { execFile, spawn } from "node:child_process";
+import { existsSync, promises as fsPromises } from "node:fs";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { setTimeout as delay } from "node:timers/promises";
+import { expect, type Page, test } from "@playwright/test";
 
 const execFileAsync = promisify(execFile);
 
@@ -32,7 +32,7 @@ function startProcess(cmd: string, args: string[], cwd: string) {
   return spawn(cmd, args, {
     cwd,
     env: process.env,
-    stdio: ["ignore", "pipe", "pipe"]
+    stdio: ["ignore", "pipe", "pipe"],
   });
 }
 
@@ -95,13 +95,13 @@ test.beforeAll(async () => {
   webProc = startProcess(
     vtrBinary,
     ["web", "--socket", socketPath, "--listen", `127.0.0.1:${port}`],
-    repoRoot
+    repoRoot,
   );
   await waitForHttp(baseURL, 20_000);
   await runCommand(
     vtrBinary,
     ["spawn", "--socket", socketPath, "--cmd", "bash", sessionName],
-    repoRoot
+    repoRoot,
   );
 });
 
@@ -137,16 +137,30 @@ test("streams ANSI output, attributes, and reconnects", async ({ page }) => {
   const bgStyle = await bgRun.first().evaluate((node) => getComputedStyle(node).backgroundColor);
   expect(bgStyle).toBe("rgb(10, 20, 30)");
 
-  await sendCommand(page, "printf '\\x1b[1mBOLD\\x1b[0m \\x1b[4mUNDER\\x1b[0m \\x1b[3mITALIC\\x1b[0m\\n'");
-  const boldRun = page.locator(".terminal-run").filter({ hasText: /^BOLD$/ }).first();
+  await sendCommand(
+    page,
+    "printf '\\x1b[1mBOLD\\x1b[0m \\x1b[4mUNDER\\x1b[0m \\x1b[3mITALIC\\x1b[0m\\n'",
+  );
+  const boldRun = page
+    .locator(".terminal-run")
+    .filter({ hasText: /^BOLD$/ })
+    .first();
   const boldWeight = await boldRun.evaluate((node) => getComputedStyle(node).fontWeight);
   expect(Number.parseInt(boldWeight, 10)).toBeGreaterThanOrEqual(600);
 
-  const underlineRun = page.locator(".terminal-run").filter({ hasText: /^UNDER$/ }).first();
-  const underlineStyle = await underlineRun.evaluate((node) => getComputedStyle(node).textDecorationLine);
+  const underlineRun = page
+    .locator(".terminal-run")
+    .filter({ hasText: /^UNDER$/ })
+    .first();
+  const underlineStyle = await underlineRun.evaluate(
+    (node) => getComputedStyle(node).textDecorationLine,
+  );
   expect(underlineStyle).toContain("underline");
 
-  const italicRun = page.locator(".terminal-run").filter({ hasText: /^ITALIC$/ }).first();
+  const italicRun = page
+    .locator(".terminal-run")
+    .filter({ hasText: /^ITALIC$/ })
+    .first();
   const italicStyle = await italicRun.evaluate((node) => getComputedStyle(node).fontStyle);
   expect(italicStyle).toBe("italic");
 
@@ -155,7 +169,7 @@ test("streams ANSI output, attributes, and reconnects", async ({ page }) => {
   webProc = startProcess(
     vtrBinary,
     ["web", "--socket", socketPath, "--listen", `127.0.0.1:${port}`],
-    repoRoot
+    repoRoot,
   );
   await waitForHttp(baseURL, 20_000);
   await expect(page.locator("header").getByText("live", { exact: true })).toBeVisible();

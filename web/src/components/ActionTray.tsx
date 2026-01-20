@@ -1,6 +1,5 @@
-import React from "react";
-import { Button } from "./ui/Button";
 import { cn } from "../lib/utils";
+import { Button } from "./ui/Button";
 
 export type ActionTrayProps = {
   ctrlArmed: boolean;
@@ -16,7 +15,7 @@ const actionKeys = [
   { label: "←", key: "left" },
   { label: "→", key: "right" },
   { label: "PgUp", key: "pageup" },
-  { label: "PgDn", key: "pagedown" }
+  { label: "PgDn", key: "pagedown" },
 ];
 
 export function ActionTray({ ctrlArmed, onCtrlToggle, onSendKey }: ActionTrayProps) {
@@ -25,10 +24,7 @@ export function ActionTray({ ctrlArmed, onCtrlToggle, onSendKey }: ActionTrayPro
       <Button
         variant="ghost"
         size="sm"
-        className={cn(
-          "h-10 w-12",
-          ctrlArmed && "bg-tn-accent text-tn-bg"
-        )}
+        className={cn("h-10 w-12", ctrlArmed && "bg-tn-accent text-tn-bg")}
         onClick={onCtrlToggle}
       >
         Ctrl

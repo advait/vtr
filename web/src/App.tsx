@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActionTray } from "./components/ActionTray";
 import {
   type CoordinatorInfo,
@@ -154,7 +154,7 @@ export default function App() {
     }
     setSelectedSession(match);
     setActiveSession(match.status === "exited" ? null : match.name);
-  }, [coordinators, hashSession, selectedSession]);
+  }, [coordinators, hashSession, selectedSession, sessionsLoaded]);
 
   useEffect(() => {
     if (selectedSession) {
@@ -190,10 +190,11 @@ export default function App() {
     const pending = latestUpdate.current;
     latestUpdate.current = null;
     rafRef.current = null;
-    if (!pending?.screen_update) {
+    const screenUpdate = pending?.screen_update;
+    if (!screenUpdate) {
       return;
     }
-    setScreen((prev) => applyScreenUpdate(prev, pending.screen_update!));
+    setScreen((prev) => applyScreenUpdate(prev, screenUpdate));
   }, []);
 
   useEffect(() => {

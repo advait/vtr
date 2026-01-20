@@ -1,0 +1,39 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.3.11/schema.json",
+  "files": {
+    "ignoreUnknown": true,
+    "includes": ["**/*", "!dist", "!node_modules"]
+  },
+  "vcs": {
+    "enabled": false
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "a11y": {
+        "useSemanticElements": "off"
+      },
+      "suspicious": {
+        "noArrayIndexKey": "off",
+        "noUnknownAtRules": {
+          "level": "error",
+          "options": {
+            "ignore": ["tailwind"]
+          }
+        }
+      }
+    }
+  },
+  "css": {
+    "parser": {
+      "tailwindDirectives": true
+    }
+  }
+}

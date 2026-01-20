@@ -37,13 +37,17 @@ body {
   min-height: 100vh;
 }
 
-button, input, textarea {
+button,
+input,
+textarea {
   font-family: inherit;
 }
 
 .terminal-grid {
   font-variant-ligatures: contextual;
-  font-feature-settings: "liga" 1, "calt" 1;
+  font-feature-settings:
+    "liga" 1,
+    "calt" 1;
   line-height: var(--cell-h, 1.45);
   font-size: var(--terminal-font-size, 14px);
   white-space: pre;

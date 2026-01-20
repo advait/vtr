@@ -1,10 +1,10 @@
-import { test, expect, type Page } from "@playwright/test";
-import { spawn, execFile } from "node:child_process";
-import { promises as fsPromises, existsSync } from "node:fs";
+import { execFile, spawn } from "node:child_process";
+import { existsSync, promises as fsPromises } from "node:fs";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { setTimeout as delay } from "node:timers/promises";
+import { expect, type Page, test } from "@playwright/test";
 
 const execFileAsync = promisify(execFile);
 
@@ -32,7 +32,7 @@ function startProcess(cmd: string, args: string[], cwd: string) {
   return spawn(cmd, args, {
     cwd,
     env: process.env,
-    stdio: ["ignore", "pipe", "pipe"]
+    stdio: ["ignore", "pipe", "pipe"],
   });
 }
 
@@ -100,13 +100,13 @@ test.describe("web UI screenshots", () => {
     webProc = startProcess(
       vtrBinary,
       ["web", "--socket", socketPath, "--listen", `127.0.0.1:${port}`],
-      repoRoot
+      repoRoot,
     );
     await waitForHttp(baseURL, 20_000);
     await runCommand(
       vtrBinary,
       ["spawn", "--socket", socketPath, "--cmd", "bash", sessionName],
-      repoRoot
+      repoRoot,
     );
   });
 
@@ -139,14 +139,14 @@ test.describe("web UI screenshots", () => {
     await page.waitForTimeout(500);
     await page.screenshot({
       path: path.join(screenshotsDir, "web-ui-mobile-390.png"),
-      fullPage: true
+      fullPage: true,
     });
 
     await page.setViewportSize({ width: 1280, height: 800 });
     await page.waitForTimeout(500);
     await page.screenshot({
       path: path.join(screenshotsDir, "web-ui-desktop-1280.png"),
-      fullPage: true
+      fullPage: true,
     });
   });
 });

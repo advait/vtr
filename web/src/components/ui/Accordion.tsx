@@ -1,5 +1,5 @@
-import * as React from "react";
 import * as AccordionPrimitive from "@radix-ui/react-accordion";
+import * as React from "react";
 import { cn } from "../../lib/utils";
 
 export const Accordion = AccordionPrimitive.Root;
@@ -26,7 +26,7 @@ export const AccordionTrigger = React.forwardRef<
       className={cn(
         "flex flex-1 items-center justify-between py-3 text-left text-sm",
         "text-tn-text hover:text-tn-accent",
-        className
+        className,
       )}
       {...props}
     >
@@ -40,11 +40,7 @@ export const AccordionContent = React.forwardRef<
   HTMLDivElement,
   React.ComponentPropsWithoutRef<typeof AccordionPrimitive.Content>
 >(({ className, children, ...props }, ref) => (
-  <AccordionPrimitive.Content
-    ref={ref}
-    className={cn("pb-3 text-sm", className)}
-    {...props}
-  >
+  <AccordionPrimitive.Content ref={ref} className={cn("pb-3 text-sm", className)} {...props}>
     {children}
   </AccordionPrimitive.Content>
 ));

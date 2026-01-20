@@ -1,4 +1,4 @@
-import { CoordinatorInfo, SessionInfo } from "../components/CoordinatorTree";
+import type { CoordinatorInfo, SessionInfo } from "../components/CoordinatorTree";
 
 export type SessionListResponse = {
   coordinators: Array<{
@@ -23,10 +23,11 @@ export async function fetchSessions(): Promise<CoordinatorInfo[]> {
   return (data.coordinators || []).map((coord) => {
     const sessions: SessionInfo[] = (coord.sessions || []).map((session) => ({
       name: session.name,
-      status: session.status === "running" || session.status === "exited" ? session.status : "unknown",
+      status:
+        session.status === "running" || session.status === "exited" ? session.status : "unknown",
       cols: session.cols ?? 0,
       rows: session.rows ?? 0,
-      exitCode: session.exit_code
+      exitCode: session.exit_code,
     }));
     return { name: coord.name, path: coord.path, sessions };
   });

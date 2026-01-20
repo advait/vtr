@@ -1,7 +1,7 @@
-import React, { useMemo } from "react";
+import { useMemo } from "react";
+import { cn } from "../lib/utils";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "./ui/Accordion";
 import { Badge } from "./ui/Badge";
-import { cn } from "../lib/utils";
 
 export type SessionInfo = {
   name: string;
@@ -21,11 +21,7 @@ export type CoordinatorTreeProps = {
   coordinators: CoordinatorInfo[];
   filter: string;
   activeSession: string | null;
-  onSelect: (session: {
-    name: string;
-    status: SessionInfo["status"];
-    exitCode?: number;
-  }) => void;
+  onSelect: (session: { name: string; status: SessionInfo["status"]; exitCode?: number }) => void;
 };
 
 function statusBadge(status: SessionInfo["status"]) {
@@ -59,7 +55,7 @@ export function CoordinatorTree({
   coordinators,
   filter,
   activeSession,
-  onSelect
+  onSelect,
 }: CoordinatorTreeProps) {
   const normalizedFilter = filter.trim().toLowerCase();
   const filtered = useMemo(() => {
@@ -69,7 +65,7 @@ export function CoordinatorTree({
     return coordinators
       .map((coord) => {
         const matchedSessions = coord.sessions.filter((session) =>
-          `${coord.name}:${session.name}`.toLowerCase().includes(normalizedFilter)
+          `${coord.name}:${session.name}`.toLowerCase().includes(normalizedFilter),
         );
         if (coord.name.toLowerCase().includes(normalizedFilter)) {
           return { ...coord, sessions: orderSessions(coord.sessions) };
@@ -80,11 +76,7 @@ export function CoordinatorTree({
   }, [coordinators, normalizedFilter]);
 
   if (filtered.length === 0) {
-    return (
-      <div className="px-4 py-6 text-sm text-tn-muted">
-        No sessions match this filter.
-      </div>
-    );
+    return <div className="px-4 py-6 text-sm text-tn-muted">No sessions match this filter.</div>;
   }
 
   return (
@@ -104,18 +96,19 @@ export function CoordinatorTree({
                 return (
                   <button
                     key={sessionKey}
+                    type="button"
                     onClick={() =>
                       onSelect({
                         name: sessionKey,
                         status: session.status,
-                        exitCode: session.exitCode
+                        exitCode: session.exitCode,
                       })
                     }
                     className={cn(
                       "flex items-center justify-between rounded-lg border border-transparent",
                       "bg-tn-panel px-3 py-2 text-left text-sm",
                       "hover:border-tn-border",
-                      activeSession === sessionKey && "border-tn-accent"
+                      activeSession === sessionKey && "border-tn-accent",
                     )}
                   >
                     <div className="flex flex-col">
@@ -124,9 +117,7 @@ export function CoordinatorTree({
                         {session.cols}x{session.rows}
                       </span>
                     </div>
-                    <div className="flex items-center gap-2">
-                      {statusBadge(session.status)}
-                    </div>
+                    <div className="flex items-center gap-2">{statusBadge(session.status)}</div>
                   </button>
                 );
               })}

@@ -1,5 +1,6 @@
-import React, { useMemo } from "react";
-import { Cell, Selection, cellWidth } from "../lib/terminal";
+import type React from "react";
+import { useMemo } from "react";
+import { type Cell, cellWidth, type Selection } from "../lib/terminal";
 
 const ATTR_BOLD = 1 << 0;
 const ATTR_ITALIC = 1 << 1;
@@ -71,7 +72,7 @@ function styleFromCell(cell: Cell, selected: boolean): React.CSSProperties {
   const isInvisible = (cell.attrs & ATTR_INVISIBLE) !== 0;
   const style: React.CSSProperties = {
     color: fg === 0 ? "var(--tn-text)" : colorFromInt(fg),
-    backgroundColor: bg === 0 ? "var(--tn-bg-alt)" : colorFromInt(bg)
+    backgroundColor: bg === 0 ? "var(--tn-bg-alt)" : colorFromInt(bg),
   };
   if (isInvisible) {
     style.color = style.backgroundColor;
@@ -118,7 +119,7 @@ function buildRuns(cells: Cell[], selectionRange: { start: number; end: number }
     const selected = isSelected(col);
     const style = styleFromCell(cell, selected);
     const styleKey = `${style.color}-${style.backgroundColor}-${style.fontWeight}-${style.fontStyle}-${style.textDecoration}-${style.opacity}-${selected}`;
-    let text = cell.char || " ";
+    const text = cell.char || " ";
 
     const width = cellWidth(text);
     if (width === 2 && col + 1 < cells.length) {
@@ -144,16 +145,13 @@ function buildRuns(cells: Cell[], selectionRange: { start: number; end: number }
 function TerminalRow({
   row,
   rowIndex,
-  selectionRange
+  selectionRange,
 }: {
   row: Cell[];
   rowIndex: number;
   selectionRange: { start: number; end: number } | null;
 }) {
-  const runs = useMemo(
-    () => buildRuns(row, selectionRange),
-    [row, selectionRange?.start, selectionRange?.end]
-  );
+  const runs = useMemo(() => buildRuns(row, selectionRange), [row, selectionRange]);
   return (
     <div className="terminal-row">
       {runs.map((run, idx) => (

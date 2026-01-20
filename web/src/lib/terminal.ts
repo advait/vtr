@@ -1,6 +1,11 @@
-import { GetScreenResponse, ScreenCell as ProtoCell, ScreenDelta, ScreenUpdate } from "./proto";
-import wcwidth from "wcwidth";
 import type { Long } from "protobufjs";
+import wcwidth from "wcwidth";
+import type {
+  GetScreenResponse,
+  ScreenCell as ProtoCell,
+  ScreenDelta,
+  ScreenUpdate,
+} from "./proto";
 
 export type Cell = {
   char: string;
@@ -163,7 +168,7 @@ export function protoCellToCell(cell?: ProtoCell): Cell {
     char: cell?.char ?? " ",
     fg: cell?.fg_color ?? 0,
     bg: cell?.bg_color ?? 0,
-    attrs: cell?.attributes ?? 0
+    attrs: cell?.attributes ?? 0,
   };
 }
 

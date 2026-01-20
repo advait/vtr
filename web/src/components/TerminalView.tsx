@@ -1,13 +1,13 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ScreenState, Selection } from "../lib/terminal";
-import { TerminalGrid } from "./TerminalGrid";
+import type React from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { ScreenState, Selection } from "../lib/terminal";
 import { cn } from "../lib/utils";
+import { TerminalGrid } from "./TerminalGrid";
 
 export type TerminalViewProps = {
   screen: ScreenState | null;
   status: string;
   autoFocus?: boolean;
-  focusKey?: string | null;
   onResize: (cols: number, rows: number) => void;
   onSendText: (text: string) => void;
   onSendKey: (key: string) => void;
@@ -57,11 +57,10 @@ export function TerminalView({
   screen,
   status,
   autoFocus,
-  focusKey,
   onResize,
   onSendKey,
   onSendText,
-  onPaste
+  onPaste,
 }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<HTMLDivElement | null>(null);
@@ -88,7 +87,7 @@ export function TerminalView({
       return;
     }
     terminalRef.current?.focus({ preventScroll: true });
-  }, [autoFocus, focusKey, status]);
+  }, [autoFocus, status]);
 
   const padding = 12;
 
@@ -110,18 +109,37 @@ export function TerminalView({
     });
     observer.observe(node);
     return () => observer.disconnect();
-  }, [cellSize.height, cellSize.width, onResize, padding]);
+  }, [cellSize.height, cellSize.width, onResize]);
 
   const cursorStyle = useMemo(() => {
     if (!screen) {
       return null;
     }
-    return {
-      width: `${cellSize.width}px`,
-      height: `${cellSize.height}px`,
-      transform: `translate(${padding + screen.cursorX * cellSize.width}px, ${padding + screen.cursorY * cellSize.height}px)`
-    };
-  }, [cellSize.height, cellSize.width, padding, screen]);
+    const baseX = padding + screen.cursorX * cellSize.width;
+    const baseY = padding + screen.cursorY * cellSize.height;
+    const underlineHeight = Math.max(2, Math.round(cellSize.height * 0.15));
+    const barWidth = Math.max(2, Math.round(cellSize.width * 0.15));
+    switch (screen.cursorStyle) {
+      case "underline":
+        return {
+          width: `${cellSize.width}px`,
+          height: `${underlineHeight}px`,
+          transform: `translate(${baseX}px, ${baseY + cellSize.height - underlineHeight}px)`,
+        };
+      case "bar":
+        return {
+          width: `${barWidth}px`,
+          height: `${cellSize.height}px`,
+          transform: `translate(${baseX}px, ${baseY}px)`,
+        };
+      default:
+        return {
+          width: `${cellSize.width}px`,
+          height: `${cellSize.height}px`,
+          transform: `translate(${baseX}px, ${baseY}px)`,
+        };
+    }
+  }, [cellSize.height, cellSize.width, screen]);
 
   const handleMouseDown = (event: React.MouseEvent<HTMLDivElement>) => {
     if (!screen || !containerRef.current) {
@@ -132,12 +150,12 @@ export function TerminalView({
     const col = clamp(
       Math.floor((event.clientX - rect.left - padding) / cellSize.width),
       0,
-      screen.cols - 1
+      screen.cols - 1,
     );
     const row = clamp(
       Math.floor((event.clientY - rect.top - padding) / cellSize.height),
       0,
-      screen.rows - 1
+      screen.rows - 1,
     );
     selectingRef.current = true;
     const next = { start: { row, col }, end: { row, col } };
@@ -153,12 +171,12 @@ export function TerminalView({
     const col = clamp(
       Math.floor((event.clientX - rect.left - padding) / cellSize.width),
       0,
-      screen.cols - 1
+      screen.cols - 1,
     );
     const row = clamp(
       Math.floor((event.clientY - rect.top - padding) / cellSize.height),
       0,
-      screen.rows - 1
+      screen.rows - 1,
     );
     setSelection({ start: selectionStartRef.current.start, end: { row, col } });
   };
@@ -255,11 +273,7 @@ export function TerminalView({
 
     if (event.ctrlKey || event.metaKey || event.altKey) {
       if (event.key.length === 1) {
-        const modifier = event.ctrlKey
-          ? "ctrl"
-          : event.altKey
-            ? "alt"
-            : "meta";
+        const modifier = event.ctrlKey ? "ctrl" : event.altKey ? "alt" : "meta";
         onSendKey(`${modifier}+${event.key.toLowerCase()}`);
         event.preventDefault();
       }
@@ -274,17 +288,14 @@ export function TerminalView({
 
   return (
     <div className="relative h-full w-full">
-      <span
-        ref={measureRef}
-        className="absolute -left-[9999px] -top-[9999px] font-mono text-sm"
-      >
+      <span ref={measureRef} className="absolute -left-[9999px] -top-[9999px] font-mono text-sm">
         M
       </span>
       <div
         ref={containerRef}
         className={cn(
           "relative h-full w-full rounded-lg border border-tn-border bg-tn-bg-alt",
-          "shadow-panel"
+          "shadow-panel",
         )}
       >
         <div
@@ -292,7 +303,7 @@ export function TerminalView({
           style={{
             padding: `${padding}px`,
             lineHeight: `${cellSize.height}px`,
-            fontFamily: "JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, monospace"
+            fontFamily: "JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, monospace",
           }}
         >
           <div
@@ -319,16 +330,14 @@ export function TerminalView({
                       : "Connecting..."}
               </div>
             )}
-            {screen && (
-              <TerminalGrid rows={screen.rowsData} selection={selection} />
-            )}
-            {screen && cursorStyle && (
+            {screen && <TerminalGrid rows={screen.rowsData} selection={selection} />}
+            {screen?.cursorVisible && cursorStyle && (
               <div
                 className="terminal-cursor"
                 style={{
                   ...cursorStyle,
                   background: "var(--tn-text)",
-                  mixBlendMode: "difference"
+                  mixBlendMode: "difference",
                 }}
               />
             )}

@@ -168,7 +168,7 @@ export function encodeAny(typeName: ProtoMessageName, payload: Record<string, un
   const value = type.encode(message).finish();
   const any = AnyType.create({
     type_url: `type.googleapis.com/${typeName}`,
-    value
+    value,
   });
   return AnyType.encode(any).finish();
 }

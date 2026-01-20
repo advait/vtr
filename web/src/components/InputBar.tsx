@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import { useState } from "react";
 import { Button } from "./ui/Button";
 import { Input } from "./ui/Input";
 
@@ -14,7 +14,7 @@ export function InputBar({ onSend, disabled }: InputBarProps) {
     if (!value.trim()) {
       return;
     }
-    onSend(value + "\n");
+    onSend(`${value}\n`);
     setValue("");
   };
 
