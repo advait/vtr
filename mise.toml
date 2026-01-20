@@ -1,0 +1,17 @@
+[tools]
+go = "1.25.3"
+zig = "0.15.2"
+
+[tasks.shim]
+run = "cd go-ghostty/shim && zig build"
+
+[tasks.build]
+depends = ["shim"]
+run = "go build -o bin/vtr ./cmd/vtr"
+
+[tasks.test]
+depends = ["shim"]
+run = "go test ./..."
+
+[tasks.all]
+depends = ["build", "test"]
