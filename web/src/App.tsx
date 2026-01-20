@@ -1,11 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CoordinatorTree, CoordinatorInfo } from "./components/CoordinatorTree";
+import { CoordinatorTree, CoordinatorInfo, SessionInfo } from "./components/CoordinatorTree";
 import { ActionTray } from "./components/ActionTray";
 import { InputBar } from "./components/InputBar";
 import { Badge } from "./components/ui/Badge";
 import { Input } from "./components/ui/Input";
 import { ScrollArea } from "./components/ui/ScrollArea";
-import { Button } from "./components/ui/Button";
 import { fetchSessions } from "./lib/api";
 import { applyScreenUpdate, ScreenState } from "./lib/terminal";
 import { useVtrStream } from "./lib/ws";
@@ -25,15 +24,25 @@ export default function App() {
   const [coordinators, setCoordinators] = useState<CoordinatorInfo[]>([]);
   const [filter, setFilter] = useState("");
   const [activeSession, setActiveSession] = useState<string | null>(null);
-  const [manualSession, setManualSession] = useState("");
+  const [selectedSession, setSelectedSession] = useState<{
+    name: string;
+    status: SessionInfo["status"];
+    exitCode?: number;
+  } | null>(null);
   const [screen, setScreen] = useState<ScreenState | null>(null);
   const [exitCode, setExitCode] = useState<number | null>(null);
   const [ctrlArmed, setCtrlArmed] = useState(false);
+  const [isDesktop, setIsDesktop] = useState(() => {
+    if (typeof window === "undefined" || !window.matchMedia) {
+      return false;
+    }
+    return window.matchMedia("(min-width: 1024px)").matches;
+  });
   const latestUpdate = useRef<SubscribeEvent | null>(null);
   const rafRef = useRef<number | null>(null);
   const lastSize = useRef<{ cols: number; rows: number } | null>(null);
 
-  const { state, setEventHandler, sendText, sendKey, resize } = useVtrStream(activeSession, {
+  const { state, setEventHandler, sendText, sendKey, resize, close } = useVtrStream(activeSession, {
     includeRawOutput: false
   });
 
@@ -45,8 +54,27 @@ export default function App() {
 
   useEffect(() => {
     setScreen(null);
-    setExitCode(null);
-  }, [activeSession]);
+    if (!selectedSession || selectedSession.status !== "exited") {
+      setExitCode(null);
+      return;
+    }
+    setExitCode(selectedSession.exitCode ?? 0);
+  }, [selectedSession]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) {
+      return;
+    }
+    const media = window.matchMedia("(min-width: 1024px)");
+    const handleChange = () => setIsDesktop(media.matches);
+    handleChange();
+    if (media.addEventListener) {
+      media.addEventListener("change", handleChange);
+      return () => media.removeEventListener("change", handleChange);
+    }
+    media.addListener(handleChange);
+    return () => media.removeListener(handleChange);
+  }, []);
 
   const applyPending = useCallback(() => {
     const pending = latestUpdate.current;
@@ -67,10 +95,19 @@ export default function App() {
         }
       }
       if (event.session_exited) {
-        setExitCode(event.session_exited.exit_code ?? 0);
+        const exit = event.session_exited.exit_code ?? 0;
+        setExitCode(exit);
+        setSelectedSession((prev) => {
+          if (!prev || prev.name !== activeSession) {
+            return prev;
+          }
+          return { ...prev, status: "exited", exitCode: exit };
+        });
+        close();
+        setActiveSession(null);
       }
     });
-  }, [applyPending, setEventHandler]);
+  }, [activeSession, applyPending, close, setEventHandler]);
 
   const onResize = useCallback(
     (cols: number, rows: number) => {
@@ -116,11 +153,16 @@ export default function App() {
   );
 
   const statusBadge = useMemo(() => {
+    if (selectedSession?.status === "exited") {
+      const label = exitCode !== null ? `exited (${exitCode})` : "exited";
+      return <Badge variant="red">{label}</Badge>;
+    }
     const status = statusLabels[state.status] || statusLabels.idle;
     return <Badge variant={status.variant}>{status.label}</Badge>;
-  }, [state.status]);
+  }, [exitCode, selectedSession?.status, state.status]);
 
-  const showExit = exitCode !== null;
+  const showExit = exitCode !== null && selectedSession?.status !== "exited";
+  const displayStatus = selectedSession?.status === "exited" ? "exited" : state.status;
 
   return (
     <div className="min-h-screen bg-tn-bg text-tn-text">
@@ -131,8 +173,8 @@ export default function App() {
             {statusBadge}
             {screen?.waitingForKeyframe && <Badge variant="yellow">resyncing</Badge>}
             {showExit && <Badge variant="red">exited ({exitCode})</Badge>}
-            {activeSession && (
-              <span className="text-xs text-tn-text-dim">{activeSession}</span>
+            {selectedSession && (
+              <span className="text-xs text-tn-text-dim">{selectedSession.name}</span>
             )}
           </div>
           <div className="flex-1">
@@ -147,27 +189,6 @@ export default function App() {
 
       <main className="flex min-h-[calc(100vh-72px)] flex-col gap-4 px-4 py-4 lg:flex-row">
         <aside className="flex w-full flex-col gap-4 lg:w-80">
-          <div className="rounded-lg border border-tn-border bg-tn-panel p-3">
-            <div className="mb-2 text-xs text-tn-muted">Attach to a session</div>
-            <div className="flex gap-2">
-              <Input
-                placeholder="coordinator:session"
-                value={manualSession}
-                onChange={(event) => setManualSession(event.target.value)}
-              />
-              <Button
-                size="sm"
-                onClick={() => {
-                  if (manualSession.trim()) {
-                    setActiveSession(manualSession.trim());
-                  }
-                }}
-              >
-                Attach
-              </Button>
-            </div>
-          </div>
-
           <div className="flex-1 rounded-lg border border-tn-border bg-tn-panel">
             <ScrollArea className="h-full max-h-[420px] lg:max-h-none">
               <div className="px-4 py-3">
@@ -176,8 +197,8 @@ export default function App() {
                   filter={filter}
                   activeSession={activeSession}
                   onSelect={(session) => {
-                    setActiveSession(session);
-                    setManualSession(session);
+                    setSelectedSession(session);
+                    setActiveSession(session.status === "exited" ? null : session.name);
                   }}
                 />
               </div>
@@ -189,19 +210,25 @@ export default function App() {
           <div className="flex-1">
             <TerminalView
               screen={screen}
-              status={state.status}
+              status={displayStatus}
               onResize={onResize}
               onSendKey={onSendKey}
               onSendText={onSendText}
               onPaste={onSendText}
+              autoFocus={isDesktop}
+              focusKey={selectedSession?.name}
             />
           </div>
-          <ActionTray
-            ctrlArmed={ctrlArmed}
-            onCtrlToggle={() => setCtrlArmed((prev) => !prev)}
-            onSendKey={onSendKey}
-          />
-          <InputBar onSend={onSendText} disabled={state.status !== "open"} />
+          {!isDesktop && (
+            <>
+              <ActionTray
+                ctrlArmed={ctrlArmed}
+                onCtrlToggle={() => setCtrlArmed((prev) => !prev)}
+                onSendKey={onSendKey}
+              />
+              <InputBar onSend={onSendText} disabled={state.status !== "open"} />
+            </>
+          )}
         </section>
       </main>
     </div>

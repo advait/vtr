@@ -6,6 +6,8 @@ import { cn } from "../lib/utils";
 export type TerminalViewProps = {
   screen: ScreenState | null;
   status: string;
+  autoFocus?: boolean;
+  focusKey?: string | null;
   onResize: (cols: number, rows: number) => void;
   onSendText: (text: string) => void;
   onSendKey: (key: string) => void;
@@ -54,12 +56,15 @@ function normalizeSelection(selection: Selection) {
 export function TerminalView({
   screen,
   status,
+  autoFocus,
+  focusKey,
   onResize,
   onSendKey,
   onSendText,
   onPaste
 }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const terminalRef = useRef<HTMLDivElement | null>(null);
   const measureRef = useRef<HTMLSpanElement | null>(null);
   const [cellSize, setCellSize] = useState<CellSize>({ width: 8, height: 18 });
   const [selection, setSelection] = useState<Selection | null>(null);
@@ -77,6 +82,13 @@ export function TerminalView({
       });
     }
   }, []);
+
+  useEffect(() => {
+    if (!autoFocus || status === "idle" || status === "exited") {
+      return;
+    }
+    terminalRef.current?.focus({ preventScroll: true });
+  }, [autoFocus, focusKey, status]);
 
   const padding = 12;
 
@@ -115,6 +127,7 @@ export function TerminalView({
     if (!screen || !containerRef.current) {
       return;
     }
+    terminalRef.current?.focus({ preventScroll: true });
     const rect = containerRef.current.getBoundingClientRect();
     const col = clamp(
       Math.floor((event.clientX - rect.left - padding) / cellSize.width),
@@ -287,6 +300,7 @@ export function TerminalView({
             tabIndex={0}
             role="textbox"
             aria-label="terminal"
+            ref={terminalRef}
             onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
@@ -296,7 +310,13 @@ export function TerminalView({
           >
             {!screen && (
               <div className="flex h-full items-center justify-center text-sm text-tn-muted">
-                {status === "reconnecting" ? "Reconnecting..." : "Connecting..."}
+                {status === "exited"
+                  ? "Session exited. Select another session."
+                  : status === "idle"
+                    ? "Select a session to connect."
+                    : status === "reconnecting"
+                      ? "Reconnecting..."
+                      : "Connecting..."}
               </div>
             )}
             {screen && (
