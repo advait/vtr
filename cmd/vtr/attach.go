@@ -666,13 +666,13 @@ func handleLeaderKey(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
 		return m, sendKeyCmd(m.client, m.session, "ctrl+b")
 	case "d":
 		return m, tea.Quit
-	case "k":
+	case "x":
 		m.statusMsg = "kill sent"
 		m.statusUntil = time.Now().Add(2 * time.Second)
 		return m, killCmd(m.client, m.session)
-	case "n":
+	case "j", "n":
 		return m, nextSessionCmd(m.client, m.session, true)
-	case "p":
+	case "k", "p":
 		return m, nextSessionCmd(m.client, m.session, false)
 	case "c":
 		return beginCreateModal(m)
@@ -1199,11 +1199,11 @@ type leaderHint struct {
 
 var leaderHints = []leaderHint{
 	{key: "w", label: "list"},
-	{key: "n", label: "next"},
-	{key: "p", label: "prev"},
+	{key: "j", label: "next"},
+	{key: "k", label: "prev"},
 	{key: "c", label: "create"},
 	{key: "d", label: "detach"},
-	{key: "k", label: "kill"},
+	{key: "x", label: "kill"},
 	{key: "Ctrl+b", label: "send"},
 }
 
