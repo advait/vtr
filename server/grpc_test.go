@@ -2,10 +2,13 @@ package server
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,6 +16,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
 )
@@ -105,6 +109,59 @@ func screenToString(resp *proto.GetScreenResponse) string {
 	}
 	return b.String()
 }
+
+type blockingSubscribeStream struct {
+	ctx       context.Context
+	blockCh   chan struct{}
+	unblockCh chan struct{}
+	events    chan *proto.SubscribeEvent
+
+	mu      sync.Mutex
+	blocked bool
+}
+
+func newBlockingSubscribeStream(ctx context.Context) *blockingSubscribeStream {
+	return &blockingSubscribeStream{
+		ctx:       ctx,
+		blockCh:   make(chan struct{}),
+		unblockCh: make(chan struct{}),
+		events:    make(chan *proto.SubscribeEvent, 32),
+	}
+}
+
+func (s *blockingSubscribeStream) Send(ev *proto.SubscribeEvent) error {
+	if ev == nil {
+		return nil
+	}
+	if ev.GetScreenUpdate() != nil {
+		s.mu.Lock()
+		shouldBlock := !s.blocked
+		if shouldBlock {
+			s.blocked = true
+		}
+		s.mu.Unlock()
+		if shouldBlock {
+			close(s.blockCh)
+			select {
+			case <-s.unblockCh:
+			case <-s.ctx.Done():
+				return s.ctx.Err()
+			}
+		}
+	}
+	select {
+	case s.events <- ev:
+	default:
+	}
+	return nil
+}
+
+func (s *blockingSubscribeStream) SetHeader(metadata.MD) error  { return nil }
+func (s *blockingSubscribeStream) SendHeader(metadata.MD) error { return nil }
+func (s *blockingSubscribeStream) SetTrailer(metadata.MD)       {}
+func (s *blockingSubscribeStream) Context() context.Context     { return s.ctx }
+func (s *blockingSubscribeStream) SendMsg(interface{}) error    { return nil }
+func (s *blockingSubscribeStream) RecvMsg(interface{}) error    { return nil }
 
 func waitForSessionStatus(t *testing.T, client proto.VTRClient, name string, want proto.SessionStatus, timeout time.Duration) *proto.Session {
 	t.Helper()
@@ -669,6 +726,168 @@ func TestGRPCSubscribeResizeKeyframe(t *testing.T) {
 	}
 	if resized.FrameId <= initialFrame {
 		t.Fatalf("expected resize frame_id to increase, got %d then %d", initialFrame, resized.FrameId)
+	}
+}
+
+func TestGRPCSubscribePeriodicKeyframe(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty tests not supported on windows")
+	}
+
+	oldInterval := keyframeInterval
+	keyframeInterval = 200 * time.Millisecond
+	t.Cleanup(func() {
+		keyframeInterval = oldInterval
+	})
+
+	client, cleanup := startGRPCTestServer(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	_, err := client.Spawn(ctx, &proto.SpawnRequest{
+		Name:    "grpc-subscribe-periodic",
+		Command: "sleep 1",
+	})
+	cancel()
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+	stream, err := client.Subscribe(ctx, &proto.SubscribeRequest{
+		Name:                 "grpc-subscribe-periodic",
+		IncludeScreenUpdates: true,
+		IncludeRawOutput:     false,
+	})
+	if err != nil {
+		cancel()
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	event, err := stream.Recv()
+	if err != nil {
+		cancel()
+		t.Fatalf("Recv: %v", err)
+	}
+	update := event.GetScreenUpdate()
+	if update == nil || update.Screen == nil {
+		cancel()
+		t.Fatalf("expected initial screen update, got %+v", event)
+	}
+	initialFrame := update.FrameId
+
+	var periodic *proto.ScreenUpdate
+	deadline := time.After(1 * time.Second)
+	for periodic == nil {
+		select {
+		case <-deadline:
+			cancel()
+			t.Fatalf("expected periodic keyframe update")
+		default:
+		}
+		event, err := stream.Recv()
+		if err != nil {
+			cancel()
+			t.Fatalf("Recv: %v", err)
+		}
+		update := event.GetScreenUpdate()
+		if update == nil || update.Screen == nil {
+			if event.GetSessionExited() != nil {
+				cancel()
+				t.Fatalf("session exited before periodic keyframe")
+			}
+			continue
+		}
+		if update.FrameId > initialFrame {
+			periodic = update
+		}
+	}
+	cancel()
+	if !periodic.IsKeyframe || periodic.BaseFrameId != 0 || periodic.FrameId == 0 {
+		t.Fatalf("expected keyframe with frame_id set, got %+v", periodic)
+	}
+}
+
+func TestGRPCSubscribeLatestOnlyBackpressure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty tests not supported on windows")
+	}
+
+	oldInterval := keyframeInterval
+	keyframeInterval = 0
+	t.Cleanup(func() {
+		keyframeInterval = oldInterval
+	})
+
+	coord := newTestCoordinator()
+	defer coord.Close()
+
+	_, err := coord.Spawn("grpc-subscribe-backpressure", SpawnOptions{
+		Command: []string{"cat"},
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	server := NewGRPCServer(coord)
+	ctx, cancel := context.WithCancel(context.Background())
+	stream := newBlockingSubscribeStream(ctx)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- server.Subscribe(&proto.SubscribeRequest{
+			Name:                 "grpc-subscribe-backpressure",
+			IncludeScreenUpdates: true,
+			IncludeRawOutput:     false,
+		}, stream)
+	}()
+
+	select {
+	case <-stream.blockCh:
+	case <-time.After(2 * time.Second):
+		cancel()
+		t.Fatal("timeout waiting for initial send to block")
+	}
+
+	for i := 0; i < 5; i++ {
+		if err := coord.Send("grpc-subscribe-backpressure", []byte(fmt.Sprintf("line%d\n", i))); err != nil {
+			cancel()
+			t.Fatalf("Send: %v", err)
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	time.Sleep(200 * time.Millisecond)
+	close(stream.unblockCh)
+
+	var updates int
+	var lastScreen string
+	timeout := time.After(2 * time.Second)
+	for {
+		select {
+		case event := <-stream.events:
+			if event == nil {
+				continue
+			}
+			if update := event.GetScreenUpdate(); update != nil && update.Screen != nil {
+				updates++
+				lastScreen = screenToString(update.Screen)
+				if strings.Contains(lastScreen, "line4") {
+					cancel()
+					err := <-errCh
+					if err != nil && !errors.Is(err, context.Canceled) {
+						t.Fatalf("Subscribe: %v", err)
+					}
+					if updates > 2 {
+						t.Fatalf("expected latest-only updates, got %d updates", updates)
+					}
+					return
+				}
+			}
+		case <-timeout:
+			cancel()
+			_ = <-errCh
+			t.Fatalf("timeout waiting for latest screen, last=%q updates=%d", lastScreen, updates)
+		}
 	}
 }
 

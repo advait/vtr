@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -20,13 +21,33 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-const maxRawInputBytes = 1 << 20
+const (
+	maxRawInputBytes = 1 << 20
+	keyframeRingSize = 4
+)
+
+var keyframeInterval = 5 * time.Second
 
 // GRPCServer implements the vtr gRPC service.
 type GRPCServer struct {
 	proto.UnimplementedVTRServer
 	coord *Coordinator
 	shell string
+
+	keyframeMu   sync.Mutex
+	keyframeRing map[string]*keyframeRing
+}
+
+type keyframeEntry struct {
+	update      *proto.ScreenUpdate
+	outputTotal int64
+	at          time.Time
+}
+
+type keyframeRing struct {
+	entries []keyframeEntry
+	next    int
+	count   int
 }
 
 // NewGRPCServer constructs a gRPC server backed by the coordinator.
@@ -35,7 +56,11 @@ func NewGRPCServer(coord *Coordinator) *GRPCServer {
 	if coord != nil && coord.DefaultShell() != "" {
 		shell = coord.DefaultShell()
 	}
-	return &GRPCServer{coord: coord, shell: shell}
+	return &GRPCServer{
+		coord:        coord,
+		shell:        shell,
+		keyframeRing: make(map[string]*keyframeRing),
+	}
 }
 
 // ListenUnix creates a Unix socket listener, removing any stale socket file.
@@ -117,6 +142,7 @@ func (s *GRPCServer) Spawn(_ context.Context, req *proto.SpawnRequest) (*proto.S
 		return nil, mapCoordinatorErr(err)
 	}
 
+	s.clearKeyframes(req.Name)
 	return &proto.SpawnResponse{Session: toProtoSession(info)}, nil
 }
 
@@ -162,6 +188,7 @@ func (s *GRPCServer) Remove(_ context.Context, req *proto.RemoveRequest) (*proto
 	if err := s.coord.Remove(req.Name); err != nil {
 		return nil, mapCoordinatorErr(err)
 	}
+	s.clearKeyframes(req.Name)
 	return &proto.RemoveResponse{}, nil
 }
 
@@ -343,60 +370,142 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 	includeScreen := req.IncludeScreenUpdates
 	includeRaw := req.IncludeRawOutput
 	resizeCh := session.resizeState()
-	sentInitialScreen := false
+	ctx := stream.Context()
 
-	if includeScreen {
+	screenSignal := make(chan struct{}, 1)
+	rawSignal := make(chan struct{}, 1)
+	sendErrCh := make(chan error, 1)
+	exitSignal := make(chan exitPayload, 1)
+	makeKeyframe := func() (*proto.ScreenUpdate, error) {
 		snap, err := s.coord.Snapshot(req.Name)
 		if err != nil {
-			return mapCoordinatorErr(err)
+			return nil, err
 		}
-		if err := stream.Send(&proto.SubscribeEvent{
-			Event: &proto.SubscribeEvent_ScreenUpdate{
-				ScreenUpdate: keyframeUpdateFromSnapshot(session, req.Name, snap),
-			},
-		}); err != nil {
-			return err
-		}
-		sentInitialScreen = true
+		update := keyframeUpdateFromSnapshot(session, req.Name, snap)
+		total, _, _ := session.outputState()
+		s.cacheKeyframe(req.Name, update, total)
+		return update, nil
 	}
+
+	var screenMu sync.Mutex
+	var latestScreen *proto.ScreenUpdate
+	setLatestScreen := func(update *proto.ScreenUpdate) {
+		if update == nil {
+			return
+		}
+		screenMu.Lock()
+		latestScreen = update
+		screenMu.Unlock()
+		select {
+		case screenSignal <- struct{}{}:
+		default:
+		}
+	}
+	drainLatestScreen := func() *proto.ScreenUpdate {
+		screenMu.Lock()
+		update := latestScreen
+		latestScreen = nil
+		screenMu.Unlock()
+		return update
+	}
+
+	var rawMu sync.Mutex
+	var pendingRaw []byte
+	appendRaw := func(data []byte) {
+		if len(data) == 0 {
+			return
+		}
+		rawMu.Lock()
+		pendingRaw = append(pendingRaw, data...)
+		if len(pendingRaw) > maxOutputBuffer {
+			drop := len(pendingRaw) - maxOutputBuffer
+			pendingRaw = pendingRaw[drop:]
+		}
+		rawMu.Unlock()
+		select {
+		case rawSignal <- struct{}{}:
+		default:
+		}
+	}
+	drainRaw := func() []byte {
+		rawMu.Lock()
+		data := pendingRaw
+		pendingRaw = nil
+		rawMu.Unlock()
+		return data
+	}
+
+	go func() {
+		sendErrCh <- runSubscribeSender(ctx, stream, screenSignal, rawSignal, exitSignal, drainLatestScreen, drainRaw)
+	}()
 
 	info := session.Info()
 	if info.State == SessionExited {
-		if includeScreen && !sentInitialScreen {
-			snap, err := s.coord.Snapshot(req.Name)
+		if includeRaw {
+			data, nextOffset, nextCh := session.outputSnapshot(offset)
+			offset = nextOffset
+			outputCh = nextCh
+			appendRaw(data)
+		}
+		var finalScreen *proto.ScreenUpdate
+		if includeScreen {
+			update, err := makeKeyframe()
 			if err != nil {
 				return mapCoordinatorErr(err)
 			}
-			if err := stream.Send(&proto.SubscribeEvent{
-				Event: &proto.SubscribeEvent_ScreenUpdate{
-					ScreenUpdate: keyframeUpdateFromSnapshot(session, req.Name, snap),
-				},
-			}); err != nil {
-				return err
-			}
+			finalScreen = update
 		}
-		return stream.Send(&proto.SubscribeEvent{
-			Event: &proto.SubscribeEvent_SessionExited{
-				SessionExited: &proto.SessionExited{ExitCode: int32(info.ExitCode)},
-			},
-		})
+		exitSignal <- exitPayload{
+			exit:        &proto.SessionExited{ExitCode: int32(info.ExitCode)},
+			finalScreen: finalScreen,
+		}
+		err := <-sendErrCh
+		if err == nil {
+			return nil
+		}
+		return err
+	}
+
+	if includeScreen {
+		if cached := s.cachedKeyframe(session, req.Name); cached != nil {
+			setLatestScreen(cached)
+		} else {
+			update, err := makeKeyframe()
+			if err != nil {
+				return mapCoordinatorErr(err)
+			}
+			setLatestScreen(update)
+		}
 	}
 
 	var ticker *time.Ticker
 	var tick <-chan time.Time
+	var keyframeTicker *time.Ticker
+	var keyframeTick <-chan time.Time
 	if includeScreen {
 		ticker = time.NewTicker(time.Second / 30)
 		tick = ticker.C
+		if keyframeInterval > 0 {
+			keyframeTicker = time.NewTicker(keyframeInterval)
+			keyframeTick = keyframeTicker.C
+		}
 	}
 	if ticker != nil {
 		defer ticker.Stop()
 	}
+	if keyframeTicker != nil {
+		defer keyframeTicker.Stop()
+	}
 
 	pendingScreen := false
-	ctx := stream.Context()
 
 	for {
 		select {
+		case err := <-sendErrCh:
+			if err == nil {
+				return nil
+			}
+			return err
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-session.exitCh:
@@ -404,51 +513,38 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 				data, nextOffset, nextCh := session.outputSnapshot(offset)
 				offset = nextOffset
 				outputCh = nextCh
-				if len(data) > 0 {
-					if err := stream.Send(&proto.SubscribeEvent{
-						Event: &proto.SubscribeEvent_RawOutput{RawOutput: data},
-					}); err != nil {
-						return err
-					}
-				}
+				appendRaw(data)
 			} else {
 				total, nextCh, _ := session.outputState()
 				offset = total
 				outputCh = nextCh
 			}
 
+			var finalScreen *proto.ScreenUpdate
 			if includeScreen {
-				snap, err := s.coord.Snapshot(req.Name)
+				update, err := makeKeyframe()
 				if err != nil {
 					return mapCoordinatorErr(err)
 				}
-				if err := stream.Send(&proto.SubscribeEvent{
-					Event: &proto.SubscribeEvent_ScreenUpdate{
-						ScreenUpdate: keyframeUpdateFromSnapshot(session, req.Name, snap),
-					},
-				}); err != nil {
-					return err
-				}
+				finalScreen = update
 			}
 
 			info := session.Info()
-			return stream.Send(&proto.SubscribeEvent{
-				Event: &proto.SubscribeEvent_SessionExited{
-					SessionExited: &proto.SessionExited{ExitCode: int32(info.ExitCode)},
-				},
-			})
+			exitSignal <- exitPayload{
+				exit:        &proto.SessionExited{ExitCode: int32(info.ExitCode)},
+				finalScreen: finalScreen,
+			}
+			err := <-sendErrCh
+			if err == nil {
+				return nil
+			}
+			return err
 		case <-outputCh:
 			if includeRaw {
 				data, nextOffset, nextCh := session.outputSnapshot(offset)
 				offset = nextOffset
 				outputCh = nextCh
-				if len(data) > 0 {
-					if err := stream.Send(&proto.SubscribeEvent{
-						Event: &proto.SubscribeEvent_RawOutput{RawOutput: data},
-					}); err != nil {
-						return err
-					}
-				}
+				appendRaw(data)
 			} else {
 				total, nextCh, _ := session.outputState()
 				offset = total
@@ -464,21 +560,166 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 			resizeCh = session.resizeState()
 		case <-tick:
 			if includeScreen && pendingScreen {
-				snap, err := s.coord.Snapshot(req.Name)
+				update, err := makeKeyframe()
 				if err != nil {
 					return mapCoordinatorErr(err)
 				}
+				setLatestScreen(update)
+				pendingScreen = false
+			}
+		case <-keyframeTick:
+			if includeScreen {
+				pendingScreen = true
+			}
+		}
+	}
+}
+
+type exitPayload struct {
+	exit        *proto.SessionExited
+	finalScreen *proto.ScreenUpdate
+}
+
+func runSubscribeSender(
+	ctx context.Context,
+	stream proto.VTR_SubscribeServer,
+	screenSignal <-chan struct{},
+	rawSignal <-chan struct{},
+	exitSignal <-chan exitPayload,
+	drainScreen func() *proto.ScreenUpdate,
+	drainRaw func() []byte,
+) error {
+	sendScreen := func(update *proto.ScreenUpdate) error {
+		if update == nil {
+			return nil
+		}
+		return stream.Send(&proto.SubscribeEvent{
+			Event: &proto.SubscribeEvent_ScreenUpdate{
+				ScreenUpdate: update,
+			},
+		})
+	}
+	sendRaw := func(data []byte) error {
+		if len(data) == 0 {
+			return nil
+		}
+		return stream.Send(&proto.SubscribeEvent{
+			Event: &proto.SubscribeEvent_RawOutput{
+				RawOutput: data,
+			},
+		})
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case payload := <-exitSignal:
+			if err := sendRaw(drainRaw()); err != nil {
+				return err
+			}
+			if err := sendScreen(payload.finalScreen); err != nil {
+				return err
+			}
+			if payload.exit != nil {
 				if err := stream.Send(&proto.SubscribeEvent{
-					Event: &proto.SubscribeEvent_ScreenUpdate{
-						ScreenUpdate: keyframeUpdateFromSnapshot(session, req.Name, snap),
+					Event: &proto.SubscribeEvent_SessionExited{
+						SessionExited: payload.exit,
 					},
 				}); err != nil {
 					return err
 				}
-				pendingScreen = false
+			}
+			return nil
+		case <-rawSignal:
+			if err := sendRaw(drainRaw()); err != nil {
+				return err
+			}
+		case <-screenSignal:
+			if err := sendScreen(drainScreen()); err != nil {
+				return err
 			}
 		}
 	}
+}
+
+func newKeyframeRing(size int) *keyframeRing {
+	if size < 1 {
+		size = 1
+	}
+	return &keyframeRing{entries: make([]keyframeEntry, size)}
+}
+
+func (r *keyframeRing) Add(entry keyframeEntry) {
+	if r == nil || len(r.entries) == 0 {
+		return
+	}
+	r.entries[r.next] = entry
+	r.next = (r.next + 1) % len(r.entries)
+	if r.count < len(r.entries) {
+		r.count++
+	}
+}
+
+func (r *keyframeRing) Latest() (keyframeEntry, bool) {
+	if r == nil || r.count == 0 {
+		return keyframeEntry{}, false
+	}
+	idx := r.next - 1
+	if idx < 0 {
+		idx += len(r.entries)
+	}
+	return r.entries[idx], true
+}
+
+func (s *GRPCServer) cacheKeyframe(name string, update *proto.ScreenUpdate, outputTotal int64) {
+	if update == nil || !update.IsKeyframe {
+		return
+	}
+	s.keyframeMu.Lock()
+	ring := s.keyframeRing[name]
+	if ring == nil {
+		ring = newKeyframeRing(keyframeRingSize)
+		s.keyframeRing[name] = ring
+	}
+	ring.Add(keyframeEntry{
+		update:      update,
+		outputTotal: outputTotal,
+		at:          time.Now(),
+	})
+	s.keyframeMu.Unlock()
+}
+
+func (s *GRPCServer) cachedKeyframe(session *Session, name string) *proto.ScreenUpdate {
+	if session == nil {
+		return nil
+	}
+	total, _, _ := session.outputState()
+	info := session.Info()
+	s.keyframeMu.Lock()
+	ring := s.keyframeRing[name]
+	var entry keyframeEntry
+	var ok bool
+	if ring != nil {
+		entry, ok = ring.Latest()
+	}
+	s.keyframeMu.Unlock()
+	if !ok || entry.update == nil || !entry.update.IsKeyframe || entry.update.Screen == nil {
+		return nil
+	}
+	screen := entry.update.Screen
+	if screen.Cols != int32(info.Cols) || screen.Rows != int32(info.Rows) {
+		return nil
+	}
+	if entry.outputTotal != total {
+		return nil
+	}
+	return entry.update
+}
+
+func (s *GRPCServer) clearKeyframes(name string) {
+	s.keyframeMu.Lock()
+	delete(s.keyframeRing, name)
+	s.keyframeMu.Unlock()
 }
 
 func toProtoSession(info *SessionInfo) *proto.Session {
