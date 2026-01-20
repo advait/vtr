@@ -13,6 +13,7 @@ import { ScrollArea } from "./components/ui/ScrollArea";
 import { fetchSessions } from "./lib/api";
 import type { SubscribeEvent } from "./lib/proto";
 import { applyScreenUpdate, type ScreenState } from "./lib/terminal";
+import { applyTheme, getTheme, loadThemeId, storeThemeId, themes } from "./lib/theme";
 import { useVtrStream } from "./lib/ws";
 
 const statusLabels: Record<
@@ -91,6 +92,7 @@ export default function App() {
   const [ctrlArmed, setCtrlArmed] = useState(false);
   const [hashSession, setHashSession] = useState(() => readSessionHash());
   const [sessionsLoaded, setSessionsLoaded] = useState(false);
+  const [themeId, setThemeId] = useState(() => getTheme(loadThemeId()).id);
   const [isDesktop, setIsDesktop] = useState(() => {
     if (typeof window === "undefined" || !window.matchMedia) {
       return false;
@@ -100,10 +102,16 @@ export default function App() {
   const latestUpdate = useRef<SubscribeEvent | null>(null);
   const rafRef = useRef<number | null>(null);
   const lastSize = useRef<{ cols: number; rows: number } | null>(null);
+  const activeTheme = useMemo(() => getTheme(themeId), [themeId]);
 
   const { state, setEventHandler, sendText, sendKey, resize, close } = useVtrStream(activeSession, {
     includeRawOutput: false,
   });
+
+  useEffect(() => {
+    applyTheme(activeTheme);
+    storeThemeId(activeTheme.id);
+  }, [activeTheme]);
 
   useEffect(() => {
     let active = true;
@@ -279,7 +287,7 @@ export default function App() {
     <div className="min-h-screen bg-tn-bg text-tn-text">
       <header className="sticky top-0 z-10 border-b border-tn-border bg-tn-panel px-4 py-3">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <span className="text-lg font-semibold tracking-tight">vtr</span>
             {statusBadge}
             {screen?.waitingForKeyframe && <Badge variant="yellow">resyncing</Badge>}
@@ -287,6 +295,23 @@ export default function App() {
             {selectedSession && (
               <span className="text-xs text-tn-text-dim">{selectedSession.name}</span>
             )}
+          </div>
+          <div className="flex items-center gap-2 lg:ml-auto">
+            <span className="text-xs font-semibold uppercase tracking-wide text-tn-muted">
+              Theme
+            </span>
+            <select
+              className="h-9 rounded-md border border-tn-border bg-tn-panel px-3 text-sm text-tn-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tn-accent"
+              value={activeTheme.id}
+              onChange={(event) => setThemeId(event.target.value)}
+              aria-label="Select theme"
+            >
+              {themes.map((theme) => (
+                <option key={theme.id} value={theme.id}>
+                  {theme.label}
+                </option>
+              ))}
+            </select>
           </div>
         </div>
       </header>
