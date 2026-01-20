@@ -389,9 +389,19 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return switchSession(m, sessionSwitchMsg{name: msg.name})
 	case tea.KeyMsg:
 		if m.exited {
+			if m.leaderActive {
+				m.leaderActive = false
+				if msg.String() == "esc" || msg.String() == "escape" {
+					return m, nil
+				}
+				return handleLeaderKey(m, msg)
+			}
 			switch msg.String() {
 			case "q", "enter":
 				return m, tea.Quit
+			case "ctrl+b":
+				m.leaderActive = true
+				return m, nil
 			}
 			return m, nil
 		}
@@ -1274,7 +1284,7 @@ func renderLeaderHints(active bool) string {
 func renderExitHints() string {
 	segments := []string{
 		renderHintSegment("q", "quit"),
-		renderHintSegment("enter", "quit"),
+		renderHintSegment("Ctrl+b", "leader"),
 	}
 	return strings.Join(segments, "  ")
 }
