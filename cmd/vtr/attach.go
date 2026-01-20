@@ -422,7 +422,7 @@ func (m attachModel) View() string {
 	if m.exited {
 		border = attachExitedBorderStyle
 	}
-	box := border.Width(m.viewportWidth + 2).Height(m.viewportHeight + 2).Render(content)
+	box := border.Width(m.viewportWidth).Height(m.viewportHeight).Render(content)
 	status := attachStatusStyle.Width(m.width).Render(renderStatusBar(statusView{
 		session:     m.session,
 		coordinator: m.coordinator.Name,
@@ -433,7 +433,8 @@ func (m attachModel) View() string {
 		exited:      m.exited,
 		exitCode:    m.exitCode,
 	}))
-	return lipgloss.JoinVertical(lipgloss.Top, box, status)
+	view := lipgloss.JoinVertical(lipgloss.Top, box, status)
+	return clampViewHeight(view, m.height)
 }
 
 func startSubscribeCmd(client proto.VTRClient, name string, streamID int) tea.Cmd {
@@ -680,6 +681,12 @@ func handleInputKey(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
 func inputForKey(msg tea.KeyMsg) (string, []byte, bool) {
 	if msg.Alt && len(msg.Runes) == 1 {
 		return "alt+" + string(msg.Runes), nil, true
+	}
+	if msg.Type >= 0 && msg.Type <= 31 {
+		return "", []byte{byte(msg.Type)}, true
+	}
+	if msg.Type == tea.KeyBackspace {
+		return "", []byte{0x7f}, true
 	}
 	switch msg.Type {
 	case tea.KeyRunes:
@@ -1014,6 +1021,7 @@ func styleFromCell(cell *proto.ScreenCell) (cellStyle, string) {
 }
 
 func cursorStyle(style cellStyle) cellStyle {
+	style.attrs &^= attrBlink
 	if style.fgSet || style.bgSet {
 		style.fg, style.bg = style.bg, style.fg
 		style.fgSet = true
@@ -1136,6 +1144,18 @@ func ensureCoordinator(coords []coordinatorRef, target coordinatorRef) []coordin
 		return coords
 	}
 	return append(coords, target)
+}
+
+func clampViewHeight(view string, height int) string {
+	if height <= 0 || view == "" {
+		return view
+	}
+	view = strings.TrimRight(view, "\n")
+	lines := strings.Split(view, "\n")
+	if len(lines) <= height {
+		return view
+	}
+	return strings.Join(lines[:height], "\n")
 }
 
 type statusView struct {
