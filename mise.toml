@@ -2,6 +2,8 @@
 go = "1.25.3"
 zig = "0.15.2"
 "vfox:clang" = "19.1.7"
+protoc = "27.2"
+bun = "1.3.6"
 
 [tasks.shim]
 run = "cd go-ghostty/shim && zig build -Dghostty=${GHOSTTY_ROOT:-../ghostty}"
@@ -120,6 +122,23 @@ sources = [
   "go-ghostty/shim/zig-out-asan/include/vtr_ghostty_vt.h",
 ]
 outputs = ["bin/.mise-test-sanitize-cgo.stamp"]
+
+[tasks.test-web-e2e]
+depends = ["proto", "shim"]
+run = "cd web && bun install && bunx playwright install chromium && bun run test:e2e && mkdir -p ../bin && touch ../bin/.mise-test-web-e2e.stamp"
+sources = [
+  "go.mod",
+  "go.sum",
+  "cmd/**/*.go",
+  "server/**/*.go",
+  "proto/*.go",
+  "web/package.json",
+  "web/bun.lock",
+  "web/playwright.config.ts",
+  "web/tests/**/*.ts",
+  "web/src/**",
+]
+outputs = ["bin/.mise-test-web-e2e.stamp"]
 
 [tasks.all]
 depends = ["build", "test"]
