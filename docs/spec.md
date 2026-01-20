@@ -567,6 +567,7 @@ explicitly out of scope for this milestone.
 - Expose wide/continuation metadata and grapheme cluster text in `ScreenCell`.
 - Add scrollback RPC + UI paging.
 - Add row-level delta frames for `SubscribeEvent` updates.
+- Consider mosh-style state sync/diff ideas for low-bandwidth or lossy links; see `docs/mosh-notes.md`.
 
 ### Config Management
 
