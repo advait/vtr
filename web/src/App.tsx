@@ -20,6 +20,56 @@ const statusLabels: Record<string, { label: string; variant: "default" | "green"
   closed: { label: "closed", variant: "default" }
 };
 
+const sessionHashKey = "session";
+
+function readSessionHash() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  const hash = window.location.hash.replace(/^#/, "");
+  if (!hash) {
+    return null;
+  }
+  const params = new URLSearchParams(hash);
+  const session = params.get(sessionHashKey);
+  if (!session) {
+    return null;
+  }
+  const trimmed = session.trim();
+  return trimmed ? trimmed : null;
+}
+
+function writeSessionHash(session: string | null) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  const url = new URL(window.location.href);
+  if (!session) {
+    url.hash = "";
+    window.history.replaceState(null, "", url.toString());
+    return;
+  }
+  const params = new URLSearchParams();
+  params.set(sessionHashKey, session);
+  url.hash = params.toString();
+  window.history.replaceState(null, "", url.toString());
+}
+
+function findSession(
+  coordinators: CoordinatorInfo[],
+  name: string
+): { name: string; status: SessionInfo["status"]; exitCode?: number } | null {
+  for (const coord of coordinators) {
+    for (const session of coord.sessions) {
+      const sessionKey = `${coord.name}:${session.name}`;
+      if (sessionKey === name) {
+        return { name: sessionKey, status: session.status, exitCode: session.exitCode };
+      }
+    }
+  }
+  return null;
+}
+
 export default function App() {
   const [coordinators, setCoordinators] = useState<CoordinatorInfo[]>([]);
   const [filter, setFilter] = useState("");
@@ -32,6 +82,8 @@ export default function App() {
   const [screen, setScreen] = useState<ScreenState | null>(null);
   const [exitCode, setExitCode] = useState<number | null>(null);
   const [ctrlArmed, setCtrlArmed] = useState(false);
+  const [hashSession, setHashSession] = useState(() => readSessionHash());
+  const [sessionsLoaded, setSessionsLoaded] = useState(false);
   const [isDesktop, setIsDesktop] = useState(() => {
     if (typeof window === "undefined" || !window.matchMedia) {
       return false;
@@ -49,8 +101,29 @@ export default function App() {
   useEffect(() => {
     fetchSessions()
       .then((data) => setCoordinators(data))
-      .catch(() => setCoordinators([]));
+      .catch(() => setCoordinators([]))
+      .finally(() => setSessionsLoaded(true));
   }, []);
+
+  useEffect(() => {
+    if (!hashSession || selectedSession || !sessionsLoaded) {
+      return;
+    }
+    const match = findSession(coordinators, hashSession);
+    if (!match) {
+      writeSessionHash(null);
+      setHashSession(null);
+      return;
+    }
+    setSelectedSession(match);
+    setActiveSession(match.status === "exited" ? null : match.name);
+  }, [coordinators, hashSession, selectedSession]);
+
+  useEffect(() => {
+    if (selectedSession) {
+      writeSessionHash(selectedSession.name);
+    }
+  }, [selectedSession]);
 
   useEffect(() => {
     setScreen(null);
