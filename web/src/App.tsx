@@ -187,7 +187,7 @@ export default function App() {
         </div>
       </header>
 
-      <main className="flex min-h-[calc(100vh-72px)] flex-col gap-4 px-4 py-4 lg:flex-row">
+      <main className="flex min-h-[calc(100vh-72px)] flex-col gap-4 px-4 pt-4 pb-[calc(1rem+env(safe-area-inset-bottom))] lg:flex-row">
         <aside className="flex w-full flex-col gap-4 lg:w-80">
           <div className="flex-1 rounded-lg border border-tn-border bg-tn-panel">
             <ScrollArea className="h-full max-h-[420px] lg:max-h-none">

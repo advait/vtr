@@ -70,7 +70,7 @@ function styleFromCell(cell: Cell, selected: boolean): React.CSSProperties {
   }
   const style: React.CSSProperties = {
     color: colorFromInt(fg),
-    backgroundColor: colorFromInt(bg)
+    backgroundColor: bg === 0 ? "var(--tn-bg-alt)" : colorFromInt(bg)
   };
   if (cell.attrs & ATTR_BOLD) {
     style.fontWeight = 600;

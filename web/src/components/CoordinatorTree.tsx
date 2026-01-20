@@ -21,7 +21,11 @@ export type CoordinatorTreeProps = {
   coordinators: CoordinatorInfo[];
   filter: string;
   activeSession: string | null;
-  onSelect: (session: string) => void;
+  onSelect: (session: {
+    name: string;
+    status: SessionInfo["status"];
+    exitCode?: number;
+  }) => void;
 };
 
 function statusBadge(status: SessionInfo["status"]) {
@@ -84,7 +88,13 @@ export function CoordinatorTree({
                 return (
                   <button
                     key={sessionKey}
-                    onClick={() => onSelect(sessionKey)}
+                    onClick={() =>
+                      onSelect({
+                        name: sessionKey,
+                        status: session.status,
+                        exitCode: session.exitCode
+                      })
+                    }
                     className={cn(
                       "flex items-center justify-between rounded-lg border border-transparent",
                       "bg-tn-panel px-3 py-2 text-left text-sm",
