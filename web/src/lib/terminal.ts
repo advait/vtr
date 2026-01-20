@@ -14,6 +14,8 @@ export type ScreenState = {
   rows: number;
   cursorX: number;
   cursorY: number;
+  cursorVisible: boolean;
+  cursorStyle: CursorStyle;
   frameId: number;
   waitingForKeyframe: boolean;
   rowsData: Cell[][];
@@ -23,6 +25,8 @@ export type Selection = {
   start: { row: number; col: number };
   end: { row: number; col: number };
 };
+
+export type CursorStyle = "block" | "underline" | "bar";
 
 export function emptyCell(): Cell {
   return { char: " ", fg: 0, bg: 0, attrs: 0 };
@@ -34,6 +38,16 @@ export function screenFromSnapshot(screen?: GetScreenResponse | null): ScreenSta
   }
   const cols = screen.cols;
   const rows = screen.rows;
+  const cursorX = screen.cursor_x ?? 0;
+  const cursorY = screen.cursor_y ?? 0;
+  const cursorStyle = normalizeCursorStyle((screen as { cursor_style?: unknown }).cursor_style);
+  const cursorVisible = resolveCursorVisible(
+    (screen as { cursor_visible?: unknown }).cursor_visible,
+    cursorX,
+    cursorY,
+    cols,
+    rows,
+  );
   const rowsData: Cell[][] = [];
   for (let r = 0; r < rows; r += 1) {
     const row = screen.screen_rows?.[r];
@@ -47,15 +61,20 @@ export function screenFromSnapshot(screen?: GetScreenResponse | null): ScreenSta
   return {
     cols,
     rows,
-    cursorX: screen.cursor_x ?? 0,
-    cursorY: screen.cursor_y ?? 0,
+    cursorX,
+    cursorY,
+    cursorVisible,
+    cursorStyle,
     frameId: 0,
     waitingForKeyframe: false,
-    rowsData
+    rowsData,
   };
 }
 
-export function applyScreenUpdate(prev: ScreenState | null, update: ScreenUpdate): ScreenState | null {
+export function applyScreenUpdate(
+  prev: ScreenState | null,
+  update: ScreenUpdate,
+): ScreenState | null {
   const hasScreen = !!update.screen;
   if (hasScreen) {
     const next = screenFromSnapshot(update.screen);
@@ -109,14 +128,29 @@ export function applyScreenUpdate(prev: ScreenState | null, update: ScreenUpdate
     nextRows[rowIndex] = rowCells;
   }
 
+  const cursorX = delta.cursor_x ?? prev.cursorX;
+  const cursorY = delta.cursor_y ?? prev.cursorY;
+  const cursorStyle = normalizeCursorStyle(
+    (delta as { cursor_style?: unknown }).cursor_style ?? prev.cursorStyle,
+  );
+  const cursorVisible = resolveCursorVisible(
+    (delta as { cursor_visible?: unknown }).cursor_visible,
+    cursorX,
+    cursorY,
+    cols,
+    rows,
+  );
+
   return {
     cols,
     rows,
-    cursorX: delta.cursor_x ?? prev.cursorX,
-    cursorY: delta.cursor_y ?? prev.cursorY,
+    cursorX,
+    cursorY,
+    cursorVisible,
+    cursorStyle,
     frameId: toNumber(update.frame_id) ?? prev.frameId,
     waitingForKeyframe: false,
-    rowsData: nextRows
+    rowsData: nextRows,
   };
 }
 
@@ -141,4 +175,30 @@ function toNumber(value: number | Long | undefined) {
     return value;
   }
   return Number(value);
+}
+
+function resolveCursorVisible(
+  rawVisible: unknown,
+  cursorX: number,
+  cursorY: number,
+  cols: number,
+  rows: number,
+) {
+  if (typeof rawVisible === "boolean") {
+    return rawVisible;
+  }
+  if (typeof rawVisible === "number") {
+    return rawVisible !== 0;
+  }
+  if (cursorX < 0 || cursorY < 0) {
+    return false;
+  }
+  return cursorX < cols && cursorY < rows;
+}
+
+function normalizeCursorStyle(rawStyle: unknown): CursorStyle {
+  if (rawStyle === "underline" || rawStyle === "bar" || rawStyle === "block") {
+    return rawStyle;
+  }
+  return "block";
 }

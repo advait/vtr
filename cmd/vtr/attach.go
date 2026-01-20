@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -144,9 +145,17 @@ var (
 	attachExitedBorderStyle = lipgloss.NewStyle().
 				Border(lipgloss.NormalBorder()).
 				BorderForeground(lipgloss.Color("1"))
+	attachHeaderStyle = lipgloss.NewStyle().
+				Background(lipgloss.Color("236")).
+				Foreground(lipgloss.Color("252"))
 	attachStatusStyle = lipgloss.NewStyle().
 				Background(lipgloss.Color("236")).
 				Foreground(lipgloss.Color("252"))
+	attachHintKeyStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("214")).
+				Bold(true)
+	attachHintChevronStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("240"))
 	attachModalStyle = lipgloss.NewStyle().
 				Border(lipgloss.NormalBorder()).
 				BorderForeground(lipgloss.Color("240")).
@@ -394,6 +403,9 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.leaderActive {
 			m.leaderActive = false
+			if msg.String() == "esc" || msg.String() == "escape" {
+				return m, nil
+			}
 			return handleLeaderKey(m, msg)
 		}
 		if msg.String() == "ctrl+b" {
@@ -409,6 +421,11 @@ func (m attachModel) View() string {
 	if m.width <= 0 || m.height <= 0 {
 		return "loading..."
 	}
+	innerWidth := m.width - 2
+	innerHeight := m.height - 2
+	if innerWidth <= 0 || innerHeight <= 0 {
+		return "loading..."
+	}
 	content := ""
 	switch {
 	case m.createActive:
@@ -422,18 +439,20 @@ func (m attachModel) View() string {
 	if m.exited {
 		border = attachExitedBorderStyle
 	}
-	box := border.Width(m.viewportWidth).Height(m.viewportHeight).Render(content)
-	status := attachStatusStyle.Width(m.width).Render(renderStatusBar(statusView{
+	headerLeft, headerRight := renderHeaderSegments(headerView{
 		session:     m.session,
 		coordinator: m.coordinator.Name,
-		now:         m.now,
-		width:       m.width,
-		leader:      m.leaderActive,
-		statusMsg:   m.statusMsg,
+		width:       innerWidth,
 		exited:      m.exited,
 		exitCode:    m.exitCode,
-	}))
-	view := lipgloss.JoinVertical(lipgloss.Top, box, status)
+	})
+	footerLeft, footerRight := renderFooterSegments(footerView{
+		width:     innerWidth,
+		leader:    m.leaderActive,
+		statusMsg: m.statusMsg,
+		exited:    m.exited,
+	})
+	view := renderBorderOverlay(content, m.width, m.height, border, headerLeft, headerRight, footerLeft, footerRight)
 	return clampViewHeight(view, m.height)
 }
 
@@ -930,7 +949,7 @@ func resubscribe(m attachModel, reason string) (attachModel, tea.Cmd) {
 
 func viewportSize(width, height int) (int, int) {
 	cols := width - 2
-	rows := height - 3
+	rows := height - 2
 	if cols < 1 {
 		cols = 1
 	}
@@ -1158,58 +1177,221 @@ func clampViewHeight(view string, height int) string {
 	return strings.Join(lines[:height], "\n")
 }
 
-type statusView struct {
+type headerView struct {
 	session     string
 	coordinator string
-	now         time.Time
 	width       int
-	leader      bool
-	statusMsg   string
 	exited      bool
 	exitCode    int32
 }
 
-func renderStatusBar(view statusView) string {
+type footerView struct {
+	width     int
+	leader    bool
+	statusMsg string
+	exited    bool
+}
+
+type leaderHint struct {
+	key   string
+	label string
+}
+
+var leaderHints = []leaderHint{
+	{key: "w", label: "list"},
+	{key: "n", label: "next"},
+	{key: "p", label: "prev"},
+	{key: "c", label: "create"},
+	{key: "d", label: "detach"},
+	{key: "k", label: "kill"},
+	{key: "Ctrl+b", label: "send"},
+}
+
+const borderOverlayOffset = 1
+
+func renderHeaderSegments(view headerView) (string, string) {
 	if view.width <= 0 {
+		return "", ""
+	}
+	left := ""
+	switch {
+	case view.coordinator != "" && view.session != "":
+		left = fmt.Sprintf("%s:%s", view.coordinator, view.session)
+	case view.coordinator != "":
+		left = view.coordinator
+	case view.session != "":
+		left = view.session
+	}
+	if view.exited {
+		if left != "" {
+			left = fmt.Sprintf("EXITED %d | %s", view.exitCode, left)
+		} else {
+			left = fmt.Sprintf("EXITED %d", view.exitCode)
+		}
+	}
+	right := fmt.Sprintf("vtr %s", Version)
+	if left != "" {
+		left = attachHeaderStyle.Render(" " + left + " ")
+	}
+	if right != "" {
+		right = attachHeaderStyle.Render(" " + right + " ")
+	}
+	return left, right
+}
+
+func renderFooterSegments(view footerView) (string, string) {
+	if view.width <= 0 {
+		return "", ""
+	}
+	left := ""
+	if view.statusMsg != "" {
+		left = attachStatusStyle.Render(" " + view.statusMsg + " ")
+	}
+	right := ""
+	switch {
+	case view.exited:
+		right = renderExitHints()
+	case view.statusMsg == "":
+		right = renderLeaderHints(view.leader)
+	}
+	if right != "" {
+		right = " " + right + " "
+	}
+	return left, right
+}
+
+func renderLeaderHints(active bool) string {
+	if !active {
+		return renderHintSegment("Ctrl+b", "leader")
+	}
+	segments := make([]string, 0, len(leaderHints))
+	for _, hint := range leaderHints {
+		segments = append(segments, renderHintSegment(hint.key, hint.label))
+	}
+	return strings.Join(segments, "  ")
+}
+
+func renderExitHints() string {
+	segments := []string{
+		renderHintSegment("q", "quit"),
+		renderHintSegment("enter", "quit"),
+	}
+	return strings.Join(segments, "  ")
+}
+
+func renderHintSegment(key, label string) string {
+	return fmt.Sprintf("%s %s %s", attachHintKeyStyle.Render(key), attachHintChevronStyle.Render(">"), label)
+}
+
+func renderBorderOverlay(content string, width, height int, borderStyle lipgloss.Style, headerLeft, headerRight, footerLeft, footerRight string) string {
+	if width <= 0 || height <= 0 {
 		return ""
 	}
-	left := fmt.Sprintf("%s | %s", view.session, view.coordinator)
-	if view.leader {
-		left += " | LEADER"
+	innerWidth := width - 2
+	innerHeight := height - 2
+	if innerWidth < 0 {
+		innerWidth = 0
 	}
-	if view.statusMsg != "" {
-		left = view.statusMsg
+	if innerHeight < 0 {
+		innerHeight = 0
 	}
-	right := view.now.Format("15:04:05")
-	if view.exited {
-		right = fmt.Sprintf("EXITED %d | %s", view.exitCode, right)
-	}
-	left = strings.TrimSpace(left)
-	if left == "" {
-		left = " "
-	}
-	leftWidth := len(left)
-	rightWidth := len(right)
-	if leftWidth+rightWidth+1 > view.width {
-		if rightWidth >= view.width {
-			return truncateToWidth(right, view.width)
+	content = lipgloss.Place(innerWidth, innerHeight, lipgloss.Left, lipgloss.Top, content)
+	bodyLines := strings.Split(content, "\n")
+
+	border := borderStyle.GetBorderStyle()
+	topStyle := borderEdgeStyle(borderStyle.GetBorderTopForeground(), borderStyle.GetBorderTopBackground())
+	bottomStyle := borderEdgeStyle(borderStyle.GetBorderBottomForeground(), borderStyle.GetBorderBottomBackground())
+	leftStyle := borderEdgeStyle(borderStyle.GetBorderLeftForeground(), borderStyle.GetBorderLeftBackground())
+	rightStyle := borderEdgeStyle(borderStyle.GetBorderRightForeground(), borderStyle.GetBorderRightBackground())
+
+	topLine := renderOverlayLine(innerWidth, border.TopLeft, border.TopRight, border.Top, topStyle, headerLeft, headerRight, borderOverlayOffset)
+	bottomLine := renderOverlayLine(innerWidth, border.BottomLeft, border.BottomRight, border.Bottom, bottomStyle, footerLeft, footerRight, borderOverlayOffset)
+	leftBorder := leftStyle.Render(border.Left)
+	rightBorder := rightStyle.Render(border.Right)
+
+	lines := make([]string, 0, innerHeight+2)
+	lines = append(lines, topLine)
+	for i := 0; i < innerHeight; i++ {
+		line := ""
+		if i < len(bodyLines) {
+			line = bodyLines[i]
 		}
-		left = truncateToWidth(left, view.width-rightWidth-1)
-		return left + " " + right
+		line = padRight(line, innerWidth)
+		lines = append(lines, leftBorder+line+rightBorder)
 	}
-	padding := view.width - leftWidth - rightWidth
-	if padding < 1 {
-		padding = 1
+	lines = append(lines, bottomLine)
+	return strings.Join(lines, "\n")
+}
+
+func renderOverlayLine(innerWidth int, leftCorner, rightCorner, fill string, fillStyle lipgloss.Style, leftText, rightText string, offset int) string {
+	if innerWidth < 0 {
+		innerWidth = 0
 	}
-	return left + strings.Repeat(" ", padding) + right
+	if offset < 0 {
+		offset = 0
+	}
+	leftPad := offset
+	rightPad := offset
+	if leftPad+rightPad > innerWidth {
+		leftPad = 0
+		rightPad = 0
+	}
+	available := innerWidth - leftPad - rightPad
+	leftText, rightText = fitOverlayText(leftText, rightText, available)
+	leftWidth := lipgloss.Width(leftText)
+	rightWidth := lipgloss.Width(rightText)
+	middleFill := available - leftWidth - rightWidth
+	if middleFill < 0 {
+		middleFill = 0
+	}
+	return fillStyle.Render(leftCorner) +
+		fillStyle.Render(strings.Repeat(fill, leftPad)) +
+		leftText +
+		fillStyle.Render(strings.Repeat(fill, middleFill)) +
+		rightText +
+		fillStyle.Render(strings.Repeat(fill, rightPad)) +
+		fillStyle.Render(rightCorner)
+}
+
+func fitOverlayText(leftText, rightText string, width int) (string, string) {
+	if width <= 0 {
+		return "", ""
+	}
+	rightWidth := lipgloss.Width(rightText)
+	if rightWidth > width {
+		return "", truncateToWidth(rightText, width)
+	}
+	leftWidth := lipgloss.Width(leftText)
+	if leftWidth+rightWidth > width {
+		leftText = truncateToWidth(leftText, width-rightWidth)
+	}
+	return leftText, rightText
+}
+
+func borderEdgeStyle(fg, bg lipgloss.TerminalColor) lipgloss.Style {
+	style := lipgloss.NewStyle()
+	if fg != nil {
+		style = style.Foreground(fg)
+	}
+	if bg != nil {
+		style = style.Background(bg)
+	}
+	return style
+}
+
+func padRight(value string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if gap := width - lipgloss.Width(value); gap > 0 {
+		return value + strings.Repeat(" ", gap)
+	}
+	return truncateToWidth(value, width)
 }
 
 func truncateToWidth(value string, width int) string {
 	if width <= 0 {
 		return ""
 	}
-	if len(value) <= width {
-		return value
-	}
-	return value[:width]
+	return ansi.Truncate(value, width, "")
 }
