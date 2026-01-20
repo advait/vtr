@@ -1,23 +1,30 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CoordinatorTree, CoordinatorInfo, SessionInfo } from "./components/CoordinatorTree";
 import { ActionTray } from "./components/ActionTray";
+import {
+  type CoordinatorInfo,
+  CoordinatorTree,
+  type SessionInfo,
+} from "./components/CoordinatorTree";
 import { InputBar } from "./components/InputBar";
+import { TerminalView } from "./components/TerminalView";
 import { Badge } from "./components/ui/Badge";
 import { Input } from "./components/ui/Input";
 import { ScrollArea } from "./components/ui/ScrollArea";
 import { fetchSessions } from "./lib/api";
-import { applyScreenUpdate, ScreenState } from "./lib/terminal";
+import type { SubscribeEvent } from "./lib/proto";
+import { applyScreenUpdate, type ScreenState } from "./lib/terminal";
 import { useVtrStream } from "./lib/ws";
-import { SubscribeEvent } from "./lib/proto";
-import { TerminalView } from "./components/TerminalView";
 
-const statusLabels: Record<string, { label: string; variant: "default" | "green" | "red" | "yellow" }> = {
+const statusLabels: Record<
+  string,
+  { label: string; variant: "default" | "green" | "red" | "yellow" }
+> = {
   idle: { label: "idle", variant: "default" },
   connecting: { label: "connecting", variant: "yellow" },
   open: { label: "live", variant: "green" },
   reconnecting: { label: "reconnecting", variant: "yellow" },
   error: { label: "error", variant: "red" },
-  closed: { label: "closed", variant: "default" }
+  closed: { label: "closed", variant: "default" },
 };
 
 const sessionHashKey = "session";
@@ -57,7 +64,7 @@ function writeSessionHash(session: string | null) {
 
 function findSession(
   coordinators: CoordinatorInfo[],
-  name: string
+  name: string,
 ): { name: string; status: SessionInfo["status"]; exitCode?: number } | null {
   for (const coord of coordinators) {
     for (const session of coord.sessions) {
@@ -95,14 +102,44 @@ export default function App() {
   const lastSize = useRef<{ cols: number; rows: number } | null>(null);
 
   const { state, setEventHandler, sendText, sendKey, resize, close } = useVtrStream(activeSession, {
-    includeRawOutput: false
+    includeRawOutput: false,
   });
 
   useEffect(() => {
-    fetchSessions()
-      .then((data) => setCoordinators(data))
-      .catch(() => setCoordinators([]))
-      .finally(() => setSessionsLoaded(true));
+    let active = true;
+    let firstLoad = true;
+    const refresh = async () => {
+      try {
+        const data = await fetchSessions();
+        if (!active) {
+          return;
+        }
+        setCoordinators(data);
+        setSelectedSession((prev) => {
+          if (!prev) {
+            return prev;
+          }
+          const match = findSession(data, prev.name);
+          return match ? { ...prev, ...match } : prev;
+        });
+      } catch {
+        if (active) {
+          setCoordinators([]);
+        }
+      } finally {
+        if (active && firstLoad) {
+          firstLoad = false;
+          setSessionsLoaded(true);
+        }
+      }
+    };
+
+    refresh();
+    const intervalId = window.setInterval(refresh, 3000);
+    return () => {
+      active = false;
+      window.clearInterval(intervalId);
+    };
   }, []);
 
   useEffect(() => {
@@ -192,7 +229,7 @@ export default function App() {
         resize(cols, rows);
       }
     },
-    [activeSession, resize]
+    [activeSession, resize],
   );
 
   const onSendKey = useCallback(
@@ -207,7 +244,7 @@ export default function App() {
         setCtrlArmed(false);
       }
     },
-    [ctrlArmed, sendKey]
+    [ctrlArmed, sendKey],
   );
 
   const onSendText = useCallback(
@@ -222,7 +259,7 @@ export default function App() {
         setCtrlArmed(false);
       }
     },
-    [ctrlArmed, sendKey, sendText]
+    [ctrlArmed, sendKey, sendText],
   );
 
   const statusBadge = useMemo(() => {
