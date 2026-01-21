@@ -47,6 +47,9 @@ type attachModel struct {
 	createCoordIdx   int
 	createFocusInput bool
 
+	hoverTab string
+	hoverNew bool
+
 	leaderActive bool
 	exited       bool
 	exitCode     int32
@@ -164,23 +167,27 @@ var (
 				Bold(true)
 	attachHintChevronStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("240"))
-	attachTabStyle = lipgloss.NewStyle().
-			Background(lipgloss.Color("236")).
-			Padding(0, 1)
-	attachTabActiveStyle = lipgloss.NewStyle().
-				Background(lipgloss.Color("238")).
-				Padding(0, 1).
-				Bold(true)
-	attachTabNewStyle = lipgloss.NewStyle().
+	attachTabBaseStyle = lipgloss.NewStyle().
 				Background(lipgloss.Color("236")).
-				Foreground(lipgloss.Color("120")).
-				Padding(0, 1).
+				Padding(0, 1)
+	attachTabStyle       = attachTabBaseStyle
+	attachTabActiveStyle = attachTabBaseStyle.Copy().
 				Bold(true)
+	attachTabHoverStyle = attachTabBaseStyle.Copy().
+				Underline(true)
+	attachTabNewStyle = attachTabBaseStyle.Copy().
+				Foreground(lipgloss.Color("120")).
+				Bold(true)
+	attachTabNewHoverStyle = attachTabNewStyle.Copy().
+				Underline(true)
 	attachTabTextStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("252"))
 	attachTabTextActiveStyle = lipgloss.NewStyle().
 					Foreground(lipgloss.Color("255")).
 					Bold(true)
+	attachTabTextHoverStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("255")).
+				Bold(true)
 	attachTabTextExitedStyle = lipgloss.NewStyle().
 					Foreground(lipgloss.Color("244"))
 	attachStatusActiveStyle = lipgloss.NewStyle().
@@ -194,7 +201,7 @@ var (
 	attachFooterTagStyle = lipgloss.NewStyle().
 				Background(lipgloss.Color("235")).
 				Foreground(lipgloss.Color("250"))
-	attachOverflowStyle = lipgloss.NewStyle().
+	attachOverflowStyle = attachTabBaseStyle.Copy().
 				Foreground(lipgloss.Color("244"))
 	attachModalStyle = lipgloss.NewStyle().
 				Border(lipgloss.NormalBorder()).
@@ -256,7 +263,7 @@ func newAttachCmd() *cobra.Command {
 				lastListAt:       time.Now(),
 			}
 
-			prog := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
+			prog := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseAllMotion())
 			finalModel, err := prog.Run()
 			if fm, ok := finalModel.(attachModel); ok && fm.conn != nil {
 				_ = fm.conn.Close()
@@ -523,6 +530,8 @@ func (m attachModel) View() string {
 		width:    overlayWidth,
 		exited:   m.exited,
 		exitCode: m.exitCode,
+		hoverTab: m.hoverTab,
+		hoverNew: m.hoverNew,
 	})
 	activeItem := currentSessionItem(m)
 	footerLeft, footerRight := renderFooterSegments(footerView{
@@ -817,7 +826,66 @@ func handleLeaderKey(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
 }
 
 func handleMouse(m attachModel, msg tea.MouseMsg) (attachModel, tea.Cmd) {
+	clearHover := func() {
+		m.hoverTab = ""
+		m.hoverNew = false
+	}
 	if m.exited || m.listActive || m.createActive {
+		if m.hoverTab != "" || m.hoverNew {
+			clearHover()
+		}
+		return m, nil
+	}
+	if msg.Action == tea.MouseActionMotion {
+		if msg.Y != 0 || m.width <= 0 {
+			if m.hoverTab != "" || m.hoverNew {
+				clearHover()
+			}
+			return m, nil
+		}
+		innerWidth := m.width - 2
+		if innerWidth <= 0 {
+			if m.hoverTab != "" || m.hoverNew {
+				clearHover()
+			}
+			return m, nil
+		}
+		leftPad, _ := overlayPadding(innerWidth)
+		startX := 1 + leftPad
+		localX := msg.X - startX
+		if localX < 0 {
+			if m.hoverTab != "" || m.hoverNew {
+				clearHover()
+			}
+			return m, nil
+		}
+		headerWidth := overlayAvailableWidth(innerWidth)
+		if headerWidth <= 0 {
+			if m.hoverTab != "" || m.hoverNew {
+				clearHover()
+			}
+			return m, nil
+		}
+		tab, ok := tabAtOffsetX(headerView{
+			sessions: m.sessionItems,
+			active:   m.session,
+			width:    headerWidth,
+			exited:   m.exited,
+			exitCode: m.exitCode,
+		}, localX)
+		if !ok {
+			if m.hoverTab != "" || m.hoverNew {
+				clearHover()
+			}
+			return m, nil
+		}
+		if tab.newTab {
+			m.hoverNew = true
+			m.hoverTab = ""
+			return m, nil
+		}
+		m.hoverNew = false
+		m.hoverTab = tab.name
 		return m, nil
 	}
 	if msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown || msg.Button == tea.MouseButtonWheelLeft || msg.Button == tea.MouseButtonWheelRight {
@@ -887,7 +955,6 @@ func handleMouse(m attachModel, msg tea.MouseMsg) (attachModel, tea.Cmd) {
 		return m, nil
 	}
 }
-
 func handleInputKey(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
 	key, data, ok := inputForKey(msg)
 	if !ok {
@@ -1463,8 +1530,9 @@ type headerView struct {
 	width    int
 	exited   bool
 	exitCode int32
+	hoverTab string
+	hoverNew bool
 }
-
 type footerView struct {
 	width       int
 	leader      bool
@@ -1490,11 +1558,12 @@ var leaderLegend = []legendSegment{
 }
 
 const (
-	sessionIconActive  = "●"
-	sessionIconIdle    = "○"
-	sessionIconExited  = "■"
-	sessionIconUnknown = "·"
+	sessionIconActive  = ""
+	sessionIconIdle    = ""
+	sessionIconExited  = ""
+	sessionIconUnknown = ""
 	tabOverflowGlyph   = "…"
+	tabNewGlyph        = ""
 	tabNameMaxWidth    = 20
 )
 
@@ -1647,6 +1716,7 @@ type tabItem struct {
 	label    string
 	width    int
 	active   bool
+	hovered  bool
 	newTab   bool
 	overflow bool
 }
@@ -1660,23 +1730,26 @@ func renderTabBar(view headerView) string {
 }
 
 func renderNewTabLabel() string {
-	return attachTabNewStyle.Render("+")
+	return attachTabNewStyle.Render(tabNewGlyph)
 }
 
-func newTabButtonItem() tabItem {
+func newTabButtonItem(hovered bool) tabItem {
 	label := renderNewTabLabel()
+	if hovered {
+		label = attachTabNewHoverStyle.Render(tabNewGlyph)
+	}
 	return tabItem{
-		label:  label,
-		width:  lipgloss.Width(label),
-		newTab: true,
+		label:   label,
+		width:   lipgloss.Width(label),
+		hovered: hovered,
+		newTab:  true,
 	}
 }
-
 func headerTabItems(view headerView) []tabItem {
 	if view.width <= 0 {
 		return nil
 	}
-	plus := newTabButtonItem()
+	plus := newTabButtonItem(view.hoverNew)
 	if plus.width <= 0 {
 		return visibleTabs(view)
 	}
@@ -1724,12 +1797,14 @@ func collectTabSessions(items []sessionListItem, active string, exited bool, exi
 	return out
 }
 
-func renderTabLabel(item sessionListItem, active bool) string {
+func renderTabLabel(item sessionListItem, active, hovered bool) string {
 	name := stripCoordinatorPrefix(item.name)
 	name = truncateTabName(name, tabNameMaxWidth)
 	textStyle := attachTabTextStyle
 	if active {
 		textStyle = attachTabTextActiveStyle
+	} else if hovered {
+		textStyle = attachTabTextHoverStyle
 	} else if item.status == proto.SessionStatus_SESSION_STATUS_EXITED {
 		textStyle = attachTabTextExitedStyle
 	}
@@ -1737,9 +1812,11 @@ func renderTabLabel(item sessionListItem, active bool) string {
 	if active {
 		return attachTabActiveStyle.Render(label)
 	}
+	if hovered {
+		return attachTabHoverStyle.Render(label)
+	}
 	return attachTabStyle.Render(label)
 }
-
 func buildTabItems(view headerView) ([]tabItem, int) {
 	sessions := collectTabSessions(view.sessions, view.active, view.exited, view.exitCode)
 	if len(sessions) == 0 || view.width <= 0 {
@@ -1752,7 +1829,7 @@ func buildTabItems(view headerView) ([]tabItem, int) {
 		if active {
 			activeIdx = i
 		}
-		label := renderTabLabel(session, active)
+		label := renderTabLabel(session, active, session.name == view.hoverTab)
 		tabs = append(tabs, tabItem{
 			name:   session.name,
 			label:  label,
