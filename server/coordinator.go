@@ -362,7 +362,7 @@ func (c *Coordinator) Rename(name, newName string) error {
 }
 
 // Close removes all sessions.
-func (c *Coordinator) Close() error {
+func (c *Coordinator) CloseAll() error {
 	c.mu.Lock()
 	names := make([]string, 0, len(c.sessions))
 	for name := range c.sessions {

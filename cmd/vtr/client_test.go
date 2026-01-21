@@ -33,7 +33,7 @@ func startCLITestServer(t *testing.T) (string, func()) {
 	socketPath := filepath.Join(t.TempDir(), "vtr.sock")
 	listener, err := server.ListenUnix(socketPath)
 	if err != nil {
-		coord.Close()
+		coord.CloseAll()
 		t.Fatalf("ListenUnix: %v", err)
 	}
 
@@ -46,7 +46,7 @@ func startCLITestServer(t *testing.T) (string, func()) {
 	cleanup := func() {
 		grpcServer.GracefulStop()
 		_ = listener.Close()
-		_ = coord.Close()
+		_ = coord.CloseAll()
 	}
 	return socketPath, cleanup
 }

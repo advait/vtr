@@ -28,7 +28,7 @@ func startGRPCTestServer(t *testing.T) (proto.VTRClient, func()) {
 	socketPath := filepath.Join(t.TempDir(), "vtr.sock")
 	listener, err := ListenUnix(socketPath)
 	if err != nil {
-		coord.Close()
+		coord.CloseAll()
 		t.Fatalf("ListenUnix: %v", err)
 	}
 
@@ -46,7 +46,7 @@ func startGRPCTestServer(t *testing.T) (proto.VTRClient, func()) {
 	cancel()
 	if err != nil {
 		listener.Close()
-		coord.Close()
+		coord.CloseAll()
 		t.Fatalf("Dial: %v", err)
 	}
 
@@ -55,7 +55,7 @@ func startGRPCTestServer(t *testing.T) (proto.VTRClient, func()) {
 		_ = conn.Close()
 		grpcServer.GracefulStop()
 		_ = listener.Close()
-		_ = coord.Close()
+		_ = coord.CloseAll()
 	}
 	return client, cleanup
 }
@@ -885,7 +885,7 @@ func TestGRPCSubscribeLatestOnlyBackpressure(t *testing.T) {
 	})
 
 	coord := newTestCoordinator()
-	defer coord.Close()
+	defer coord.CloseAll()
 
 	_, err := coord.Spawn("grpc-subscribe-backpressure", SpawnOptions{
 		Command: []string{"cat"},

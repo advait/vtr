@@ -12,7 +12,7 @@ func TestSessionIdleDebounce(t *testing.T) {
 	}
 
 	coord := newTestCoordinator()
-	defer coord.Close()
+	defer coord.CloseAll()
 
 	_, err := coord.Spawn("idle-debounce", SpawnOptions{
 		Command: []string{"/bin/sh", "-c", "printf 'ready\\n'; sleep 2"},

@@ -10,11 +10,11 @@ import (
 
 func newTestCoordinator() *Coordinator {
 	return NewCoordinator(CoordinatorOptions{
-		DefaultShell: "/bin/sh",
-		DefaultCols:  80,
-		DefaultRows:  24,
-		Scrollback:   2000,
-		KillTimeout:  500 * time.Millisecond,
+		DefaultShell:  "/bin/sh",
+		DefaultCols:   80,
+		DefaultRows:   24,
+		Scrollback:    2000,
+		KillTimeout:   500 * time.Millisecond,
 		IdleThreshold: 200 * time.Millisecond,
 	})
 }
@@ -90,7 +90,7 @@ func TestSpawnEcho(t *testing.T) {
 	}
 
 	coord := newTestCoordinator()
-	defer coord.Close()
+	defer coord.CloseAll()
 
 	_, err := coord.Spawn("echo", SpawnOptions{
 		Command: []string{"/bin/sh", "-c", "printf 'ready\\n'; read line; printf 'got:%s\\n' \"$line\"; sleep 0.1"},
@@ -114,7 +114,7 @@ func TestExitCode(t *testing.T) {
 	}
 
 	coord := newTestCoordinator()
-	defer coord.Close()
+	defer coord.CloseAll()
 
 	_, err := coord.Spawn("exit", SpawnOptions{
 		Command: []string{"/bin/sh", "-c", "exit 7"},
@@ -135,7 +135,7 @@ func TestKillSession(t *testing.T) {
 	}
 
 	coord := newTestCoordinator()
-	defer coord.Close()
+	defer coord.CloseAll()
 
 	_, err := coord.Spawn("kill", SpawnOptions{
 		Command: []string{"/bin/sh", "-c", "printf 'ready\\n'; trap 'exit 0' TERM; while true; do sleep 0.1; done"},
@@ -159,7 +159,7 @@ func TestRemoveSession(t *testing.T) {
 	}
 
 	coord := newTestCoordinator()
-	defer coord.Close()
+	defer coord.CloseAll()
 
 	_, err := coord.Spawn("remove", SpawnOptions{
 		Command: []string{"/bin/sh", "-c", "printf 'ready\\n'; trap 'exit 0' TERM; while true; do sleep 0.1; done"},
@@ -184,7 +184,7 @@ func TestScreenCapture(t *testing.T) {
 	}
 
 	coord := newTestCoordinator()
-	defer coord.Close()
+	defer coord.CloseAll()
 
 	_, err := coord.Spawn("screen", SpawnOptions{
 		Command: []string{"/bin/sh", "-c", "printf 'hi'; sleep 0.2"},
@@ -247,7 +247,7 @@ func TestSpawnDefaultWorkingDir(t *testing.T) {
 	t.Setenv("HOME", tmpDir)
 
 	coord := newTestCoordinator()
-	defer coord.Close()
+	defer coord.CloseAll()
 
 	_, err := coord.Spawn("cwd", SpawnOptions{
 		Command: []string{"/bin/sh", "-c", "pwd; sleep 0.1"},

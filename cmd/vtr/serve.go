@@ -74,7 +74,7 @@ func runServe(opts serveOptions) error {
 		KillTimeout:   opts.killTimeout,
 		IdleThreshold: opts.idleThreshold,
 	})
-	defer coord.Close()
+	defer coord.CloseAll()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
