@@ -8,6 +8,7 @@ export type TerminalViewProps = {
   screen: ScreenState | null;
   status: string;
   autoFocus?: boolean;
+  focusKey?: string | null;
   onResize: (cols: number, rows: number) => void;
   onSendText: (text: string) => void;
   onSendKey: (key: string) => void;
@@ -57,6 +58,7 @@ export function TerminalView({
   screen,
   status,
   autoFocus,
+  focusKey,
   onResize,
   onSendKey,
   onSendText,
@@ -67,12 +69,19 @@ export function TerminalView({
   const measureRef = useRef<HTMLSpanElement | null>(null);
   const [cellSize, setCellSize] = useState<CellSize>({ width: 8, height: 18 });
   const [selection, setSelection] = useState<Selection | null>(null);
+  const [fontSize, setFontSize] = useState(14);
+  const [containerSize, setContainerSize] = useState<{ width: number; height: number } | null>(
+    null,
+  );
   const selectingRef = useRef(false);
   const selectionStartRef = useRef<Selection | null>(null);
 
   useLayoutEffect(() => {
+    if (fontSize <= 0) {
+      return;
+    }
     setCellSize(measureCell(measureRef.current));
-  }, []);
+  }, [fontSize]);
 
   useEffect(() => {
     if (document.fonts) {
@@ -86,8 +95,11 @@ export function TerminalView({
     if (!autoFocus || status === "idle" || status === "exited") {
       return;
     }
+    if (focusKey === undefined) {
+      return;
+    }
     terminalRef.current?.focus({ preventScroll: true });
-  }, [autoFocus, status]);
+  }, [autoFocus, focusKey, status]);
 
   const padding = 12;
 
@@ -101,6 +113,16 @@ export function TerminalView({
       if (!rect || !cellSize.width || !cellSize.height) {
         return;
       }
+      setContainerSize((prev) => {
+        if (
+          prev &&
+          Math.abs(prev.width - rect.width) < 0.5 &&
+          Math.abs(prev.height - rect.height) < 0.5
+        ) {
+          return prev;
+        }
+        return { width: rect.width, height: rect.height };
+      });
       const innerWidth = Math.max(0, rect.width - padding * 2);
       const innerHeight = Math.max(0, rect.height - padding * 2);
       const cols = Math.max(1, Math.floor(innerWidth / cellSize.width));
@@ -110,6 +132,25 @@ export function TerminalView({
     observer.observe(node);
     return () => observer.disconnect();
   }, [cellSize.height, cellSize.width, onResize]);
+
+  useEffect(() => {
+    if (!screen || !containerSize || !screen.cols || !cellSize.width) {
+      return;
+    }
+    const innerWidth = Math.max(0, containerSize.width - padding * 2);
+    if (!innerWidth) {
+      return;
+    }
+    const targetCellWidth = innerWidth / screen.cols;
+    const nextFontSize = (fontSize * targetCellWidth) / cellSize.width;
+    if (!Number.isFinite(nextFontSize)) {
+      return;
+    }
+    const rounded = Math.round(nextFontSize * 10) / 10;
+    if (Math.abs(rounded - fontSize) > 0.1) {
+      setFontSize(rounded);
+    }
+  }, [cellSize.width, containerSize, fontSize, screen]);
 
   const cursorStyle = useMemo(() => {
     if (!screen) {
@@ -279,7 +320,11 @@ export function TerminalView({
 
   return (
     <div className="relative h-full w-full">
-      <span ref={measureRef} className="absolute -left-[9999px] -top-[9999px] font-mono text-sm">
+      <span
+        ref={measureRef}
+        className="absolute -left-[9999px] -top-[9999px] font-mono"
+        style={{ fontSize: `${fontSize}px` }}
+      >
         M
       </span>
       <div
@@ -295,6 +340,7 @@ export function TerminalView({
             padding: `${padding}px`,
             lineHeight: `${cellSize.height}px`,
             fontFamily: "JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, monospace",
+            fontSize: `${fontSize}px`,
           }}
         >
           <div

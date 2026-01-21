@@ -195,12 +195,15 @@ export default function App() {
     }
   }, [selectedSession]);
 
-  const selectedSessionName = selectedSession?.name ?? null;
-
   useEffect(() => {
+    if (!selectedSession) {
+      setScreen(null);
+      setExitCode(null);
+      return;
+    }
     setScreen(null);
     setExitCode(null);
-  }, [selectedSessionName]);
+  }, [selectedSession]);
 
   useEffect(() => {
     if (!selectedSession || selectedSession.status !== "exited") {

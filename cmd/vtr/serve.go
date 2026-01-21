@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -20,6 +22,7 @@ type serveOptions struct {
 	rows        int
 	scrollback  uint
 	killTimeout time.Duration
+	logLevel    string
 }
 
 func newServeCmd() *cobra.Command {
@@ -38,11 +41,19 @@ func newServeCmd() *cobra.Command {
 	cmd.Flags().IntVar(&opts.rows, "rows", 24, "default rows")
 	cmd.Flags().UintVar(&opts.scrollback, "scrollback", 10000, "scrollback lines")
 	cmd.Flags().DurationVar(&opts.killTimeout, "kill-timeout", 5*time.Second, "kill timeout (e.g. 5s)")
+	cmd.Flags().StringVar(&opts.logLevel, "log-level", "info", "log level (debug, info, warn, error)")
 
 	return cmd
 }
 
 func runServe(opts serveOptions) error {
+	level, err := parseLogLevel(opts.logLevel)
+	if err != nil {
+		return err
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+	slog.SetDefault(logger)
+
 	if opts.cols <= 0 || opts.cols > int(^uint16(0)) {
 		return fmt.Errorf("cols must be between 1 and %d", int(^uint16(0)))
 	}
@@ -65,9 +76,25 @@ func runServe(opts serveOptions) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	err := server.ServeUnix(ctx, coord, opts.socket)
+	logger.Info("coordinator starting", "socket", opts.socket, "cols", opts.cols, "rows", opts.rows, "scrollback", opts.scrollback, "log_level", strings.ToLower(opts.logLevel))
+	err = server.ServeUnix(ctx, coord, opts.socket)
 	if errors.Is(err, context.Canceled) {
 		return nil
 	}
 	return err
+}
+
+func parseLogLevel(value string) (slog.Level, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "debug":
+		return slog.LevelDebug, nil
+	case "info", "":
+		return slog.LevelInfo, nil
+	case "warn", "warning":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	default:
+		return slog.LevelInfo, fmt.Errorf("unknown log level %q", value)
+	}
 }
