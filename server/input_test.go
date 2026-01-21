@@ -25,3 +25,14 @@ func TestKeyToBytesAltPreservesCase(t *testing.T) {
 		t.Fatalf("got %v want %v", got, want)
 	}
 }
+
+func TestKeyToBytesCtrlC(t *testing.T) {
+	got, err := keyToBytes("ctrl+c")
+	if err != nil {
+		t.Fatalf("keyToBytes: %v", err)
+	}
+	want := []byte{0x03}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+}

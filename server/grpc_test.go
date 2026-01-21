@@ -1095,3 +1095,33 @@ func TestGRPCSubscribeInvalidArgs(t *testing.T) {
 		t.Fatalf("expected InvalidArgument, got %v", err)
 	}
 }
+
+func TestGRPCSendKeyCtrlCExits(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty tests not supported on windows")
+	}
+
+	client, cleanup := startGRPCTestServer(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	_, err := client.Spawn(ctx, &proto.SpawnRequest{
+		Name:    "grpc-ctrlc",
+		Command: "printf 'ready\\n'; trap 'exit 0' INT; while true; do sleep 0.2; done",
+	})
+	cancel()
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	waitForScreenContains(t, client, "grpc-ctrlc", "ready", 2*time.Second)
+
+	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+	_, err = client.SendKey(ctx, &proto.SendKeyRequest{Name: "grpc-ctrlc", Key: "ctrl+c"})
+	cancel()
+	if err != nil {
+		t.Fatalf("SendKey: %v", err)
+	}
+
+	waitForSessionStatus(t, client, "grpc-ctrlc", proto.SessionStatus_SESSION_STATUS_EXITED, 2*time.Second)
+}
