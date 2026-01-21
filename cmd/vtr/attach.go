@@ -171,6 +171,11 @@ var (
 				Background(lipgloss.Color("238")).
 				Padding(0, 1).
 				Bold(true)
+	attachTabNewStyle = lipgloss.NewStyle().
+				Background(lipgloss.Color("236")).
+				Foreground(lipgloss.Color("120")).
+				Padding(0, 1).
+				Bold(true)
 	attachTabTextStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("252"))
 	attachTabTextActiveStyle = lipgloss.NewStyle().
@@ -717,6 +722,51 @@ func spawnCurrentCmd(client proto.VTRClient, name string) tea.Cmd {
 		return sessionSwitchMsg{name: name}
 	}
 }
+func spawnAutoSessionCmd(client proto.VTRClient, base string) tea.Cmd {
+	return func() tea.Msg {
+		if client == nil {
+			return rpcErrMsg{err: fmt.Errorf("spawn: no client"), op: "spawn"}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
+		resp, err := client.List(ctx, &proto.ListRequest{})
+		cancel()
+		if err != nil {
+			return rpcErrMsg{err: err, op: "list"}
+		}
+		names := make(map[string]struct{}, len(resp.Sessions))
+		for _, session := range resp.Sessions {
+			if session == nil || session.Name == "" {
+				continue
+			}
+			names[session.Name] = struct{}{}
+		}
+		base = strings.TrimSpace(base)
+		if base == "" {
+			base = "session"
+		}
+		for i := 0; i < 1000; i++ {
+			candidate := base
+			if i > 0 {
+				candidate = fmt.Sprintf("%s-%d", base, i)
+			}
+			if _, exists := names[candidate]; exists {
+				continue
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
+			_, err = client.Spawn(ctx, &proto.SpawnRequest{Name: candidate})
+			cancel()
+			if err == nil {
+				return sessionSwitchMsg{name: candidate}
+			}
+			if status.Code(err) == codes.AlreadyExists {
+				names[candidate] = struct{}{}
+				continue
+			}
+			return rpcErrMsg{err: err, op: "spawn"}
+		}
+		return rpcErrMsg{err: fmt.Errorf("spawn: unable to find available session name"), op: "spawn"}
+	}
+}
 
 func spawnSessionCmd(coord coordinatorRef, name string) tea.Cmd {
 	return func() tea.Msg {
@@ -801,6 +851,12 @@ func handleMouse(m attachModel, msg tea.MouseMsg) (attachModel, tea.Cmd) {
 		exitCode: m.exitCode,
 	}, localX)
 	if !ok {
+		return m, nil
+	}
+	if tab.newTab {
+		if msg.Button == tea.MouseButtonLeft {
+			return m, spawnAutoSessionCmd(m.client, "session")
+		}
 		return m, nil
 	}
 	switch msg.Button {
@@ -1567,17 +1623,54 @@ type tabItem struct {
 	label    string
 	width    int
 	active   bool
+	newTab   bool
 	overflow bool
 }
 
 func renderTabBar(view headerView) string {
-	tabs := visibleTabs(view)
+	tabs := headerTabItems(view)
 	if len(tabs) == 0 || view.width <= 0 {
 		return ""
 	}
 	return joinTabItems(tabs, " ")
 }
 
+func renderNewTabLabel() string {
+	return attachTabNewStyle.Render("+")
+}
+
+func newTabButtonItem() tabItem {
+	label := renderNewTabLabel()
+	return tabItem{
+		label:  label,
+		width:  lipgloss.Width(label),
+		newTab: true,
+	}
+}
+
+func headerTabItems(view headerView) []tabItem {
+	if view.width <= 0 {
+		return nil
+	}
+	plus := newTabButtonItem()
+	if plus.width <= 0 {
+		return visibleTabs(view)
+	}
+	if view.width <= plus.width {
+		return []tabItem{plus}
+	}
+	gapWidth := lipgloss.Width(" ")
+	available := view.width - plus.width
+	if available <= gapWidth {
+		return []tabItem{plus}
+	}
+	sessionWidth := available - gapWidth
+	sessionTabs := visibleTabsWithWidth(view, sessionWidth)
+	if len(sessionTabs) == 0 {
+		return []tabItem{plus}
+	}
+	return append(sessionTabs, plus)
+}
 func collectTabSessions(items []sessionListItem, active string, exited bool, exitCode int32) []sessionListItem {
 	if active == "" && len(items) == 0 {
 		return nil
@@ -1646,18 +1739,21 @@ func buildTabItems(view headerView) ([]tabItem, int) {
 }
 
 func visibleTabs(view headerView) []tabItem {
-	tabs, activeIdx := buildTabItems(view)
-	if len(tabs) == 0 || view.width <= 0 {
-		return nil
-	}
-	return fitTabsToWidthItems(tabs, activeIdx, view.width)
+	return visibleTabsWithWidth(view, view.width)
 }
 
+func visibleTabsWithWidth(view headerView, width int) []tabItem {
+	tabs, activeIdx := buildTabItems(view)
+	if len(tabs) == 0 || width <= 0 {
+		return nil
+	}
+	return fitTabsToWidthItems(tabs, activeIdx, width)
+}
 func tabAtOffsetX(view headerView, offset int) (tabItem, bool) {
 	if offset < 0 {
 		return tabItem{}, false
 	}
-	tabs := visibleTabs(view)
+	tabs := headerTabItems(view)
 	if len(tabs) == 0 {
 		return tabItem{}, false
 	}
@@ -1665,7 +1761,13 @@ func tabAtOffsetX(view headerView, offset int) (tabItem, bool) {
 	cursor := 0
 	for i, tab := range tabs {
 		if offset >= cursor && offset < cursor+tab.width {
-			if tab.overflow || tab.name == "" {
+			if tab.overflow {
+				return tabItem{}, false
+			}
+			if tab.newTab {
+				return tab, true
+			}
+			if tab.name == "" {
 				return tabItem{}, false
 			}
 			return tab, true
