@@ -1,4 +1,5 @@
 import { useMemo, type MouseEvent } from "react";
+import { MoreHorizontal, Plus } from "lucide-react";
 import type { SessionInfo } from "./CoordinatorTree";
 import { cn } from "../lib/utils";
 
@@ -119,7 +120,7 @@ export function SessionTabs({
                       }}
                       aria-label={`Session actions for ${label}`}
                     >
-                      ...
+                      <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
                     </button>
                   </div>
                 );
@@ -140,7 +141,7 @@ export function SessionTabs({
           aria-label="New session"
           title="New session"
         >
-          +
+          <Plus className="h-4 w-4" aria-hidden="true" />
         </button>
       )}
     </div>
