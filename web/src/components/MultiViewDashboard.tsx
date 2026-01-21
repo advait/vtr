@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import type { CoordinatorInfo, SessionInfo } from "./CoordinatorTree";
 import { Badge } from "./ui/Badge";
+import { Input } from "./ui/Input";
 import { cn } from "../lib/utils";
 import type { SubscribeEvent } from "../lib/proto";
 import { applyScreenUpdate, type ScreenState } from "../lib/terminal";
@@ -24,6 +25,25 @@ const statusVariants: Record<
 
 function sessionKey(coord: string, session: SessionInfo) {
   return `${coord}:${session.name}`;
+}
+
+function normalizeStatusFilter(value: string): SessionInfo["status"] | null {
+  switch (value) {
+    case "running":
+    case "live":
+    case "busy":
+      return "running";
+    case "exited":
+    case "dead":
+    case "stopped":
+      return "exited";
+    case "idle":
+    case "unknown":
+    case "stale":
+      return "unknown";
+    default:
+      return null;
+  }
 }
 
 function SessionThumbnail({
@@ -126,13 +146,90 @@ export function MultiViewDashboard({
   activeSession,
   onSelect,
 }: MultiViewDashboardProps) {
+  const [filter, setFilter] = useState("");
+
+  const filtered = useMemo(() => {
+    const query = filter.trim().toLowerCase();
+    if (!query) {
+      return coordinators;
+    }
+
+    const statusFilters = new Set<SessionInfo["status"]>();
+    const coordTerms: string[] = [];
+    const textTerms: string[] = [];
+
+    for (const term of query.split(/\s+/)) {
+      if (!term) continue;
+      const [key, rawValue] = term.split(":", 2);
+      if (rawValue && (key === "status" || key === "state")) {
+        const normalized = normalizeStatusFilter(rawValue);
+        if (normalized) {
+          statusFilters.add(normalized);
+          continue;
+        }
+      }
+      if (rawValue && (key === "coord" || key === "coordinator")) {
+        coordTerms.push(rawValue);
+        continue;
+      }
+      textTerms.push(term);
+    }
+
+    return coordinators
+      .map((coord) => {
+        const coordName = coord.name.toLowerCase();
+        if (coordTerms.length > 0 && !coordTerms.every((term) => coordName.includes(term))) {
+          return { ...coord, sessions: [] };
+        }
+
+        const coordTextMatch =
+          textTerms.length > 0 && textTerms.every((term) => coordName.includes(term));
+
+        const sessions = coord.sessions.filter((session) => {
+          if (statusFilters.size > 0 && !statusFilters.has(session.status)) {
+            return false;
+          }
+          if (coordTextMatch) {
+            return true;
+          }
+          if (textTerms.length === 0) {
+            return true;
+          }
+          const target = `${coord.name}:${session.name}`.toLowerCase();
+          return textTerms.every((term) => target.includes(term));
+        });
+
+        return { ...coord, sessions };
+      })
+      .filter((coord) => coord.sessions.length > 0);
+  }, [coordinators, filter]);
+
   if (coordinators.length === 0) {
     return <div className="px-4 py-6 text-sm text-tn-muted">No coordinators available.</div>;
   }
 
   return (
     <div className="flex flex-col gap-6">
-      {coordinators.map((coord) => (
+      <div className="flex flex-col gap-2 rounded-lg border border-tn-border bg-tn-panel p-3">
+        <div className="text-xs font-semibold uppercase tracking-wide text-tn-muted">
+          Multi-view filter
+        </div>
+        <Input
+          placeholder="Filter (e.g. status:exited coord:alpha api)"
+          value={filter}
+          onChange={(event) => setFilter(event.target.value)}
+        />
+        <div className="text-xs text-tn-text-dim">
+          Use status:running, status:exited, status:idle or plain text for coordinator/session.
+        </div>
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-tn-border px-4 py-6 text-sm text-tn-muted">
+          No sessions match this filter.
+        </div>
+      ) : (
+        filtered.map((coord) => (
         <div key={coord.name} className="flex flex-col gap-3">
           <div className="flex items-center justify-between px-1">
             <div className="text-sm font-semibold text-tn-text">{coord.name}</div>
@@ -159,7 +256,8 @@ export function MultiViewDashboard({
             </div>
           )}
         </div>
-      ))}
+      ))
+      )}
     </div>
   );
 }
