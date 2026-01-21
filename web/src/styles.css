@@ -61,6 +61,7 @@ textarea {
   display: flex;
   flex-wrap: nowrap;
   overflow-x: clip;
+  overflow-y: clip;
 }
 
 .terminal-run {
