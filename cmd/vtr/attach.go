@@ -786,6 +786,8 @@ func updateSessionList(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
 	case "esc":
 		m.listActive = false
 		return m, nil
+	case "C":
+		return beginCreateModal(m)
 	case "enter":
 		item := m.sessionList.SelectedItem()
 		if item == nil {
