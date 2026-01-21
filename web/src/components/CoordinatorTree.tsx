@@ -28,9 +28,7 @@ export type CoordinatorTreeProps = {
 function statusBadge(session: SessionInfo) {
   if (session.status === "running") {
     return (
-      <Badge variant={session.idle ? "yellow" : "green"}>
-        {session.idle ? "idle" : "active"}
-      </Badge>
+      <Badge variant={session.idle ? "yellow" : "green"}>{session.idle ? "idle" : "active"}</Badge>
     );
   }
   if (session.status === "exited") {

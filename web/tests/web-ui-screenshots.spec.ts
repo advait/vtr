@@ -82,7 +82,11 @@ async function stopProcess(proc: ManagedProcess | null) {
 }
 
 async function sendCommand(command: string) {
-  await runCommand(vtrBinary, ["resize", "--socket", socketPath, sessionName, "120", "40"], repoRoot);
+  await runCommand(
+    vtrBinary,
+    ["resize", "--socket", socketPath, sessionName, "120", "40"],
+    repoRoot,
+  );
   await runCommand(vtrBinary, ["send", "--socket", socketPath, sessionName, command], repoRoot);
   await runCommand(vtrBinary, ["key", "--socket", socketPath, sessionName, "enter"], repoRoot);
 }
@@ -153,7 +157,11 @@ test.describe("web UI screenshots", () => {
       .first()
       .click();
     await expect(page.locator("header").getByText("live", { exact: true })).toBeVisible();
-    await runCommand(vtrBinary, ["resize", "--socket", socketPath, sessionName, "120", "40"], repoRoot);
+    await runCommand(
+      vtrBinary,
+      ["resize", "--socket", socketPath, sessionName, "120", "40"],
+      repoRoot,
+    );
 
     await sendCommand("printf 'vtr web ui\\n'");
     await sendCommand("printf '\\x1b[31mRED\\x1b[0m \\x1b[32mGREEN\\x1b[0m\\n'");

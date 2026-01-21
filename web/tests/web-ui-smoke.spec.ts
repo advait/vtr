@@ -83,7 +83,11 @@ async function stopProcess(proc: ManagedProcess | null) {
 }
 
 async function sendCommand(command: string) {
-  await runCommand(vtrBinary, ["resize", "--socket", socketPath, sessionName, "120", "40"], repoRoot);
+  await runCommand(
+    vtrBinary,
+    ["resize", "--socket", socketPath, sessionName, "120", "40"],
+    repoRoot,
+  );
   await runCommand(vtrBinary, ["send", "--socket", socketPath, sessionName, command], repoRoot);
   await runCommand(vtrBinary, ["key", "--socket", socketPath, sessionName, "enter"], repoRoot);
 }
@@ -153,7 +157,11 @@ test("streams ANSI output, attributes, and reconnects", async ({ page }) => {
     .first()
     .click();
   await expect(page.locator("header").getByText("live", { exact: true })).toBeVisible();
-  await runCommand(vtrBinary, ["resize", "--socket", socketPath, sessionName, "120", "40"], repoRoot);
+  await runCommand(
+    vtrBinary,
+    ["resize", "--socket", socketPath, sessionName, "120", "40"],
+    repoRoot,
+  );
 
   await sendCommand('echo "hello from vtr"');
   await waitForOutput("hello from vtr");

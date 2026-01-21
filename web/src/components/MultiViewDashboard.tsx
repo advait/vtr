@@ -1,14 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { Check } from "lucide-react";
+import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { SubscribeEvent } from "../lib/proto";
+import { applyScreenUpdate, type ScreenState } from "../lib/terminal";
+import { cn } from "../lib/utils";
+import { useVtrStream } from "../lib/ws";
 import type { CoordinatorInfo, SessionInfo } from "./CoordinatorTree";
+import { TerminalGrid } from "./TerminalGrid";
 import { Badge } from "./ui/Badge";
 import { Button } from "./ui/Button";
 import { Input } from "./ui/Input";
-import { cn } from "../lib/utils";
-import type { SubscribeEvent } from "../lib/proto";
-import { applyScreenUpdate, type ScreenState } from "../lib/terminal";
-import { useVtrStream } from "../lib/ws";
-import { TerminalGrid } from "./TerminalGrid";
 
 export type MultiViewDashboardProps = {
   coordinators: CoordinatorInfo[];
@@ -82,7 +82,7 @@ function SessionThumbnail({
 
   useEffect(() => {
     setScreen(null);
-  }, [streamName]);
+  }, []);
 
   const applyPending = useCallback(() => {
     rafRef.current = null;
@@ -124,10 +124,10 @@ function SessionThumbnail({
     });
   }, [applyPending, setEventHandler]);
 
-  const status =
+  const status: { label: string; variant: "default" | "green" | "red" | "yellow" } =
     session.status === "running" && session.idle
       ? { label: "idle", variant: "yellow" }
-      : statusVariants[session.status] ?? statusVariants.unknown;
+      : (statusVariants[session.status] ?? statusVariants.unknown);
 
   return (
     <div
@@ -175,10 +175,12 @@ function SessionThumbnail({
         {screen ? (
           <div
             className="h-full w-full overflow-hidden"
-            style={{
-              "--terminal-font-size": `${config.fontSize}px`,
-              "--cell-h": config.cellHeight,
-            } as CSSProperties}
+            style={
+              {
+                "--terminal-font-size": `${config.fontSize}px`,
+                "--cell-h": config.cellHeight,
+              } as CSSProperties
+            }
           >
             <TerminalGrid rows={screen.rowsData} selection={null} />
           </div>
@@ -444,41 +446,41 @@ export function MultiViewDashboard({
         </div>
       ) : (
         filtered.map((coord) => (
-        <div key={coord.name} className="flex flex-col gap-3">
-          <div className="flex items-center justify-between px-1">
-            <div className="text-sm font-semibold text-tn-text">{coord.name}</div>
-            <div className="text-xs text-tn-text-dim">{coord.sessions.length} sessions</div>
+          <div key={coord.name} className="flex flex-col gap-3">
+            <div className="flex items-center justify-between px-1">
+              <div className="text-sm font-semibold text-tn-text">{coord.name}</div>
+              <div className="text-xs text-tn-text-dim">{coord.sessions.length} sessions</div>
+            </div>
+            {coord.sessions.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-tn-border px-4 py-6 text-sm text-tn-muted">
+                No sessions running.
+              </div>
+            ) : (
+              <div
+                className="grid gap-3"
+                style={{
+                  gridTemplateColumns: `repeat(auto-fit, minmax(${thumbnailConfig.minWidth}px, 1fr))`,
+                }}
+              >
+                {coord.sessions.map((session) => {
+                  const key = sessionKey(coord.name, session);
+                  return (
+                    <SessionThumbnail
+                      key={key}
+                      session={session}
+                      sessionKey={key}
+                      active={activeSession === key}
+                      selected={selectedSessions.has(key)}
+                      config={thumbnailConfig}
+                      onOpen={onSelect}
+                      onToggleSelect={toggleSelect}
+                    />
+                  );
+                })}
+              </div>
+            )}
           </div>
-          {coord.sessions.length === 0 ? (
-            <div className="rounded-lg border border-dashed border-tn-border px-4 py-6 text-sm text-tn-muted">
-              No sessions running.
-            </div>
-          ) : (
-            <div
-              className="grid gap-3"
-              style={{
-                gridTemplateColumns: `repeat(auto-fit, minmax(${thumbnailConfig.minWidth}px, 1fr))`,
-              }}
-            >
-              {coord.sessions.map((session) => {
-                const key = sessionKey(coord.name, session);
-                return (
-                  <SessionThumbnail
-                    key={key}
-                    session={session}
-                    sessionKey={key}
-                    active={activeSession === key}
-                    selected={selectedSessions.has(key)}
-                    config={thumbnailConfig}
-                    onOpen={onSelect}
-                    onToggleSelect={toggleSelect}
-                  />
-                );
-              })}
-            </div>
-          )}
-        </div>
-      ))
+        ))
       )}
     </div>
   );

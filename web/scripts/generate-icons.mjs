@@ -1,7 +1,7 @@
-import { mkdirSync, writeFileSync } from "fs";
-import { join } from "path";
-import { fileURLToPath } from "url";
-import zlib from "zlib";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import zlib from "node:zlib";
 
 const rootDir = fileURLToPath(new URL("..", import.meta.url));
 const publicDir = join(rootDir, "public");
