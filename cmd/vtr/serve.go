@@ -16,13 +16,14 @@ import (
 )
 
 type serveOptions struct {
-	socket      string
-	shell       string
-	cols        int
-	rows        int
-	scrollback  uint
-	killTimeout time.Duration
-	logLevel    string
+	socket        string
+	shell         string
+	cols          int
+	rows          int
+	scrollback    uint
+	killTimeout   time.Duration
+	idleThreshold time.Duration
+	logLevel      string
 }
 
 func newServeCmd() *cobra.Command {
@@ -41,6 +42,7 @@ func newServeCmd() *cobra.Command {
 	cmd.Flags().IntVar(&opts.rows, "rows", 24, "default rows")
 	cmd.Flags().UintVar(&opts.scrollback, "scrollback", 10000, "scrollback lines")
 	cmd.Flags().DurationVar(&opts.killTimeout, "kill-timeout", 5*time.Second, "kill timeout (e.g. 5s)")
+	cmd.Flags().DurationVar(&opts.idleThreshold, "idle-threshold", 5*time.Second, "idle threshold before session is idle")
 	cmd.Flags().StringVar(&opts.logLevel, "log-level", "info", "log level (debug, info, warn, error)")
 
 	return cmd
@@ -65,11 +67,12 @@ func runServe(opts serveOptions) error {
 	}
 
 	coord := server.NewCoordinator(server.CoordinatorOptions{
-		DefaultShell: opts.shell,
-		DefaultCols:  uint16(opts.cols),
-		DefaultRows:  uint16(opts.rows),
-		Scrollback:   uint32(opts.scrollback),
-		KillTimeout:  opts.killTimeout,
+		DefaultShell:  opts.shell,
+		DefaultCols:   uint16(opts.cols),
+		DefaultRows:   uint16(opts.rows),
+		Scrollback:    uint32(opts.scrollback),
+		KillTimeout:   opts.killTimeout,
+		IdleThreshold: opts.idleThreshold,
 	})
 	defer coord.Close()
 
