@@ -193,15 +193,7 @@ export function TerminalView({
     });
     observer.observe(node);
     return () => observer.disconnect();
-  }, [
-    baseCellSize.height,
-    baseCellSize.width,
-    cellSize.height,
-    cellSize.width,
-    onResize,
-    screen?.cols,
-    screen?.rows,
-  ]);
+  }, [baseCellSize.height, baseCellSize.width, cellSize.height, cellSize.width, onResize]);
 
   useEffect(() => {
     if (!containerRef.current) {
@@ -217,7 +209,10 @@ export function TerminalView({
       if (!baseWidth || !baseHeight || innerWidth < baseWidth || innerHeight < baseHeight) {
         return;
       }
-      onResize(Math.max(1, Math.floor(innerWidth / baseWidth)), Math.max(1, Math.floor(innerHeight / baseHeight)));
+      onResize(
+        Math.max(1, Math.floor(innerWidth / baseWidth)),
+        Math.max(1, Math.floor(innerHeight / baseHeight)),
+      );
     };
     const frame = window.requestAnimationFrame(compute);
     const timer = window.setTimeout(compute, 120);
@@ -253,14 +248,7 @@ export function TerminalView({
     if (Math.abs(rounded - fontSize) > 0.05) {
       setFontSize(rounded);
     }
-  }, [
-    baseCellSize.height,
-    baseCellSize.width,
-    baseFontSize,
-    containerSize,
-    fontSize,
-    screen,
-  ]);
+  }, [baseCellSize.height, baseCellSize.width, containerSize, fontSize, screen]);
 
   useEffect(() => {
     if (!rendererIsCanvas) {
@@ -270,6 +258,11 @@ export function TerminalView({
     const container = containerRef.current;
     if (!canvas || !container) {
       return;
+    }
+    if (themeKey) {
+      canvas.dataset.theme = themeKey;
+    } else {
+      delete canvas.dataset.theme;
     }
     if (!screen || !screen.cols || !screen.rows || !cellSize.width || !cellSize.height) {
       const ctx = canvas.getContext("2d");
@@ -379,7 +372,12 @@ export function TerminalView({
           ctx.globalAlpha = isFaint ? 0.6 : 1;
           const lineHeight = Math.max(1, Math.round(cellSize.height * 0.08));
           if (isUnderline) {
-            ctx.fillRect(x, y + cellSize.height - lineHeight, cellSize.width * drawCols, lineHeight);
+            ctx.fillRect(
+              x,
+              y + cellSize.height - lineHeight,
+              cellSize.width * drawCols,
+              lineHeight,
+            );
           }
           if (isStrike) {
             ctx.fillRect(
@@ -398,14 +396,7 @@ export function TerminalView({
         col += drawCols;
       }
     }
-  }, [
-    cellSize.height,
-    cellSize.width,
-    fontSize,
-    rendererIsCanvas,
-    screen,
-    themeKey,
-  ]);
+  }, [cellSize.height, cellSize.width, fontSize, rendererIsCanvas, screen, themeKey]);
 
   const cursorStyle = useMemo(() => {
     if (!screen) {
@@ -612,7 +603,6 @@ export function TerminalView({
             aria-label="terminal"
             ref={terminalRef}
             onMouseDown={handleMouseDown}
-            onSelectStart={(event) => event.preventDefault()}
             onDragStart={(event) => event.preventDefault()}
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
@@ -632,11 +622,7 @@ export function TerminalView({
               </div>
             )}
             {screen && rendererIsCanvas && (
-              <canvas
-                ref={canvasRef}
-                className="absolute left-0 top-0 pointer-events-none"
-                aria-hidden="true"
-              />
+              <canvas ref={canvasRef} className="absolute left-0 top-0 pointer-events-none" />
             )}
             {screen && !rendererIsCanvas && (
               <TerminalGrid rows={screen.rowsData} selection={selection} />

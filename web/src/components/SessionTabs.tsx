@@ -1,7 +1,7 @@
-import { useMemo, type MouseEvent } from "react";
 import { MoreHorizontal, Plus } from "lucide-react";
-import type { SessionInfo } from "./CoordinatorTree";
+import { type MouseEvent, useMemo } from "react";
 import { cn } from "../lib/utils";
+import type { SessionInfo } from "./CoordinatorTree";
 
 export type SessionTab = {
   key: string;
@@ -46,10 +46,6 @@ export function SessionTabs({
   onMenuOpen,
   onCreate,
 }: SessionTabsProps) {
-  if (sessions.length === 0 && !onCreate) {
-    return null;
-  }
-
   const grouped = useMemo(() => {
     const next: Array<{ coordinator: string; tabs: SessionTab[] }> = [];
     for (const tab of sessions) {
@@ -70,7 +66,7 @@ export function SessionTabs({
           <span className="px-3 text-xs text-tn-text-dim">No sessions yet.</span>
         ) : (
           grouped.map((group) => (
-            <div key={group.coordinator} className="flex items-center gap-2">
+            <div key={group.coordinator} className="flex shrink-0 items-center gap-2">
               <span className="rounded-full border border-tn-border/60 px-2 py-1 text-[10px] uppercase tracking-wide text-tn-text-dim">
                 {group.coordinator}
               </span>
@@ -84,7 +80,7 @@ export function SessionTabs({
                     tabIndex={0}
                     title={key}
                     className={cn(
-                      "group flex items-center gap-2 rounded-t-md rounded-b-none border border-b-0 px-3 py-2 text-xs transition-colors",
+                      "group flex shrink-0 items-center gap-2 rounded-t-md rounded-b-none border border-b-0 px-3 py-2 text-xs transition-colors",
                       "cursor-pointer border-tn-border/60 bg-tn-panel text-tn-text",
                       "hover:border-tn-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tn-accent",
                       isActive && "border-tn-accent bg-tn-panel-2",
@@ -127,23 +123,23 @@ export function SessionTabs({
               })}
             </div>
           ))
-        
+        )}
+        {onCreate && (
+          <button
+            type="button"
+            className={cn(
+              "flex h-8 w-8 shrink-0 items-center justify-center rounded-md border text-sm",
+              "border-tn-border/60 bg-tn-panel text-tn-text",
+              "hover:border-tn-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tn-accent",
+            )}
+            onClick={() => onCreate()}
+            aria-label="New session"
+            title="New session"
+          >
+            <Plus className="h-4 w-4" aria-hidden="true" />
+          </button>
+        )}
       </div>
-      {onCreate && (
-        <button
-          type="button"
-          className={cn(
-            "flex h-8 w-8 items-center justify-center rounded-md border text-sm",
-            "border-tn-border/60 bg-tn-panel text-tn-text",
-            "hover:border-tn-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tn-accent",
-          )}
-          onClick={() => onCreate()}
-          aria-label="New session"
-          title="New session"
-        >
-          <Plus className="h-4 w-4" aria-hidden="true" />
-        </button>
-      )}
     </div>
   );
 }
