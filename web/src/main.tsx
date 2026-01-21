@@ -2,8 +2,8 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import "@fontsource/jetbrains-mono/latin.css";
 import "./styles.css";
-import { applyTheme, getTheme, loadThemeId } from "./lib/theme";
 import App from "./App";
+import { applyTheme, getTheme, loadThemeId } from "./lib/theme";
 
 applyTheme(getTheme(loadThemeId()));
 

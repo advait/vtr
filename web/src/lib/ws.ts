@@ -44,12 +44,14 @@ export function useVtrStream(sessionName: string | null, options: StreamOptions)
     wsRef.current.send(data);
   }, []);
 
+  const normalizeText = useCallback((text: string) => text.replace(/\r?\n/g, "\r"), []);
+
   const sendText = useCallback(
     (text: string) => {
       if (!sessionName) return;
-      sendProto("vtr.SendTextRequest", { name: sessionName, text });
+      sendProto("vtr.SendTextRequest", { name: sessionName, text: normalizeText(text) });
     },
-    [sendProto, sessionName],
+    [normalizeText, sendProto, sessionName],
   );
 
   const sendKey = useCallback(
@@ -63,9 +65,9 @@ export function useVtrStream(sessionName: string | null, options: StreamOptions)
   const sendTextTo = useCallback(
     (name: string, text: string) => {
       if (!name) return;
-      sendProto("vtr.SendTextRequest", { name, text });
+      sendProto("vtr.SendTextRequest", { name, text: normalizeText(text) });
     },
-    [sendProto],
+    [normalizeText, sendProto],
   );
 
   const sendKeyTo = useCallback(

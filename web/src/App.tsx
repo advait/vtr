@@ -145,7 +145,7 @@ export default function App() {
     }
     return window.matchMedia("(min-width: 1024px)").matches;
   });
-  const latestUpdate = useRef<SubscribeEvent | null>(null);
+  const pendingUpdates = useRef<SubscribeEvent[]>([]);
   const rafRef = useRef<number | null>(null);
   const lastSize = useRef<{ cols: number; rows: number } | null>(null);
   const settingsRef = useRef<HTMLDivElement | null>(null);
@@ -384,20 +384,27 @@ export default function App() {
   }, []);
 
   const applyPending = useCallback(() => {
-    const pending = latestUpdate.current;
-    latestUpdate.current = null;
     rafRef.current = null;
-    const screenUpdate = pending?.screen_update;
-    if (!screenUpdate) {
+    const updates = pendingUpdates.current;
+    if (updates.length === 0) {
       return;
     }
-    setScreen((prev) => applyScreenUpdate(prev, screenUpdate));
+    pendingUpdates.current = [];
+    setScreen((prev) => {
+      let next = prev;
+      for (const event of updates) {
+        if (event.screen_update) {
+          next = applyScreenUpdate(next, event.screen_update);
+        }
+      }
+      return next;
+    });
   }, []);
 
   useEffect(() => {
     setEventHandler((event) => {
       if (event.screen_update) {
-        latestUpdate.current = event;
+        pendingUpdates.current.push(event);
         if (!rafRef.current) {
           rafRef.current = window.requestAnimationFrame(applyPending);
         }
@@ -419,6 +426,9 @@ export default function App() {
 
   const onResize = useCallback(
     (cols: number, rows: number) => {
+      if (cols < 2 || rows < 2) {
+        return;
+      }
       const changed =
         !lastSize.current || lastSize.current.cols !== cols || lastSize.current.rows !== rows;
       if (changed) {
@@ -433,10 +443,11 @@ export default function App() {
   );
 
   useEffect(() => {
-    if (!activeSession || state.status !== "open" || !lastSize.current) {
+    if (!activeSession || state.status !== "open") {
       return;
     }
-    resize(lastSize.current.cols, lastSize.current.rows);
+    const size = lastSize.current ?? { cols: 120, rows: 40 };
+    resize(size.cols, size.rows);
   }, [activeSession, resize, state.status]);
 
   const onSendKey = useCallback(
@@ -817,7 +828,7 @@ export default function App() {
                 onContextMenu={openContextMenu}
                 onMenuOpen={openContextMenuFromButton}
               />
-              <div className="flex-1">
+              <div className="flex-1 min-h-[320px]">
                 <TerminalView
                   screen={screen}
                   status={displayStatus}

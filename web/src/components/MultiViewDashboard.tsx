@@ -65,7 +65,7 @@ function SessionThumbnail({
   const streamName = session.status === "running" ? sessionKey : null;
   const { state, setEventHandler } = useVtrStream(streamName, { includeRawOutput: false });
   const [screen, setScreen] = useState<ScreenState | null>(null);
-  const latestUpdate = useRef<SubscribeEvent | null>(null);
+  const pendingUpdates = useRef<SubscribeEvent[]>([]);
   const rafRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -73,14 +73,21 @@ function SessionThumbnail({
   }, [streamName]);
 
   const applyPending = useCallback(() => {
-    const pending = latestUpdate.current;
-    latestUpdate.current = null;
     rafRef.current = null;
-    const screenUpdate = pending?.screen_update;
-    if (!screenUpdate) {
+    const updates = pendingUpdates.current;
+    if (updates.length === 0) {
       return;
     }
-    setScreen((prev) => applyScreenUpdate(prev, screenUpdate));
+    pendingUpdates.current = [];
+    setScreen((prev) => {
+      let next = prev;
+      for (const event of updates) {
+        if (event.screen_update) {
+          next = applyScreenUpdate(next, event.screen_update);
+        }
+      }
+      return next;
+    });
   }, []);
 
   useEffect(() => {
@@ -94,7 +101,7 @@ function SessionThumbnail({
   useEffect(() => {
     setEventHandler((event) => {
       if (event.screen_update) {
-        latestUpdate.current = event;
+        pendingUpdates.current.push(event);
         if (!rafRef.current) {
           rafRef.current = window.requestAnimationFrame(applyPending);
         }

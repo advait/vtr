@@ -135,11 +135,11 @@ export function TerminalView({
       const innerHeight = Math.max(0, rect.height - padding * 2);
       const baseWidth = baseCellSize.width || cellSize.width;
       const baseHeight = baseCellSize.height || cellSize.height;
-      if (!baseWidth || !baseHeight) {
+      if (!baseWidth || !baseHeight || innerWidth < baseWidth || innerHeight < baseHeight) {
         return;
       }
-      const cols = screen?.cols ?? Math.max(1, Math.floor(innerWidth / baseWidth));
-      const rows = screen?.rows ?? Math.max(1, Math.floor(innerHeight / baseHeight));
+      const cols = Math.max(1, Math.floor(innerWidth / baseWidth));
+      const rows = Math.max(1, Math.floor(innerHeight / baseHeight));
       onResize(cols, rows);
     });
     observer.observe(node);
@@ -153,6 +153,30 @@ export function TerminalView({
     screen?.cols,
     screen?.rows,
   ]);
+
+  useEffect(() => {
+    if (!containerRef.current) {
+      return;
+    }
+    const node = containerRef.current;
+    const baseWidth = baseCellSize.width || cellSize.width;
+    const baseHeight = baseCellSize.height || cellSize.height;
+    const compute = () => {
+      const rect = node.getBoundingClientRect();
+      const innerWidth = Math.max(0, rect.width - padding * 2);
+      const innerHeight = Math.max(0, rect.height - padding * 2);
+      if (!baseWidth || !baseHeight || innerWidth < baseWidth || innerHeight < baseHeight) {
+        return;
+      }
+      onResize(Math.max(1, Math.floor(innerWidth / baseWidth)), Math.max(1, Math.floor(innerHeight / baseHeight)));
+    };
+    const frame = window.requestAnimationFrame(compute);
+    const timer = window.setTimeout(compute, 120);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
+    };
+  }, [baseCellSize.height, baseCellSize.width, cellSize.height, cellSize.width, onResize]);
 
   useEffect(() => {
     if (
@@ -356,7 +380,7 @@ export function TerminalView({
   };
 
   return (
-    <div className="relative h-full w-full">
+    <div className="relative h-full min-h-[320px] w-full">
       <span
         ref={baseMeasureRef}
         className="absolute -left-[9999px] -top-[9999px] font-mono"
@@ -374,7 +398,7 @@ export function TerminalView({
       <div
         ref={containerRef}
         className={cn(
-          "relative h-full w-full rounded-lg border border-tn-border bg-tn-bg-alt",
+          "relative h-full min-h-[320px] w-full rounded-lg border border-tn-border bg-tn-bg-alt",
           "shadow-panel",
         )}
       >
