@@ -155,6 +155,26 @@ sources = [
 ]
 outputs = ["bin/.mise-test-web-e2e.stamp"]
 
+[tasks."web-vite:dev"]
+depends = ["proto"]
+run = "bun run dev"
+dir = "./web"
+
+[tasks."web:dev"]
+depends = ["proto"]
+run = "go run ./cmd/vtr web --dev --socket /tmp/vtr.sock"
+
+[tasks."serve:dev"]
+depends = ["proto"]
+run = "go run ./cmd/vtr serve --socket /tmp/vtr.sock"
+
+[tasks.dev]
+depends = [
+  "web-vite:dev",
+  "web:dev",
+  "serve:dev"
+]
+
 [tasks.all]
 depends = ["build", "test"]
 

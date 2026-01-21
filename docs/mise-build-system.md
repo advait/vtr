@@ -19,9 +19,12 @@ If you keep Ghostty elsewhere, set `GHOSTTY_ROOT` to point at the checkout:
 
 - `proto` generates Go stubs from `proto/vtr.proto`.
 - `shim` builds the Zig shim against Ghostty.
-- `build` depends on `proto` + `shim` and produces `bin/vtr`.
+- `shim-sanitize` builds a debug shim variant with frame pointers (stamp output).
+- `web-build` builds `web/dist` via Bun/Vite.
+- `build` depends on `proto` + `shim` + `web-build` and produces `bin/vtr`.
 - `test` depends on `proto` + `shim` and runs all Go tests.
 - `shim-llvm-ir` and `shim-llvm-asan` produce ASan-ready shim artifacts.
+- `test-web-e2e` runs Playwright E2E checks for the web UI.
 - `test-race-cgo` and `test-sanitize-cgo` run CGO-focused checks.
 - `all` depends on `build` + `test`.
 
@@ -44,6 +47,8 @@ Conventions used here:
 - `go` (per `go.mod`)
 - `zig` (per `go-ghostty/shim/build.zig.zon`)
 - `clang` (via vfox)
+- `protoc` (for Go stubs)
+- `bun` (for web builds/tests)
 
 Build/test tasks set `CGO_ENABLED=1`, `CC=clang`, `CXX=clang++` for consistent
 CGO builds.
@@ -64,5 +69,7 @@ When adding a task in `mise.toml`:
 - `mise run test`
 - `mise run proto`
 - `mise run shim`
+- `mise run web-build`
 - `mise run test-race-cgo`
 - `mise run test-sanitize-cgo`
+- `mise run test-web-e2e`
