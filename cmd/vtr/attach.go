@@ -1558,12 +1558,12 @@ var leaderLegend = []legendSegment{
 }
 
 const (
-	sessionIconActive  = ""
-	sessionIconIdle    = ""
-	sessionIconExited  = ""
-	sessionIconUnknown = ""
+	sessionIconActive  = "*"
+	sessionIconIdle    = "o"
+	sessionIconExited  = "x"
+	sessionIconUnknown = "?"
 	tabOverflowGlyph   = "…"
-	tabNewGlyph        = ""
+	tabNewGlyph        = "+"
 	tabNameMaxWidth    = 20
 )
 
@@ -1648,18 +1648,36 @@ func renderExitHints() string {
 	return joinLegendSegments(segments)
 }
 
-func renderSessionStatusIcon(item sessionListItem) string {
+func sessionStatusGlyph(item sessionListItem) string {
 	switch item.status {
 	case proto.SessionStatus_SESSION_STATUS_RUNNING:
 		if item.idle {
-			return attachStatusIdleStyle.Render(sessionIconIdle)
+			return sessionIconIdle
 		}
-		return attachStatusActiveStyle.Render(sessionIconActive)
+		return sessionIconActive
 	case proto.SessionStatus_SESSION_STATUS_EXITED:
-		return attachStatusExitedStyle.Render(sessionIconExited)
+		return sessionIconExited
 	default:
-		return attachStatusUnknownStyle.Render(sessionIconUnknown)
+		return sessionIconUnknown
 	}
+}
+
+func sessionStatusStyle(item sessionListItem) lipgloss.Style {
+	switch item.status {
+	case proto.SessionStatus_SESSION_STATUS_RUNNING:
+		if item.idle {
+			return attachStatusIdleStyle
+		}
+		return attachStatusActiveStyle
+	case proto.SessionStatus_SESSION_STATUS_EXITED:
+		return attachStatusExitedStyle
+	default:
+		return attachStatusUnknownStyle
+	}
+}
+
+func renderSessionStatusIcon(item sessionListItem) string {
+	return sessionStatusStyle(item).Render(sessionStatusGlyph(item))
 }
 
 func sessionStateLabel(item sessionListItem) string {
@@ -1800,6 +1818,13 @@ func collectTabSessions(items []sessionListItem, active string, exited bool, exi
 func renderTabLabel(item sessionListItem, active, hovered bool) string {
 	name := stripCoordinatorPrefix(item.name)
 	name = truncateTabName(name, tabNameMaxWidth)
+	tabStyle := attachTabStyle
+	if active {
+		tabStyle = attachTabActiveStyle
+	} else if hovered {
+		tabStyle = attachTabHoverStyle
+	}
+	tabStyle = tabStyle.UnsetPadding()
 	textStyle := attachTabTextStyle
 	if active {
 		textStyle = attachTabTextActiveStyle
@@ -1808,14 +1833,17 @@ func renderTabLabel(item sessionListItem, active, hovered bool) string {
 	} else if item.status == proto.SessionStatus_SESSION_STATUS_EXITED {
 		textStyle = attachTabTextExitedStyle
 	}
-	label := fmt.Sprintf("%s %s", renderSessionStatusIcon(item), textStyle.Render(name))
-	if active {
-		return attachTabActiveStyle.Render(label)
-	}
-	if hovered {
-		return attachTabHoverStyle.Render(label)
-	}
-	return attachTabStyle.Render(label)
+	textStyle = textStyle.Inherit(tabStyle)
+	statusStyle := sessionStatusStyle(item).Inherit(tabStyle)
+	padStyle := tabStyle
+
+	var b strings.Builder
+	b.WriteString(padStyle.Render(" "))
+	b.WriteString(statusStyle.Render(sessionStatusGlyph(item)))
+	b.WriteString(padStyle.Render(" "))
+	b.WriteString(textStyle.Render(name))
+	b.WriteString(padStyle.Render(" "))
+	return b.String()
 }
 func buildTabItems(view headerView) ([]tabItem, int) {
 	sessions := collectTabSessions(view.sessions, view.active, view.exited, view.exitCode)
