@@ -20,7 +20,7 @@ const statusVariants: Record<
   SessionInfo["status"],
   { label: string; variant: "default" | "green" | "red" | "yellow" }
 > = {
-  running: { label: "live", variant: "green" },
+  running: { label: "active", variant: "green" },
   exited: { label: "exited", variant: "red" },
   unknown: { label: "unknown", variant: "default" },
 };
@@ -39,7 +39,6 @@ function normalizeStatusFilter(value: string): SessionInfo["status"] | null {
     case "dead":
     case "stopped":
       return "exited";
-    case "idle":
     case "unknown":
     case "stale":
       return "unknown";
@@ -106,7 +105,10 @@ function SessionThumbnail({
     });
   }, [applyPending, setEventHandler]);
 
-  const status = statusVariants[session.status] ?? statusVariants.unknown;
+  const status =
+    session.status === "running" && session.idle
+      ? { label: "idle", variant: "yellow" }
+      : statusVariants[session.status] ?? statusVariants.unknown;
 
   return (
     <div
@@ -190,6 +192,7 @@ export function MultiViewDashboard({
     }
 
     const statusFilters = new Set<SessionInfo["status"]>();
+    const activityFilters = new Set<"idle" | "active">();
     const coordTerms: string[] = [];
     const textTerms: string[] = [];
 
@@ -197,6 +200,14 @@ export function MultiViewDashboard({
       if (!term) continue;
       const [key, rawValue] = term.split(":", 2);
       if (rawValue && (key === "status" || key === "state")) {
+        if (rawValue === "idle" || rawValue === "inactive") {
+          activityFilters.add("idle");
+          continue;
+        }
+        if (rawValue === "active" || rawValue === "busy") {
+          activityFilters.add("active");
+          continue;
+        }
         const normalized = normalizeStatusFilter(rawValue);
         if (normalized) {
           statusFilters.add(normalized);
@@ -223,6 +234,15 @@ export function MultiViewDashboard({
         const sessions = coord.sessions.filter((session) => {
           if (statusFilters.size > 0 && !statusFilters.has(session.status)) {
             return false;
+          }
+          if (activityFilters.size > 0) {
+            if (session.status !== "running") {
+              return false;
+            }
+            const activity = session.idle ? "idle" : "active";
+            if (!activityFilters.has(activity)) {
+              return false;
+            }
           }
           if (coordTextMatch) {
             return true;
@@ -305,7 +325,8 @@ export function MultiViewDashboard({
           onChange={(event) => setFilter(event.target.value)}
         />
         <div className="text-xs text-tn-text-dim">
-          Use status:running, status:exited, status:idle or plain text for coordinator/session.
+          Use status:running, status:active, status:idle, status:exited or plain text for
+          coordinator/session.
         </div>
       </div>
 

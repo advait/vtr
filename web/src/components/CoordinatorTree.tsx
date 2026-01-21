@@ -25,15 +25,18 @@ export type CoordinatorTreeProps = {
   onSelect: (session: { name: string; status: SessionInfo["status"]; exitCode?: number }) => void;
 };
 
-function statusBadge(status: SessionInfo["status"]) {
-  switch (status) {
-    case "running":
-      return <Badge variant="green">running</Badge>;
-    case "exited":
-      return <Badge variant="red">exited</Badge>;
-    default:
-      return <Badge>unknown</Badge>;
+function statusBadge(session: SessionInfo) {
+  if (session.status === "running") {
+    return (
+      <Badge variant={session.idle ? "yellow" : "green"}>
+        {session.idle ? "idle" : "active"}
+      </Badge>
+    );
   }
+  if (session.status === "exited") {
+    return <Badge variant="red">exited</Badge>;
+  }
+  return <Badge>unknown</Badge>;
 }
 
 function orderSessions(sessions: SessionInfo[]) {
@@ -118,7 +121,7 @@ export function CoordinatorTree({
                         {session.cols}x{session.rows}
                       </span>
                     </div>
-                    <div className="flex items-center gap-2">{statusBadge(session.status)}</div>
+                    <div className="flex items-center gap-2">{statusBadge(session)}</div>
                   </button>
                 );
               })}
