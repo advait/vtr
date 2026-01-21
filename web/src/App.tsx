@@ -1,5 +1,5 @@
 import {
-  type MouseEvent,
+  type MouseEvent as ReactMouseEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -7,7 +7,7 @@ import {
   useState,
 } from "react";
 import { ActionTray } from "./components/ActionTray";
-import { type CoordinatorInfo, type SessionInfo } from "./components/CoordinatorTree";
+import type { CoordinatorInfo, SessionInfo } from "./components/CoordinatorTree";
 import { InputBar } from "./components/InputBar";
 import { MultiViewDashboard } from "./components/MultiViewDashboard";
 import { SessionTabs } from "./components/SessionTabs";
@@ -193,10 +193,7 @@ export default function App() {
       }))
       .filter((coord) => coord.sessions.length > 0);
   }, [coordinators, showClosedSessions]);
-  const coordinatorOptions = useMemo(
-    () => coordinators.map((coord) => coord.name),
-    [coordinators],
-  );
+  const coordinatorOptions = useMemo(() => coordinators.map((coord) => coord.name), [coordinators]);
   const tabSessions = useMemo(() => {
     const entries: Array<{
       key: string;
@@ -215,18 +212,10 @@ export default function App() {
     return entries;
   }, [visibleCoordinators]);
 
-  const {
-    state,
-    setEventHandler,
-    sendText,
-    sendKey,
-    sendTextTo,
-    sendKeyTo,
-    resize,
-    close,
-  } = useVtrStream(activeSession, {
-    includeRawOutput: false,
-  });
+  const { state, setEventHandler, sendText, sendKey, sendTextTo, sendKeyTo, resize, close } =
+    useVtrStream(activeSession, {
+      includeRawOutput: false,
+    });
 
   useEffect(() => {
     if (!settingsOpen) {
@@ -249,7 +238,6 @@ export default function App() {
       document.removeEventListener("keydown", handleKey);
     };
   }, [settingsOpen]);
-
 
   useEffect(() => {
     applyTheme(activeTheme);
@@ -310,7 +298,7 @@ export default function App() {
       active = false;
       window.clearInterval(intervalId);
     };
-  }, []);
+  }, [applySessions]);
 
   useEffect(() => {
     if (!hashSession || selectedSession || !sessionsLoaded) {
@@ -335,7 +323,6 @@ export default function App() {
   useEffect(() => {
     writeShowClosedSetting(showClosedSessions);
   }, [showClosedSessions]);
-
 
   useEffect(() => {
     if (!contextMenu) {
@@ -616,24 +603,23 @@ export default function App() {
     [runSessionAction],
   );
 
-  const openContextMenu = useCallback(
-    (event: MouseEvent<HTMLDivElement>, sessionKey: string, session: SessionInfo) => {
-      event.preventDefault();
+  const openContextMenuAt = useCallback(
+    (coords: { x: number; y: number }, sessionKey: string, session: SessionInfo) => {
       const menuWidth = 220;
       const menuHeight = 240;
       const viewportWidth = window.innerWidth || 0;
       const viewportHeight = window.innerHeight || 0;
-      let x = event.clientX;
-      let y = event.clientY;
+      let nextX = coords.x;
+      let nextY = coords.y;
       if (viewportWidth) {
-        x = Math.min(x, Math.max(8, viewportWidth - menuWidth - 8));
+        nextX = Math.min(nextX, Math.max(8, viewportWidth - menuWidth - 8));
       }
       if (viewportHeight) {
-        y = Math.min(y, Math.max(8, viewportHeight - menuHeight - 8));
+        nextY = Math.min(nextY, Math.max(8, viewportHeight - menuHeight - 8));
       }
       setContextMenu({
-        x,
-        y,
+        x: nextX,
+        y: nextY,
         sessionKey,
         status: session.status,
       });
@@ -641,29 +627,12 @@ export default function App() {
     [],
   );
 
-  const openContextMenuFromButton = useCallback(
-    (event: MouseEvent<HTMLButtonElement>, sessionKey: string, session: SessionInfo) => {
-      const rect = event.currentTarget.getBoundingClientRect();
-      const menuWidth = 220;
-      const menuHeight = 240;
-      const viewportWidth = window.innerWidth || 0;
-      const viewportHeight = window.innerHeight || 0;
-      let x = rect.left;
-      let y = rect.bottom + 6;
-      if (viewportWidth) {
-        x = Math.min(x, Math.max(8, viewportWidth - menuWidth - 8));
-      }
-      if (viewportHeight) {
-        y = Math.min(y, Math.max(8, viewportHeight - menuHeight - 8));
-      }
-      setContextMenu({
-        x,
-        y,
-        sessionKey,
-        status: session.status,
-      });
+  const openContextMenu = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>, sessionKey: string, session: SessionInfo) => {
+      event.preventDefault();
+      openContextMenuAt({ x: event.clientX, y: event.clientY }, sessionKey, session);
     },
-    [],
+    [openContextMenuAt],
   );
 
   const statusBadge = useMemo(() => {
@@ -797,7 +766,7 @@ export default function App() {
                   }}
                   onClose={handleCloseTab}
                   onContextMenu={openContextMenu}
-                  onMenuOpen={openContextMenuFromButton}
+                  onContextMenuAt={openContextMenuAt}
                   onCreate={handleCreateSession}
                 />
                 <div className="flex-1 min-h-[360px] md:min-h-[420px]">

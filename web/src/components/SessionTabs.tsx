@@ -1,5 +1,5 @@
-import { MoreHorizontal, Plus } from "lucide-react";
-import { type MouseEvent, useMemo } from "react";
+import { Plus } from "lucide-react";
+import { type MouseEvent, type TouchEvent, useMemo, useRef } from "react";
 import { cn } from "../lib/utils";
 import type { SessionInfo } from "./CoordinatorTree";
 
@@ -19,8 +19,8 @@ type SessionTabsProps = {
     sessionKey: string,
     session: SessionInfo,
   ) => void;
-  onMenuOpen: (
-    event: MouseEvent<HTMLButtonElement>,
+  onContextMenuAt?: (
+    coords: { x: number; y: number },
     sessionKey: string,
     session: SessionInfo,
   ) => void;
@@ -43,7 +43,7 @@ export function SessionTabs({
   onSelect,
   onClose,
   onContextMenu,
-  onMenuOpen,
+  onContextMenuAt,
   onCreate,
 }: SessionTabsProps) {
   const grouped = useMemo(() => {
@@ -58,6 +58,44 @@ export function SessionTabs({
     }
     return next;
   }, [sessions]);
+
+  const longPressTimerRef = useRef<number | null>(null);
+  const longPressTriggeredRef = useRef(false);
+
+  const clearLongPress = () => {
+    if (longPressTimerRef.current !== null) {
+      window.clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  };
+
+  const handleTouchStart = (
+    event: TouchEvent<HTMLDivElement>,
+    sessionKey: string,
+    session: SessionInfo,
+  ) => {
+    if (!onContextMenuAt) {
+      return;
+    }
+    if (event.touches.length !== 1) {
+      return;
+    }
+    const { clientX, clientY } = event.touches[0];
+    clearLongPress();
+    longPressTriggeredRef.current = false;
+    longPressTimerRef.current = window.setTimeout(() => {
+      longPressTriggeredRef.current = true;
+      onContextMenuAt({ x: clientX, y: clientY }, sessionKey, session);
+    }, 500);
+  };
+
+  const handleTouchEnd = () => {
+    clearLongPress();
+  };
+
+  const handleTouchMove = () => {
+    clearLongPress();
+  };
 
   return (
     <div className="flex items-center gap-2 rounded-t-lg border border-b-0 border-tn-border bg-tn-panel px-2 pt-2 pb-1">
@@ -86,7 +124,14 @@ export function SessionTabs({
                       isActive && "border-tn-accent bg-tn-panel-2",
                       session.status === "exited" && "text-tn-muted",
                     )}
-                    onClick={() => onSelect(key, session)}
+                    onClick={(event) => {
+                      if (longPressTriggeredRef.current) {
+                        longPressTriggeredRef.current = false;
+                        event.preventDefault();
+                        return;
+                      }
+                      onSelect(key, session);
+                    }}
                     onKeyDown={(event) => {
                       if (event.key === "Enter" || event.key === " ") {
                         event.preventDefault();
@@ -101,23 +146,13 @@ export function SessionTabs({
                       }
                     }}
                     onContextMenu={(event) => onContextMenu(event, key, session)}
+                    onTouchStart={(event) => handleTouchStart(event, key, session)}
+                    onTouchEnd={handleTouchEnd}
+                    onTouchMove={handleTouchMove}
+                    onTouchCancel={handleTouchEnd}
                   >
                     <span className={cn("h-2 w-2 rounded-full", statusDot(session))} />
                     <span className="max-w-[8rem] truncate">{label}</span>
-                    <button
-                      type="button"
-                      className={cn(
-                        "rounded px-1 text-tn-text-dim hover:text-tn-text",
-                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tn-accent",
-                      )}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onMenuOpen(event, key, session);
-                      }}
-                      aria-label={`Session actions for ${label}`}
-                    >
-                      <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
-                    </button>
                   </div>
                 );
               })}
