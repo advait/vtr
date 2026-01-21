@@ -13,6 +13,7 @@ service VTR {
   rpc Info(InfoRequest) returns (InfoResponse);
   rpc Kill(KillRequest) returns (KillResponse);
   rpc Remove(RemoveRequest) returns (RemoveResponse);
+  rpc Rename(RenameRequest) returns (RenameResponse);
   
   // Screen operations
   rpc GetScreen(GetScreenRequest) returns (GetScreenResponse);
@@ -94,6 +95,13 @@ message RemoveRequest {
 }
 
 message RemoveResponse {}
+
+message RenameRequest {
+  string name = 1;
+  string new_name = 2;
+}
+
+message RenameResponse {}
 
 // Screen operations messages
 message GetScreenRequest {

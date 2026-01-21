@@ -41,11 +41,11 @@ var (
 
 // CoordinatorOptions configures the session coordinator.
 type CoordinatorOptions struct {
-	DefaultShell string
-	DefaultCols  uint16
-	DefaultRows  uint16
-	Scrollback   uint32
-	KillTimeout  time.Duration
+	DefaultShell  string
+	DefaultCols   uint16
+	DefaultRows   uint16
+	Scrollback    uint32
+	KillTimeout   time.Duration
 	IdleThreshold time.Duration
 }
 
@@ -309,6 +309,29 @@ func (c *Coordinator) Remove(name string) error {
 	return nil
 }
 
+// Rename updates a session name.
+func (c *Coordinator) Rename(name, newName string) error {
+	if strings.TrimSpace(newName) == "" {
+		return ErrInvalidName
+	}
+	if name == newName {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	session := c.sessions[name]
+	if session == nil {
+		return ErrSessionNotFound
+	}
+	if _, exists := c.sessions[newName]; exists {
+		return ErrSessionExists
+	}
+	delete(c.sessions, name)
+	c.sessions[newName] = session
+	session.SetName(newName)
+	return nil
+}
+
 // Close removes all sessions.
 func (c *Coordinator) Close() error {
 	c.mu.Lock()
@@ -461,6 +484,7 @@ func (s *Session) markExited(code int) {
 // Info returns a copy of the session info.
 func (s *Session) Info() SessionInfo {
 	s.mu.Lock()
+	name := s.name
 	state := s.state
 	cols := s.cols
 	rows := s.rows
@@ -470,7 +494,7 @@ func (s *Session) Info() SessionInfo {
 	s.mu.Unlock()
 	idle := s.isIdle()
 	return SessionInfo{
-		Name:      s.name,
+		Name:      name,
 		State:     state,
 		Cols:      cols,
 		Rows:      rows,
@@ -479,6 +503,12 @@ func (s *Session) Info() SessionInfo {
 		CreatedAt: createdAt,
 		ExitedAt:  exitedAt,
 	}
+}
+
+func (s *Session) SetName(name string) {
+	s.mu.Lock()
+	s.name = name
+	s.mu.Unlock()
 }
 
 func (s *Session) IsRunning() bool {

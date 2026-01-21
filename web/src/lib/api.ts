@@ -38,9 +38,10 @@ export type SessionCreateResponse = {
 
 export type SessionActionRequest = {
   name: string;
-  action: "send_key" | "signal" | "remove";
+  action: "send_key" | "signal" | "remove" | "rename";
   key?: string;
   signal?: string;
+  newName?: string;
 };
 
 function normalizeSession(session: SessionCreateResponse["session"]): SessionInfo {
@@ -103,7 +104,13 @@ export async function sendSessionAction(req: SessionActionRequest) {
   const resp = await fetch("/api/sessions/action", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(req),
+    body: JSON.stringify({
+      name: req.name,
+      action: req.action,
+      key: req.key,
+      signal: req.signal,
+      new_name: req.newName,
+    }),
   });
   if (!resp.ok) {
     const message = (await resp.text()) || `session action failed: ${resp.status}`;

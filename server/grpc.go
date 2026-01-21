@@ -192,6 +192,21 @@ func (s *GRPCServer) Remove(_ context.Context, req *proto.RemoveRequest) (*proto
 	return &proto.RemoveResponse{}, nil
 }
 
+func (s *GRPCServer) Rename(_ context.Context, req *proto.RenameRequest) (*proto.RenameResponse, error) {
+	if req == nil || strings.TrimSpace(req.Name) == "" {
+		return nil, status.Error(codes.InvalidArgument, "session name is required")
+	}
+	if strings.TrimSpace(req.NewName) == "" {
+		return nil, status.Error(codes.InvalidArgument, "new name is required")
+	}
+	if err := s.coord.Rename(req.Name, req.NewName); err != nil {
+		return nil, mapCoordinatorErr(err)
+	}
+	s.clearKeyframes(req.Name)
+	s.clearKeyframes(req.NewName)
+	return &proto.RenameResponse{}, nil
+}
+
 func (s *GRPCServer) GetScreen(_ context.Context, req *proto.GetScreenRequest) (*proto.GetScreenResponse, error) {
 	if req == nil || req.Name == "" {
 		return nil, status.Error(codes.InvalidArgument, "session name is required")

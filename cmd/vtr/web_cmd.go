@@ -338,10 +338,11 @@ type webSessionCreateResponse struct {
 }
 
 type webSessionActionRequest struct {
-	Name   string `json:"name"`
-	Action string `json:"action"`
-	Key    string `json:"key,omitempty"`
-	Signal string `json:"signal,omitempty"`
+	Name    string `json:"name"`
+	Action  string `json:"action"`
+	Key     string `json:"key,omitempty"`
+	Signal  string `json:"signal,omitempty"`
+	NewName string `json:"new_name,omitempty"`
 }
 
 type webSessionActionResponse struct {
@@ -521,6 +522,15 @@ func handleWebSessionAction(resolver webResolver) http.HandlerFunc {
 		case "remove":
 			ctx, cancel = context.WithTimeout(r.Context(), rpcTimeout)
 			_, err = client.Remove(ctx, &proto.RemoveRequest{Name: target.Session})
+			cancel()
+		case "rename":
+			newName := strings.TrimSpace(req.NewName)
+			if newName == "" {
+				http.Error(w, "new name is required for rename", http.StatusBadRequest)
+				return
+			}
+			ctx, cancel = context.WithTimeout(r.Context(), rpcTimeout)
+			_, err = client.Rename(ctx, &proto.RenameRequest{Name: target.Session, NewName: newName})
 			cancel()
 		default:
 			http.Error(w, fmt.Sprintf("unknown action %q", action), http.StatusBadRequest)

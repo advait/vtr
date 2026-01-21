@@ -143,6 +143,11 @@ function findSession(
   return null;
 }
 
+function splitSessionKey(sessionKey: string) {
+  const [coordinator, ...rest] = sessionKey.split(":");
+  return { coordinator, session: rest.join(":") };
+}
+
 export default function App() {
   const [coordinators, setCoordinators] = useState<CoordinatorInfo[]>([]);
   const [activeSession, setActiveSession] = useState<string | null>(null);
@@ -170,6 +175,10 @@ export default function App() {
     sessionKey: string;
     status: SessionInfo["status"];
   } | null>(null);
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renameDraft, setRenameDraft] = useState("");
+  const [renameError, setRenameError] = useState<string | null>(null);
+  const [renameBusy, setRenameBusy] = useState(false);
   const [isDesktop, setIsDesktop] = useState(() => {
     if (typeof window === "undefined" || !window.matchMedia) {
       return false;
@@ -238,6 +247,21 @@ export default function App() {
       document.removeEventListener("keydown", handleKey);
     };
   }, [settingsOpen]);
+
+  useEffect(() => {
+    if (!contextMenu) {
+      setRenameOpen(false);
+      setRenameDraft("");
+      setRenameError(null);
+      setRenameBusy(false);
+      return;
+    }
+    const { session } = splitSessionKey(contextMenu.sessionKey);
+    setRenameDraft(session);
+    setRenameError(null);
+    setRenameOpen(false);
+    setRenameBusy(false);
+  }, [contextMenu]);
 
   useEffect(() => {
     applyTheme(activeTheme);
@@ -586,6 +610,52 @@ export default function App() {
     [refreshSessions],
   );
 
+  const handleRenameSubmit = async () => {
+    if (!contextMenu || renameBusy) {
+      return;
+    }
+    const currentKey = contextMenu.sessionKey;
+    const { coordinator, session } = splitSessionKey(currentKey);
+    const nextName = renameDraft.trim();
+    if (!nextName) {
+      setRenameError("Name is required.");
+      return;
+    }
+    if (nextName.includes(":")) {
+      setRenameError("Name cannot include ':'");
+      return;
+    }
+    if (nextName === session) {
+      setRenameOpen(false);
+      setRenameError(null);
+      return;
+    }
+    const duplicate = coordinators
+      .find((coord) => coord.name === coordinator)
+      ?.sessions.some((entry) => entry.name === nextName);
+    if (duplicate) {
+      setRenameError("Session name already exists.");
+      return;
+    }
+    setRenameBusy(true);
+    setRenameError(null);
+    try {
+      await sendSessionAction({ name: currentKey, action: "rename", newName: nextName });
+      await refreshSessions();
+      const newKey = `${coordinator}:${nextName}`;
+      setSelectedSession((prev) =>
+        prev && prev.name === currentKey ? { ...prev, name: newKey } : prev,
+      );
+      setActiveSession((prev) => (prev === currentKey ? newKey : prev));
+      setContextMenu(null);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Rename failed.";
+      setRenameError(message);
+    } finally {
+      setRenameBusy(false);
+    }
+  };
+
   const handleCloseTab = useCallback(
     (sessionKey: string, session: SessionInfo) => {
       if (session.status === "exited") {
@@ -606,7 +676,7 @@ export default function App() {
   const openContextMenuAt = useCallback(
     (coords: { x: number; y: number }, sessionKey: string, session: SessionInfo) => {
       const menuWidth = 220;
-      const menuHeight = 240;
+      const menuHeight = 320;
       const viewportWidth = window.innerWidth || 0;
       const viewportHeight = window.innerHeight || 0;
       let nextX = coords.x;
@@ -824,6 +894,69 @@ export default function App() {
               Session actions
             </div>
             <div className="flex flex-col py-1 text-sm">
+              <button
+                type="button"
+                className="px-3 py-2 text-left text-tn-text transition-colors hover:bg-tn-panel-2"
+                onClick={() => {
+                  setRenameOpen(true);
+                  setRenameError(null);
+                }}
+              >
+                Rename session
+              </button>
+              {renameOpen && (
+                <div className="px-3 py-2 text-xs text-tn-text">
+                  <label
+                    htmlFor="rename-session-input"
+                    className="text-[10px] uppercase tracking-wide text-tn-muted"
+                  >
+                    New name
+                  </label>
+                  <input
+                    className="mt-2 h-8 w-full rounded-md border border-tn-border bg-tn-panel-2 px-2 text-sm text-tn-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tn-accent"
+                    id="rename-session-input"
+                    value={renameDraft}
+                    onChange={(event) => {
+                      setRenameDraft(event.target.value);
+                      setRenameError(null);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        handleRenameSubmit();
+                      }
+                      if (event.key === "Escape") {
+                        event.preventDefault();
+                        setRenameOpen(false);
+                      }
+                    }}
+                  />
+                  {renameError && (
+                    <span className="mt-1 block text-[11px] text-tn-red">{renameError}</span>
+                  )}
+                  <div className="mt-2 flex gap-2">
+                    <button
+                      type="button"
+                      className="rounded-md border border-tn-border px-2 py-1 text-xs text-tn-text transition-colors hover:border-tn-accent"
+                      onClick={handleRenameSubmit}
+                      disabled={renameBusy}
+                    >
+                      {renameBusy ? "Renaming..." : "Save"}
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded-md border border-tn-border px-2 py-1 text-xs text-tn-text transition-colors hover:border-tn-accent"
+                      onClick={() => {
+                        setRenameOpen(false);
+                        setRenameError(null);
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+              <div className="my-1 h-px bg-tn-border" />
               <button
                 type="button"
                 className={`px-3 py-2 text-left transition-colors ${
