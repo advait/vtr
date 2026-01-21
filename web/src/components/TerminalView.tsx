@@ -64,17 +64,24 @@ export function TerminalView({
   onSendText,
   onPaste,
 }: TerminalViewProps) {
+  const baseFontSize = 14;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<HTMLDivElement | null>(null);
+  const baseMeasureRef = useRef<HTMLSpanElement | null>(null);
   const measureRef = useRef<HTMLSpanElement | null>(null);
   const [cellSize, setCellSize] = useState<CellSize>({ width: 8, height: 18 });
+  const [baseCellSize, setBaseCellSize] = useState<CellSize>({ width: 8, height: 18 });
   const [selection, setSelection] = useState<Selection | null>(null);
-  const [fontSize, setFontSize] = useState(14);
+  const [fontSize, setFontSize] = useState(baseFontSize);
   const [containerSize, setContainerSize] = useState<{ width: number; height: number } | null>(
     null,
   );
   const selectingRef = useRef(false);
   const selectionStartRef = useRef<Selection | null>(null);
+
+  useLayoutEffect(() => {
+    setBaseCellSize(measureCell(baseMeasureRef.current));
+  }, []);
 
   useLayoutEffect(() => {
     if (fontSize <= 0) {
@@ -87,6 +94,7 @@ export function TerminalView({
     if (document.fonts) {
       document.fonts.ready.then(() => {
         setCellSize(measureCell(measureRef.current));
+        setBaseCellSize(measureCell(baseMeasureRef.current));
       });
     }
   }, []);
@@ -110,7 +118,7 @@ export function TerminalView({
     const node = containerRef.current;
     const observer = new ResizeObserver((entries) => {
       const rect = entries[0]?.contentRect;
-      if (!rect || !cellSize.width || !cellSize.height) {
+      if (!rect) {
         return;
       }
       setContainerSize((prev) => {
@@ -125,32 +133,61 @@ export function TerminalView({
       });
       const innerWidth = Math.max(0, rect.width - padding * 2);
       const innerHeight = Math.max(0, rect.height - padding * 2);
-      const cols = Math.max(1, Math.floor(innerWidth / cellSize.width));
-      const rows = Math.max(1, Math.floor(innerHeight / cellSize.height));
+      const baseWidth = baseCellSize.width || cellSize.width;
+      const baseHeight = baseCellSize.height || cellSize.height;
+      if (!baseWidth || !baseHeight) {
+        return;
+      }
+      const cols = screen?.cols ?? Math.max(1, Math.floor(innerWidth / baseWidth));
+      const rows = screen?.rows ?? Math.max(1, Math.floor(innerHeight / baseHeight));
       onResize(cols, rows);
     });
     observer.observe(node);
     return () => observer.disconnect();
-  }, [cellSize.height, cellSize.width, onResize]);
+  }, [
+    baseCellSize.height,
+    baseCellSize.width,
+    cellSize.height,
+    cellSize.width,
+    onResize,
+    screen?.cols,
+    screen?.rows,
+  ]);
 
   useEffect(() => {
-    if (!screen || !containerSize || !screen.cols || !cellSize.width) {
+    if (
+      !screen ||
+      !containerSize ||
+      !screen.cols ||
+      !screen.rows ||
+      !baseCellSize.width ||
+      !baseCellSize.height
+    ) {
       return;
     }
     const innerWidth = Math.max(0, containerSize.width - padding * 2);
-    if (!innerWidth) {
+    const innerHeight = Math.max(0, containerSize.height - padding * 2);
+    if (!innerWidth || !innerHeight) {
       return;
     }
-    const targetCellWidth = innerWidth / screen.cols;
-    const nextFontSize = (fontSize * targetCellWidth) / cellSize.width;
-    if (!Number.isFinite(nextFontSize)) {
+    const scaleX = innerWidth / (screen.cols * baseCellSize.width);
+    const scaleY = innerHeight / (screen.rows * baseCellSize.height);
+    const nextFontSize = baseFontSize * Math.min(scaleX, scaleY);
+    if (!Number.isFinite(nextFontSize) || nextFontSize <= 0) {
       return;
     }
     const rounded = Math.round(nextFontSize * 10) / 10;
-    if (Math.abs(rounded - fontSize) > 0.1) {
+    if (Math.abs(rounded - fontSize) > 0.05) {
       setFontSize(rounded);
     }
-  }, [cellSize.width, containerSize, fontSize, screen]);
+  }, [
+    baseCellSize.height,
+    baseCellSize.width,
+    baseFontSize,
+    containerSize,
+    fontSize,
+    screen,
+  ]);
 
   const cursorStyle = useMemo(() => {
     if (!screen) {
@@ -320,6 +357,13 @@ export function TerminalView({
 
   return (
     <div className="relative h-full w-full">
+      <span
+        ref={baseMeasureRef}
+        className="absolute -left-[9999px] -top-[9999px] font-mono"
+        style={{ fontSize: `${baseFontSize}px` }}
+      >
+        M
+      </span>
       <span
         ref={measureRef}
         className="absolute -left-[9999px] -top-[9999px] font-mono"
