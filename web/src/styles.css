@@ -37,6 +37,7 @@ textarea {
   line-height: var(--cell-h, 1.45);
   font-size: var(--terminal-font-size, 14px);
   white-space: pre;
+  overflow-y: clip;
 }
 
 .terminal-surface,
