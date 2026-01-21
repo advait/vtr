@@ -243,7 +243,7 @@ export default function App() {
       }
       return { ...prev, ...match };
     });
-  }, [applySessions]);
+  }, []);
 
   const refreshSessions = useCallback(async () => {
     const data = await fetchSessions();
@@ -419,16 +419,25 @@ export default function App() {
 
   const onResize = useCallback(
     (cols: number, rows: number) => {
-      if (!activeSession) {
+      const changed =
+        !lastSize.current || lastSize.current.cols !== cols || lastSize.current.rows !== rows;
+      if (changed) {
+        lastSize.current = { cols, rows };
+      }
+      if (!activeSession || !changed) {
         return;
       }
-      if (!lastSize.current || lastSize.current.cols !== cols || lastSize.current.rows !== rows) {
-        lastSize.current = { cols, rows };
-        resize(cols, rows);
-      }
+      resize(cols, rows);
     },
     [activeSession, resize],
   );
+
+  useEffect(() => {
+    if (!activeSession || state.status !== "open" || !lastSize.current) {
+      return;
+    }
+    resize(lastSize.current.cols, lastSize.current.rows);
+  }, [activeSession, resize, state.status]);
 
   const onSendKey = useCallback(
     (key: string) => {
