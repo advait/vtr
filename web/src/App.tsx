@@ -31,6 +31,7 @@ const statusLabels: Record<
 };
 
 const sessionHashKey = "session";
+const showClosedSessionsKey = "showClosedSessions";
 
 function readSessionHash() {
   if (typeof window === "undefined") {
@@ -65,6 +66,26 @@ function writeSessionHash(session: string | null) {
   window.history.replaceState(null, "", url.toString());
 }
 
+function readShowClosedSetting() {
+  if (typeof window === "undefined") {
+    return false;
+  }
+  try {
+    return window.localStorage.getItem(showClosedSessionsKey) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function writeShowClosedSetting(value: boolean) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    window.localStorage.setItem(showClosedSessionsKey, value ? "true" : "false");
+  } catch {}
+}
+
 function findSession(
   coordinators: CoordinatorInfo[],
   name: string,
@@ -97,6 +118,7 @@ export default function App() {
   const [sessionsLoaded, setSessionsLoaded] = useState(false);
   const [themeId, setThemeId] = useState(() => getTheme(loadThemeId()).id);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [showClosedSessions, setShowClosedSessions] = useState(() => readShowClosedSetting());
   const [isDesktop, setIsDesktop] = useState(() => {
     if (typeof window === "undefined" || !window.matchMedia) {
       return false;
@@ -108,6 +130,17 @@ export default function App() {
   const lastSize = useRef<{ cols: number; rows: number } | null>(null);
   const settingsRef = useRef<HTMLDivElement | null>(null);
   const activeTheme = useMemo(() => getTheme(themeId), [themeId]);
+  const visibleCoordinators = useMemo(() => {
+    if (showClosedSessions) {
+      return coordinators;
+    }
+    return coordinators
+      .map((coord) => ({
+        ...coord,
+        sessions: coord.sessions.filter((session) => session.status !== "exited"),
+      }))
+      .filter((coord) => coord.sessions.length > 0);
+  }, [coordinators, showClosedSessions]);
 
   const {
     state,
@@ -200,7 +233,7 @@ export default function App() {
     if (!hashSession || selectedSession || !sessionsLoaded) {
       return;
     }
-    const match = findSession(coordinators, hashSession);
+    const match = findSession(visibleCoordinators, hashSession);
     if (!match) {
       writeSessionHash(null);
       setHashSession(null);
@@ -208,13 +241,17 @@ export default function App() {
     }
     setSelectedSession(match);
     setActiveSession(match.status === "exited" ? null : match.name);
-  }, [coordinators, hashSession, selectedSession, sessionsLoaded]);
+  }, [hashSession, selectedSession, sessionsLoaded, visibleCoordinators]);
 
   useEffect(() => {
     if (selectedSession) {
       writeSessionHash(selectedSession.name);
     }
   }, [selectedSession]);
+
+  useEffect(() => {
+    writeShowClosedSetting(showClosedSessions);
+  }, [showClosedSessions]);
 
   const selectedSessionName = selectedSession?.name ?? null;
 
@@ -233,6 +270,14 @@ export default function App() {
     }
     setExitCode(selectedSession.exitCode ?? 0);
   }, [selectedSession]);
+
+  useEffect(() => {
+    if (showClosedSessions || !selectedSession || selectedSession.status !== "exited") {
+      return;
+    }
+    setSelectedSession(null);
+    setActiveSession(null);
+  }, [selectedSession, showClosedSessions]);
 
   useEffect(() => {
     if (typeof window === "undefined" || !window.matchMedia) {
@@ -425,6 +470,20 @@ export default function App() {
                       ))}
                     </select>
                   </div>
+                  <div className="mt-4 flex flex-col gap-2">
+                    <span className="text-xs font-semibold uppercase tracking-wide text-tn-muted">
+                      Sessions
+                    </span>
+                    <label className="flex items-center justify-between gap-3 text-sm text-tn-text">
+                      <span>Show closed sessions</span>
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 accent-tn-accent"
+                        checked={showClosedSessions}
+                        onChange={(event) => setShowClosedSessions(event.target.checked)}
+                      />
+                    </label>
+                  </div>
                 </div>
               )}
             </div>
@@ -438,7 +497,7 @@ export default function App() {
             <ScrollArea className="flex-1 max-h-[420px] lg:max-h-none">
               <div className="px-4 py-3">
                 <CoordinatorTree
-                  coordinators={coordinators}
+                  coordinators={visibleCoordinators}
                   filter={filter}
                   activeSession={activeSession}
                   onSelect={(session) => {
@@ -486,7 +545,7 @@ export default function App() {
             </>
           ) : (
             <MultiViewDashboard
-              coordinators={coordinators}
+              coordinators={visibleCoordinators}
               activeSession={activeSession}
               onBroadcast={handleBroadcast}
               onSelect={(sessionKey, session) => {
