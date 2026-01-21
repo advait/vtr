@@ -38,7 +38,7 @@ export type SessionCreateResponse = {
 
 export type SessionActionRequest = {
   name: string;
-  action: "send_key" | "signal" | "remove" | "rename";
+  action: "send_key" | "signal" | "close" | "remove" | "rename";
   key?: string;
   signal?: string;
   newName?: string;
@@ -48,7 +48,9 @@ function normalizeSession(session: SessionCreateResponse["session"]): SessionInf
   return {
     name: session.name,
     status:
-      session.status === "running" || session.status === "exited" ? session.status : "unknown",
+      session.status === "running" || session.status === "closing" || session.status === "exited"
+        ? session.status
+        : "unknown",
     cols: session.cols ?? 0,
     rows: session.rows ?? 0,
     idle: session.idle ?? false,
@@ -66,7 +68,9 @@ export async function fetchSessions(): Promise<CoordinatorInfo[]> {
     const sessions: SessionInfo[] = (coord.sessions || []).map((session) => ({
       name: session.name,
       status:
-        session.status === "running" || session.status === "exited" ? session.status : "unknown",
+        session.status === "running" || session.status === "closing" || session.status === "exited"
+          ? session.status
+          : "unknown",
       cols: session.cols ?? 0,
       rows: session.rows ?? 0,
       idle: session.idle ?? false,

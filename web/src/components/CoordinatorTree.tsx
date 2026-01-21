@@ -5,7 +5,7 @@ import { Badge } from "./ui/Badge";
 
 export type SessionInfo = {
   name: string;
-  status: "running" | "exited" | "unknown";
+  status: "running" | "closing" | "exited" | "unknown";
   cols: number;
   rows: number;
   idle: boolean;
@@ -31,6 +31,9 @@ function statusBadge(session: SessionInfo) {
       <Badge variant={session.idle ? "yellow" : "green"}>{session.idle ? "idle" : "active"}</Badge>
     );
   }
+  if (session.status === "closing") {
+    return <Badge variant="yellow">closing</Badge>;
+  }
   if (session.status === "exited") {
     return <Badge variant="red">exited</Badge>;
   }
@@ -39,18 +42,21 @@ function statusBadge(session: SessionInfo) {
 
 function orderSessions(sessions: SessionInfo[]) {
   const running: SessionInfo[] = [];
+  const closing: SessionInfo[] = [];
   const unknown: SessionInfo[] = [];
   const exited: SessionInfo[] = [];
   for (const session of sessions) {
     if (session.status === "running") {
       running.push(session);
+    } else if (session.status === "closing") {
+      closing.push(session);
     } else if (session.status === "exited") {
       exited.push(session);
     } else {
       unknown.push(session);
     }
   }
-  return [...running, ...unknown, ...exited];
+  return [...running, ...closing, ...unknown, ...exited];
 }
 
 export function CoordinatorTree({

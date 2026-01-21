@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"syscall"
 
 	"github.com/creack/pty"
 )
@@ -75,6 +76,21 @@ func (p *PTY) Signal(sig os.Signal) error {
 		return errors.New("pty: process not started")
 	}
 	return p.cmd.Process.Signal(sig)
+}
+
+func (p *PTY) SignalGroup(sig os.Signal) error {
+	if p == nil || p.cmd == nil || p.cmd.Process == nil {
+		return errors.New("pty: process not started")
+	}
+	signal, ok := sig.(syscall.Signal)
+	if !ok {
+		return p.cmd.Process.Signal(sig)
+	}
+	pid := p.cmd.Process.Pid
+	if pid <= 0 {
+		return errors.New("pty: invalid pid")
+	}
+	return syscall.Kill(-pid, signal)
 }
 
 func (p *PTY) Close() error {

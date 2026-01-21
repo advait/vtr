@@ -181,6 +181,16 @@ func (s *GRPCServer) Kill(_ context.Context, req *proto.KillRequest) (*proto.Kil
 	return &proto.KillResponse{}, nil
 }
 
+func (s *GRPCServer) Close(_ context.Context, req *proto.CloseRequest) (*proto.CloseResponse, error) {
+	if req == nil || req.Name == "" {
+		return nil, status.Error(codes.InvalidArgument, "session name is required")
+	}
+	if err := s.coord.Close(req.Name); err != nil {
+		return nil, mapCoordinatorErr(err)
+	}
+	return &proto.CloseResponse{}, nil
+}
+
 func (s *GRPCServer) Remove(_ context.Context, req *proto.RemoveRequest) (*proto.RemoveResponse, error) {
 	if req == nil || req.Name == "" {
 		return nil, status.Error(codes.InvalidArgument, "session name is required")
@@ -821,6 +831,8 @@ func toProtoStatus(state SessionState) proto.SessionStatus {
 	switch state {
 	case SessionRunning:
 		return proto.SessionStatus_SESSION_STATUS_RUNNING
+	case SessionClosing:
+		return proto.SessionStatus_SESSION_STATUS_CLOSING
 	case SessionExited:
 		return proto.SessionStatus_SESSION_STATUS_EXITED
 	default:

@@ -519,6 +519,10 @@ func handleWebSessionAction(resolver webResolver) http.HandlerFunc {
 				Signal: sig,
 			})
 			cancel()
+		case "close":
+			ctx, cancel = context.WithTimeout(r.Context(), rpcTimeout)
+			_, err = client.Close(ctx, &proto.CloseRequest{Name: target.Session})
+			cancel()
 		case "remove":
 			ctx, cancel = context.WithTimeout(r.Context(), rpcTimeout)
 			_, err = client.Remove(ctx, &proto.RemoveRequest{Name: target.Session})
@@ -576,6 +580,8 @@ func sessionStatusLabel(session *proto.Session) string {
 	switch session.GetStatus() {
 	case proto.SessionStatus_SESSION_STATUS_RUNNING:
 		return "running"
+	case proto.SessionStatus_SESSION_STATUS_CLOSING:
+		return "closing"
 	case proto.SessionStatus_SESSION_STATUS_EXITED:
 		return "exited"
 	default:

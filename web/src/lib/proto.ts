@@ -27,7 +27,8 @@ package vtr;
 enum SessionStatus {
   SESSION_STATUS_UNSPECIFIED = 0;
   SESSION_STATUS_RUNNING = 1;
-  SESSION_STATUS_EXITED = 2;
+  SESSION_STATUS_CLOSING = 2;
+  SESSION_STATUS_EXITED = 3;
 }
 
 message Session {

@@ -668,7 +668,7 @@ export default function App() {
       if (!window.confirm(`Close session ${sessionKey}?`)) {
         return;
       }
-      runSessionAction({ name: sessionKey, action: "signal", signal: "TERM" }, true);
+      runSessionAction({ name: sessionKey, action: "close" }, true);
     },
     [runSessionAction],
   );
@@ -717,7 +717,7 @@ export default function App() {
   const showExit = exitCode !== null && selectedSession?.status !== "exited";
   const displayStatus = selectedSession?.status === "exited" ? "exited" : state.status;
   const contextLabel = contextMenu?.sessionKey ?? "";
-  const contextRunning = contextMenu?.status === "running";
+  const contextRunning = contextMenu?.status === "running" || contextMenu?.status === "closing";
 
   return (
     <div className="min-h-screen bg-tn-bg text-tn-text">
@@ -971,11 +971,11 @@ export default function App() {
                   if (!window.confirm(`Close session ${contextLabel}?`)) {
                     return;
                   }
-                  runSessionAction({ name: contextLabel, action: "signal", signal: "TERM" }, true);
+                  runSessionAction({ name: contextLabel, action: "close" }, true);
                 }}
                 disabled={!contextRunning}
               >
-                Close session (SIGTERM)
+                Close session (SIGHUP)
               </button>
               <button
                 type="button"

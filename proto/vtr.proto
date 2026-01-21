@@ -12,6 +12,7 @@ service VTR {
   rpc List(ListRequest) returns (ListResponse);
   rpc Info(InfoRequest) returns (InfoResponse);
   rpc Kill(KillRequest) returns (KillResponse);
+  rpc Close(CloseRequest) returns (CloseResponse);
   rpc Remove(RemoveRequest) returns (RemoveResponse);
   rpc Rename(RenameRequest) returns (RenameResponse);
   
@@ -40,7 +41,8 @@ service VTR {
 enum SessionStatus {
   SESSION_STATUS_UNSPECIFIED = 0;
   SESSION_STATUS_RUNNING = 1;
-  SESSION_STATUS_EXITED = 2;
+  SESSION_STATUS_CLOSING = 2;
+  SESSION_STATUS_EXITED = 3;
 }
 
 // Session represents a named PTY session
@@ -89,6 +91,12 @@ message KillRequest {
 }
 
 message KillResponse {}
+
+message CloseRequest {
+  string name = 1;
+}
+
+message CloseResponse {}
 
 message RemoveRequest {
   string name = 1;

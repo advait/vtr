@@ -17,6 +17,7 @@ type SessionState int
 
 const (
 	SessionRunning SessionState = iota + 1
+	SessionClosing
 	SessionExited
 )
 
@@ -24,6 +25,8 @@ func (s SessionState) String() string {
 	switch s {
 	case SessionRunning:
 		return "running"
+	case SessionClosing:
+		return "closing"
 	case SessionExited:
 		return "exited"
 	default:
@@ -288,6 +291,32 @@ func (c *Coordinator) Kill(name string, sig os.Signal) error {
 	return session.pty.Signal(sig)
 }
 
+// Close sends SIGHUP and schedules a SIGKILL if the session does not exit.
+func (c *Coordinator) Close(name string) error {
+	session, err := c.getSession(name)
+	if err != nil {
+		return err
+	}
+	if session.IsExited() {
+		return nil
+	}
+	session.MarkClosing()
+	if err := session.pty.SignalGroup(syscall.SIGHUP); err != nil {
+		return err
+	}
+	if c.opts.KillTimeout <= 0 {
+		return nil
+	}
+	go func() {
+		time.Sleep(c.opts.KillTimeout)
+		if session.IsExited() {
+			return
+		}
+		_ = session.pty.SignalGroup(syscall.SIGKILL)
+	}()
+	return nil
+}
+
 // Remove stops a session and removes it from the registry.
 func (c *Coordinator) Remove(name string) error {
 	session, err := c.getSession(name)
@@ -511,10 +540,26 @@ func (s *Session) SetName(name string) {
 	s.mu.Unlock()
 }
 
+func (s *Session) MarkClosing() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state == SessionExited || s.state == SessionClosing {
+		return false
+	}
+	s.state = SessionClosing
+	return true
+}
+
+func (s *Session) IsExited() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.state == SessionExited
+}
+
 func (s *Session) IsRunning() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.state == SessionRunning
+	return s.state == SessionRunning || s.state == SessionClosing
 }
 
 func (s *Session) SetSize(cols, rows uint16) {

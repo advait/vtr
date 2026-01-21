@@ -31,6 +31,7 @@ const statusVariants: Record<
   { label: string; variant: "default" | "green" | "red" | "yellow" }
 > = {
   running: { label: "active", variant: "green" },
+  closing: { label: "closing", variant: "yellow" },
   exited: { label: "exited", variant: "red" },
   unknown: { label: "unknown", variant: "default" },
 };
@@ -45,6 +46,9 @@ function normalizeStatusFilter(value: string): SessionInfo["status"] | null {
     case "live":
     case "busy":
       return "running";
+    case "closing":
+    case "stopping":
+      return "closing";
     case "exited":
     case "dead":
     case "stopped":
@@ -74,7 +78,8 @@ function SessionThumbnail({
   onOpen: (sessionKey: string, session: SessionInfo) => void;
   onToggleSelect: (sessionKey: string) => void;
 }) {
-  const streamName = session.status === "running" ? sessionKey : null;
+  const streamName =
+    session.status === "running" || session.status === "closing" ? sessionKey : null;
   const { state, setEventHandler } = useVtrStream(streamName, { includeRawOutput: false });
   const [screen, setScreen] = useState<ScreenState | null>(null);
   const pendingUpdates = useRef<SubscribeEvent[]>([]);
@@ -188,9 +193,11 @@ function SessionThumbnail({
           <div className="text-xs text-tn-muted">
             {session.status === "running" && state.status === "connecting"
               ? "Connecting..."
-              : session.status === "exited"
-                ? "Exited"
-                : "Waiting"}
+              : session.status === "closing"
+                ? "Closing..."
+                : session.status === "exited"
+                  ? "Exited"
+                  : "Waiting"}
           </div>
         )}
       </div>
