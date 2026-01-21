@@ -153,7 +153,17 @@ export default function App() {
             return prev;
           }
           const match = findSession(data, prev.name);
-          return match ? { ...prev, ...match } : prev;
+          if (!match) {
+            return prev;
+          }
+          if (
+            prev.status === match.status &&
+            prev.exitCode === match.exitCode &&
+            prev.name === match.name
+          ) {
+            return prev;
+          }
+          return { ...prev, ...match };
         });
       } catch {
         if (active) {
@@ -195,15 +205,15 @@ export default function App() {
     }
   }, [selectedSession]);
 
+  const selectedSessionName = selectedSession?.name ?? null;
+
   useEffect(() => {
-    if (!selectedSession) {
+    if (!selectedSessionName) {
       setScreen(null);
-      setExitCode(null);
       return;
     }
     setScreen(null);
-    setExitCode(null);
-  }, [selectedSession]);
+  }, [selectedSessionName]);
 
   useEffect(() => {
     if (!selectedSession || selectedSession.status !== "exited") {
