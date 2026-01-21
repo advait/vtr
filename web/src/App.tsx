@@ -109,7 +109,16 @@ export default function App() {
   const settingsRef = useRef<HTMLDivElement | null>(null);
   const activeTheme = useMemo(() => getTheme(themeId), [themeId]);
 
-  const { state, setEventHandler, sendText, sendKey, resize, close } = useVtrStream(activeSession, {
+  const {
+    state,
+    setEventHandler,
+    sendText,
+    sendKey,
+    sendTextTo,
+    sendKeyTo,
+    resize,
+    close,
+  } = useVtrStream(activeSession, {
     includeRawOutput: false,
   });
 
@@ -317,6 +326,36 @@ export default function App() {
     [ctrlArmed, sendKey, sendText],
   );
 
+  const handleBroadcast = useCallback(
+    (mode: "text" | "key", value: string, targets: string[]) => {
+      if (targets.length === 0) {
+        return false;
+      }
+      if (state.status !== "open") {
+        window.alert("Connect to a session before broadcasting.");
+        return false;
+      }
+      const preview =
+        targets.length > 4 ? `${targets.slice(0, 4).join(", ")}…` : targets.join(", ");
+      const confirmText =
+        targets.length > 1
+          ? `Send to ${targets.length} sessions?\\n${preview}`
+          : `Send to ${targets[0]}?`;
+      if (!window.confirm(confirmText)) {
+        return false;
+      }
+      for (const name of targets) {
+        if (mode === "text") {
+          sendTextTo(name, value);
+        } else {
+          sendKeyTo(name, value);
+        }
+      }
+      return true;
+    },
+    [sendKeyTo, sendTextTo, state.status],
+  );
+
   const statusBadge = useMemo(() => {
     if (selectedSession?.status === "exited") {
       const label = exitCode !== null ? `exited (${exitCode})` : "exited";
@@ -449,6 +488,7 @@ export default function App() {
             <MultiViewDashboard
               coordinators={coordinators}
               activeSession={activeSession}
+              onBroadcast={handleBroadcast}
               onSelect={(sessionKey, session) => {
                 setSelectedSession({
                   name: sessionKey,

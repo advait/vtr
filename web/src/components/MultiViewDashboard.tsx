@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import type { CoordinatorInfo, SessionInfo } from "./CoordinatorTree";
 import { Badge } from "./ui/Badge";
+import { Button } from "./ui/Button";
 import { Input } from "./ui/Input";
 import { cn } from "../lib/utils";
 import type { SubscribeEvent } from "../lib/proto";
@@ -12,6 +13,7 @@ export type MultiViewDashboardProps = {
   coordinators: CoordinatorInfo[];
   activeSession: string | null;
   onSelect: (sessionKey: string, session: SessionInfo) => void;
+  onBroadcast: (mode: "text" | "key", value: string, targets: string[]) => boolean;
 };
 
 const statusVariants: Record<
@@ -50,12 +52,16 @@ function SessionThumbnail({
   session,
   sessionKey,
   active,
-  onSelect,
+  selected,
+  onOpen,
+  onToggleSelect,
 }: {
   session: SessionInfo;
   sessionKey: string;
   active: boolean;
-  onSelect: (sessionKey: string, session: SessionInfo) => void;
+  selected: boolean;
+  onOpen: (sessionKey: string, session: SessionInfo) => void;
+  onToggleSelect: (sessionKey: string) => void;
 }) {
   const streamName = session.status === "running" ? sessionKey : null;
   const { state, setEventHandler } = useVtrStream(streamName, { includeRawOutput: false });
@@ -103,15 +109,40 @@ function SessionThumbnail({
   const status = statusVariants[session.status] ?? statusVariants.unknown;
 
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       className={cn(
-        "flex h-full w-full flex-col overflow-hidden rounded-lg border border-tn-border bg-tn-panel",
-        "text-left transition-colors hover:border-tn-accent",
+        "relative flex h-full w-full cursor-pointer flex-col overflow-hidden rounded-lg",
+        "border border-tn-border bg-tn-panel text-left transition-colors",
+        "hover:border-tn-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tn-accent",
         active && "border-tn-accent ring-1 ring-tn-accent",
+        selected && "bg-tn-panel-2",
       )}
-      onClick={() => onSelect(sessionKey, session)}
+      onClick={() => onOpen(sessionKey, session)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onOpen(sessionKey, session);
+        }
+      }}
     >
+      <button
+        type="button"
+        className={cn(
+          "absolute left-2 top-2 z-10 flex h-5 w-5 items-center justify-center rounded",
+          "border border-tn-border bg-tn-panel text-[10px] text-tn-text",
+          selected && "border-tn-accent bg-tn-accent text-tn-bg",
+        )}
+        onClick={(event) => {
+          event.stopPropagation();
+          onToggleSelect(sessionKey);
+        }}
+        aria-pressed={selected}
+        aria-label={selected ? "Deselect session" : "Select session"}
+      >
+        {selected ? "✓" : ""}
+      </button>
       <div className="flex items-center justify-between border-b border-tn-border px-2 py-1">
         <span className="truncate text-xs font-semibold text-tn-text">{session.name}</span>
         <Badge variant={status.variant}>{status.label}</Badge>
@@ -137,7 +168,7 @@ function SessionThumbnail({
           </div>
         )}
       </div>
-    </button>
+    </div>
   );
 }
 
@@ -145,8 +176,12 @@ export function MultiViewDashboard({
   coordinators,
   activeSession,
   onSelect,
+  onBroadcast,
 }: MultiViewDashboardProps) {
   const [filter, setFilter] = useState("");
+  const [selectedSessions, setSelectedSessions] = useState<Set<string>>(() => new Set());
+  const [broadcastMode, setBroadcastMode] = useState<"text" | "key">("text");
+  const [broadcastValue, setBroadcastValue] = useState("");
 
   const filtered = useMemo(() => {
     const query = filter.trim().toLowerCase();
@@ -204,9 +239,59 @@ export function MultiViewDashboard({
       .filter((coord) => coord.sessions.length > 0);
   }, [coordinators, filter]);
 
+  const visibleSessionKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const coord of filtered) {
+      for (const session of coord.sessions) {
+        keys.add(sessionKey(coord.name, session));
+      }
+    }
+    return keys;
+  }, [filtered]);
+
+  useEffect(() => {
+    setSelectedSessions((prev) => {
+      const next = new Set<string>();
+      for (const key of prev) {
+        if (visibleSessionKeys.has(key)) {
+          next.add(key);
+        }
+      }
+      return next.size === prev.size ? prev : next;
+    });
+  }, [visibleSessionKeys]);
+
   if (coordinators.length === 0) {
     return <div className="px-4 py-6 text-sm text-tn-muted">No coordinators available.</div>;
   }
+
+  const selectedCount = selectedSessions.size;
+  const toggleSelect = (key: string) => {
+    setSelectedSessions((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  };
+
+  const handleBroadcast = () => {
+    const value = broadcastValue.trim();
+    if (!value || selectedCount === 0) {
+      return;
+    }
+    const payload = broadcastMode === "key" ? value.toLowerCase() : value;
+    const targets = Array.from(selectedSessions);
+    const sent = onBroadcast(broadcastMode, payload, targets);
+    if (sent) {
+      setBroadcastValue("");
+    }
+  };
+
+  const broadcastDisabled = selectedCount === 0 || !broadcastValue.trim();
 
   return (
     <div className="flex flex-col gap-6">
@@ -221,6 +306,49 @@ export function MultiViewDashboard({
         />
         <div className="text-xs text-tn-text-dim">
           Use status:running, status:exited, status:idle or plain text for coordinator/session.
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-3 rounded-lg border border-tn-border bg-tn-panel p-3">
+        <div className="flex items-center justify-between gap-3">
+          <div className="text-xs font-semibold uppercase tracking-wide text-tn-muted">
+            Broadcast to selection
+          </div>
+          <div className="text-xs text-tn-text-dim">{selectedCount} selected</div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-1 rounded-md border border-tn-border bg-tn-panel-2 p-1">
+            <Button
+              type="button"
+              size="sm"
+              variant={broadcastMode === "text" ? "default" : "ghost"}
+              className="h-7 px-3 text-[11px]"
+              onClick={() => setBroadcastMode("text")}
+            >
+              Text
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant={broadcastMode === "key" ? "default" : "ghost"}
+              className="h-7 px-3 text-[11px]"
+              onClick={() => setBroadcastMode("key")}
+            >
+              Key
+            </Button>
+          </div>
+          <div className="flex flex-1 items-center gap-2">
+            <Input
+              placeholder={
+                broadcastMode === "key" ? "ctrl+c, alt+f, escape" : "type command to send"
+              }
+              value={broadcastValue}
+              onChange={(event) => setBroadcastValue(event.target.value)}
+            />
+            <Button type="button" size="sm" onClick={handleBroadcast} disabled={broadcastDisabled}>
+              Send
+            </Button>
+          </div>
         </div>
       </div>
 
@@ -249,7 +377,9 @@ export function MultiViewDashboard({
                     session={session}
                     sessionKey={key}
                     active={activeSession === key}
-                    onSelect={onSelect}
+                    selected={selectedSessions.has(key)}
+                    onOpen={onSelect}
+                    onToggleSelect={toggleSelect}
                   />
                 );
               })}

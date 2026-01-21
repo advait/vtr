@@ -60,6 +60,22 @@ export function useVtrStream(sessionName: string | null, options: StreamOptions)
     [sendProto, sessionName],
   );
 
+  const sendTextTo = useCallback(
+    (name: string, text: string) => {
+      if (!name) return;
+      sendProto("vtr.SendTextRequest", { name, text });
+    },
+    [sendProto],
+  );
+
+  const sendKeyTo = useCallback(
+    (name: string, key: string) => {
+      if (!name) return;
+      sendProto("vtr.SendKeyRequest", { name, key });
+    },
+    [sendProto],
+  );
+
   const sendBytes = useCallback(
     (data: Uint8Array) => {
       if (!sessionName) return;
@@ -179,6 +195,8 @@ export function useVtrStream(sessionName: string | null, options: StreamOptions)
     close,
     sendText,
     sendKey,
+    sendTextTo,
+    sendKeyTo,
     sendBytes,
     resize,
   };
