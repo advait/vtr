@@ -828,42 +828,25 @@ export default function App() {
         <section className="flex min-h-[420px] flex-1 flex-col gap-3">
           {viewMode === "single" ? (
             <div className="flex min-h-0 flex-1 flex-col gap-3 lg:pr-4">
-              <div className="flex flex-wrap items-center gap-2">
-                {tabSessions.length > 0 ? (
-                  <div className="min-w-0 flex-1">
-                    <SessionTabs
-                      sessions={tabSessions}
-                      activeSession={activeSession}
-                      onSelect={(sessionKey, session) => {
-                        setSelectedSession({
-                          name: sessionKey,
-                          status: session.status,
-                          exitCode: session.exitCode,
-                        });
-                        setActiveSession(session.status === "exited" ? null : sessionKey);
-                      }}
-                      onClose={handleCloseTab}
-                      onContextMenu={openContextMenu}
-                      onMenuOpen={openContextMenuFromButton}
-                    />
-                  </div>
-                ) : (
-                  <div className="flex min-h-[44px] flex-1 items-center rounded-lg border border-tn-border bg-tn-panel px-3 text-xs text-tn-muted">
-                    No sessions yet.
-                  </div>
-                )}
-                <Button
-                  type="button"
-                  size="sm"
-                  className="border border-tn-border bg-tn-panel"
-                  onClick={() => {
-                    setCreateError(null);
-                    setCreateOpen(true);
-                  }}
-                >
-                  New session
-                </Button>
-              </div>
+              <SessionTabs
+                sessions={tabSessions}
+                activeSession={activeSession}
+                onSelect={(sessionKey, session) => {
+                  setSelectedSession({
+                    name: sessionKey,
+                    status: session.status,
+                    exitCode: session.exitCode,
+                  });
+                  setActiveSession(session.status === "exited" ? null : sessionKey);
+                }}
+                onClose={handleCloseTab}
+                onContextMenu={openContextMenu}
+                onMenuOpen={openContextMenuFromButton}
+                onCreate={() => {
+                  setCreateError(null);
+                  setCreateOpen(true);
+                }}
+              />
               <div className="flex-1 min-h-[320px]">
                 <TerminalView
                   screen={screen}
