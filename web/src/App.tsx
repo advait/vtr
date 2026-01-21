@@ -6,6 +6,7 @@ import {
   type SessionInfo,
 } from "./components/CoordinatorTree";
 import { InputBar } from "./components/InputBar";
+import { MultiViewDashboard } from "./components/MultiViewDashboard";
 import { TerminalView } from "./components/TerminalView";
 import { Badge } from "./components/ui/Badge";
 import { Button } from "./components/ui/Button";
@@ -88,6 +89,7 @@ export default function App() {
     status: SessionInfo["status"];
     exitCode?: number;
   } | null>(null);
+  const [viewMode, setViewMode] = useState<"single" | "multi">("single");
   const [screen, setScreen] = useState<ScreenState | null>(null);
   const [exitCode, setExitCode] = useState<number | null>(null);
   const [ctrlArmed, setCtrlArmed] = useState(false);
@@ -340,8 +342,17 @@ export default function App() {
               <span className="text-xs text-tn-text-dim">{selectedSession.name}</span>
             )}
           </div>
-          <div className="flex items-center gap-2 lg:ml-auto" ref={settingsRef}>
-            <div className="relative">
+          <div className="flex items-center gap-2 lg:ml-auto">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="border border-tn-border bg-tn-panel"
+              onClick={() => setViewMode((prev) => (prev === "single" ? "multi" : "single"))}
+            >
+              {viewMode === "single" ? "Multi-view" : "Single-view"}
+            </Button>
+            <div className="relative" ref={settingsRef}>
               <Button
                 type="button"
                 variant="ghost"
@@ -409,27 +420,45 @@ export default function App() {
         </aside>
 
         <section className="flex min-h-[420px] flex-1 flex-col gap-3">
-          <div className="flex-1">
-            <TerminalView
-              screen={screen}
-              status={displayStatus}
-              onResize={onResize}
-              onSendKey={onSendKey}
-              onSendText={onSendText}
-              onPaste={onSendText}
-              autoFocus={isDesktop}
-              focusKey={selectedSession?.name}
-            />
-          </div>
-          {!isDesktop && (
+          {viewMode === "single" ? (
             <>
-              <ActionTray
-                ctrlArmed={ctrlArmed}
-                onCtrlToggle={() => setCtrlArmed((prev) => !prev)}
-                onSendKey={onSendKey}
-              />
-              <InputBar onSend={onSendText} disabled={state.status !== "open"} />
+              <div className="flex-1">
+                <TerminalView
+                  screen={screen}
+                  status={displayStatus}
+                  onResize={onResize}
+                  onSendKey={onSendKey}
+                  onSendText={onSendText}
+                  onPaste={onSendText}
+                  autoFocus={isDesktop}
+                  focusKey={selectedSession?.name}
+                />
+              </div>
+              {!isDesktop && (
+                <>
+                  <ActionTray
+                    ctrlArmed={ctrlArmed}
+                    onCtrlToggle={() => setCtrlArmed((prev) => !prev)}
+                    onSendKey={onSendKey}
+                  />
+                  <InputBar onSend={onSendText} disabled={state.status !== "open"} />
+                </>
+              )}
             </>
+          ) : (
+            <MultiViewDashboard
+              coordinators={coordinators}
+              activeSession={activeSession}
+              onSelect={(sessionKey, session) => {
+                setSelectedSession({
+                  name: sessionKey,
+                  status: session.status,
+                  exitCode: session.exitCode,
+                });
+                setActiveSession(session.status === "exited" ? null : sessionKey);
+                setViewMode("single");
+              }}
+            />
           )}
         </section>
       </main>
