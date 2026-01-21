@@ -820,6 +820,17 @@ func handleMouse(m attachModel, msg tea.MouseMsg) (attachModel, tea.Cmd) {
 	if m.exited || m.listActive || m.createActive {
 		return m, nil
 	}
+	if msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown || msg.Button == tea.MouseButtonWheelLeft || msg.Button == tea.MouseButtonWheelRight {
+		if msg.Y != 0 {
+			return m, nil
+		}
+		switch msg.Button {
+		case tea.MouseButtonWheelUp, tea.MouseButtonWheelLeft:
+			return m, nextSessionCmd(m.client, m.session, false)
+		default:
+			return m, nextSessionCmd(m.client, m.session, true)
+		}
+	}
 	if msg.Action != tea.MouseActionPress {
 		return m, nil
 	}
