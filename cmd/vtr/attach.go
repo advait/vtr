@@ -1682,20 +1682,39 @@ func fitTabsToWidth(tabs []tabItem, activeIdx, width int) string {
 	return joinTabItems(fitTabsToWidthItems(tabs, activeIdx, width), " ")
 }
 
+func overflowLabel(count int, left bool) string {
+	if count <= 0 {
+		return ""
+	}
+	if left {
+		return fmt.Sprintf("%s%d", tabOverflowGlyph, count)
+	}
+	return fmt.Sprintf("%d%s", count, tabOverflowGlyph)
+}
+
+func overflowTabItem(count int, left bool) tabItem {
+	label := attachOverflowStyle.Render(overflowLabel(count, left))
+	return tabItem{
+		label:    label,
+		width:    lipgloss.Width(label),
+		overflow: true,
+	}
+}
+
 func fitTabsToWidthItems(tabs []tabItem, activeIdx, width int) []tabItem {
 	if len(tabs) == 0 || width <= 0 {
 		return nil
 	}
-	gap := " "
-	gapWidth := lipgloss.Width(gap)
-	total := tabItemsWidth(tabs, gapWidth)
-	if total <= width {
+	gapWidth := lipgloss.Width(" ")
+	if tabItemsWidth(tabs, gapWidth) <= width {
 		return tabs
 	}
 	if activeIdx < 0 || activeIdx >= len(tabs) {
 		activeIdx = 0
 	}
 	selected := []tabItem{tabs[activeIdx]}
+	leftIndex := activeIdx
+	rightIndex := activeIdx
 	left := activeIdx - 1
 	right := activeIdx + 1
 	for {
@@ -1704,6 +1723,7 @@ func fitTabsToWidthItems(tabs []tabItem, activeIdx, width int) []tabItem {
 			candidate := append([]tabItem{tabs[left]}, selected...)
 			if tabItemsWidth(candidate, gapWidth) <= width {
 				selected = candidate
+				leftIndex = left
 				left--
 				added = true
 			}
@@ -1712,6 +1732,7 @@ func fitTabsToWidthItems(tabs []tabItem, activeIdx, width int) []tabItem {
 			candidate := append(append([]tabItem(nil), selected...), tabs[right])
 			if tabItemsWidth(candidate, gapWidth) <= width {
 				selected = candidate
+				rightIndex = right
 				right++
 				added = true
 			}
@@ -1720,34 +1741,43 @@ func fitTabsToWidthItems(tabs []tabItem, activeIdx, width int) []tabItem {
 			break
 		}
 	}
-	ellipsis := tabItem{
-		label:    attachOverflowStyle.Render(tabOverflowGlyph),
-		width:    lipgloss.Width(tabOverflowGlyph),
-		overflow: true,
+	leftHidden := leftIndex
+	rightHidden := len(tabs) - 1 - rightIndex
+	candidateWidth := func(leftHidden, rightHidden int) int {
+		candidate := make([]tabItem, 0, len(selected)+2)
+		if leftHidden > 0 {
+			candidate = append(candidate, overflowTabItem(leftHidden, true))
+		}
+		candidate = append(candidate, selected...)
+		if rightHidden > 0 {
+			candidate = append(candidate, overflowTabItem(rightHidden, false))
+		}
+		return tabItemsWidth(candidate, gapWidth)
 	}
-	if left >= 0 {
-		candidate := append([]tabItem{ellipsis}, selected...)
-		for tabItemsWidth(candidate, gapWidth) > width && len(selected) > 1 {
+	if leftHidden > 0 {
+		for candidateWidth(leftHidden, rightHidden) > width && len(selected) > 1 {
 			selected = selected[1:]
-			candidate = append([]tabItem{ellipsis}, selected...)
-		}
-		if tabItemsWidth(candidate, gapWidth) <= width {
-			selected = candidate
+			leftIndex++
+			leftHidden++
 		}
 	}
-	if right < len(tabs) {
-		candidate := append(append([]tabItem(nil), selected...), ellipsis)
-		for tabItemsWidth(candidate, gapWidth) > width && len(selected) > 1 {
+	if rightHidden > 0 {
+		for candidateWidth(leftHidden, rightHidden) > width && len(selected) > 1 {
 			selected = selected[:len(selected)-1]
-			candidate = append(append([]tabItem(nil), selected...), ellipsis)
-		}
-		if tabItemsWidth(candidate, gapWidth) <= width {
-			selected = candidate
+			rightIndex--
+			rightHidden++
 		}
 	}
-	return selected
+	out := make([]tabItem, 0, len(selected)+2)
+	if leftHidden > 0 {
+		out = append(out, overflowTabItem(leftHidden, true))
+	}
+	out = append(out, selected...)
+	if rightHidden > 0 {
+		out = append(out, overflowTabItem(rightHidden, false))
+	}
+	return out
 }
-
 func tabItemsWidth(tabs []tabItem, gapWidth int) int {
 	if len(tabs) == 0 {
 		return 0
