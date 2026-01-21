@@ -812,7 +812,7 @@ export default function App() {
 
         <section className="flex min-h-[420px] flex-1 flex-col gap-3">
           {viewMode === "single" ? (
-            <>
+            <div className="flex min-h-0 flex-1 flex-col gap-3 lg:pr-4">
               <SessionTabs
                 sessions={tabSessions}
                 activeSession={activeSession}
@@ -850,7 +850,7 @@ export default function App() {
                   <InputBar onSend={onSendText} disabled={state.status !== "open"} />
                 </>
               )}
-            </>
+            </div>
           ) : (
             <MultiViewDashboard
               coordinators={visibleCoordinators}
