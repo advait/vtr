@@ -4,7 +4,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { expect, type Page, test } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 
 const execFileAsync = promisify(execFile);
 
@@ -79,10 +79,10 @@ async function stopProcess(proc: ManagedProcess | null) {
   });
 }
 
-async function sendCommand(page: Page, command: string) {
-  const input = page.getByPlaceholder("Type a command…");
-  await input.fill(command);
-  await page.getByRole("button", { name: "Send" }).click();
+async function sendCommand(command: string) {
+  await runCommand(vtrBinary, ["resize", "--socket", socketPath, sessionName, "120", "40"], repoRoot);
+  await runCommand(vtrBinary, ["send", "--socket", socketPath, sessionName, command], repoRoot);
+  await runCommand(vtrBinary, ["key", "--socket", socketPath, sessionName, "enter"], repoRoot);
 }
 
 test.beforeAll(async () => {
@@ -100,7 +100,7 @@ test.beforeAll(async () => {
   await waitForHttp(baseURL, 20_000);
   await runCommand(
     vtrBinary,
-    ["spawn", "--socket", socketPath, "--cmd", "bash", sessionName],
+    ["spawn", "--socket", socketPath, "--cols", "120", "--rows", "40", "--cmd", "bash", sessionName],
     repoRoot,
   );
 });
@@ -117,28 +117,29 @@ test.afterAll(async () => {
 });
 
 test("streams ANSI output, attributes, and reconnects", async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 720 });
   await page.goto(baseURL);
 
-  await page.getByPlaceholder("coordinator:session").fill(sessionName);
-  await page.getByRole("button", { name: "Attach" }).click();
+  await page.getByPlaceholder("Filter coordinators or sessions").fill(sessionName);
+  await page.getByRole("button", { name: new RegExp(sessionName) }).click();
   await expect(page.locator("header").getByText("live", { exact: true })).toBeVisible();
+  await runCommand(vtrBinary, ["resize", "--socket", socketPath, sessionName, "120", "40"], repoRoot);
 
-  await sendCommand(page, 'echo "hello from vtr"');
+  await sendCommand('echo "hello from vtr"');
   await expect(page.locator(".terminal-grid")).toContainText("hello from vtr");
 
-  await sendCommand(page, "printf '\\x1b[38;2;255;0;0mRED\\x1b[0m normal\\n'");
+  await sendCommand("printf '\\x1b[38;2;255;0;0mRED\\x1b[0m normal\\n'");
   const redRun = page.locator(".terminal-run").filter({ hasText: /^RED$/ });
   await expect(redRun).toHaveCount(1);
   const redStyle = await redRun.first().evaluate((node) => getComputedStyle(node).color);
   expect(redStyle).toBe("rgb(255, 0, 0)");
 
-  await sendCommand(page, "printf '\\x1b[48;2;10;20;30mBG\\x1b[0m\\n'");
+  await sendCommand("printf '\\x1b[48;2;10;20;30mBG\\x1b[0m\\n'");
   const bgRun = page.locator(".terminal-run").filter({ hasText: /^BG$/ });
   const bgStyle = await bgRun.first().evaluate((node) => getComputedStyle(node).backgroundColor);
   expect(bgStyle).toBe("rgb(10, 20, 30)");
 
   await sendCommand(
-    page,
     "printf '\\x1b[1mBOLD\\x1b[0m \\x1b[4mUNDER\\x1b[0m \\x1b[3mITALIC\\x1b[0m\\n'",
   );
   const boldRun = page
@@ -174,6 +175,6 @@ test("streams ANSI output, attributes, and reconnects", async ({ page }) => {
   await waitForHttp(baseURL, 20_000);
   await expect(page.locator("header").getByText("live", { exact: true })).toBeVisible();
 
-  await sendCommand(page, 'echo "after reconnect"');
+  await sendCommand('echo "after reconnect"');
   await expect(page.locator(".terminal-grid")).toContainText("after reconnect");
 });

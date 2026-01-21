@@ -4,7 +4,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { expect, type Page, test } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 
 const execFileAsync = promisify(execFile);
 
@@ -79,10 +79,10 @@ async function stopProcess(proc: ManagedProcess | null) {
   });
 }
 
-async function sendCommand(page: Page, command: string) {
-  const input = page.getByPlaceholder("Type a command…");
-  await input.fill(command);
-  await page.getByRole("button", { name: "Send" }).click();
+async function sendCommand(command: string) {
+  await runCommand(vtrBinary, ["resize", "--socket", socketPath, sessionName, "120", "40"], repoRoot);
+  await runCommand(vtrBinary, ["send", "--socket", socketPath, sessionName, command], repoRoot);
+  await runCommand(vtrBinary, ["key", "--socket", socketPath, sessionName, "enter"], repoRoot);
 }
 
 test.describe("web UI screenshots", () => {
@@ -105,7 +105,7 @@ test.describe("web UI screenshots", () => {
     await waitForHttp(baseURL, 20_000);
     await runCommand(
       vtrBinary,
-      ["spawn", "--socket", socketPath, "--cmd", "bash", sessionName],
+      ["spawn", "--socket", socketPath, "--cols", "120", "--rows", "40", "--cmd", "bash", sessionName],
       repoRoot,
     );
   });
@@ -122,14 +122,16 @@ test.describe("web UI screenshots", () => {
   });
 
   test("capture mobile and desktop screenshots", async ({ page }) => {
+    await page.setViewportSize({ width: 900, height: 720 });
     await page.goto(baseURL);
 
-    await page.getByPlaceholder("coordinator:session").fill(sessionName);
-    await page.getByRole("button", { name: "Attach" }).click();
+    await page.getByPlaceholder("Filter coordinators or sessions").fill(sessionName);
+    await page.getByRole("button", { name: new RegExp(sessionName) }).click();
     await expect(page.locator("header").getByText("live", { exact: true })).toBeVisible();
+    await runCommand(vtrBinary, ["resize", "--socket", socketPath, sessionName, "120", "40"], repoRoot);
 
-    await sendCommand(page, "printf 'vtr web ui\\n'");
-    await sendCommand(page, "printf '\\x1b[31mRED\\x1b[0m \\x1b[32mGREEN\\x1b[0m\\n'");
+    await sendCommand("printf 'vtr web ui\\n'");
+    await sendCommand("printf '\\x1b[31mRED\\x1b[0m \\x1b[32mGREEN\\x1b[0m\\n'");
     await expect(page.locator(".terminal-grid")).toContainText("vtr web ui");
 
     const screenshotsDir = path.join(repoRoot, "docs", "screenshots");
