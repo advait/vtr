@@ -251,7 +251,7 @@ func newAttachCmd() *cobra.Command {
 				lastListAt:       time.Now(),
 			}
 
-			prog := tea.NewProgram(model, tea.WithAltScreen())
+			prog := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 			finalModel, err := prog.Run()
 			if fm, ok := finalModel.(attachModel); ok && fm.conn != nil {
 				_ = fm.conn.Close()
@@ -447,6 +447,8 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.coordinator = msg.coord
 		}
 		return switchSession(m, sessionSwitchMsg{name: msg.name})
+	case tea.MouseMsg:
+		return handleMouse(m, msg)
 	case tea.KeyMsg:
 		if m.exited {
 			if m.leaderActive {
@@ -496,6 +498,7 @@ func (m attachModel) View() string {
 	if innerWidth <= 0 || innerHeight <= 0 {
 		return "loading..."
 	}
+	overlayWidth := overlayAvailableWidth(innerWidth)
 	content := ""
 	switch {
 	case m.createActive:
@@ -512,13 +515,13 @@ func (m attachModel) View() string {
 	headerLeft, headerRight := renderHeaderSegments(headerView{
 		sessions: m.sessionItems,
 		active:   m.session,
-		width:    innerWidth,
+		width:    overlayWidth,
 		exited:   m.exited,
 		exitCode: m.exitCode,
 	})
 	activeItem := currentSessionItem(m)
 	footerLeft, footerRight := renderFooterSegments(footerView{
-		width:       innerWidth,
+		width:       overlayWidth,
 		leader:      m.leaderActive,
 		statusMsg:   m.statusMsg,
 		exited:      m.exited,
@@ -759,6 +762,61 @@ func handleLeaderKey(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
 	default:
 		m.statusMsg = fmt.Sprintf("unknown leader key: %s", key)
 		m.statusUntil = time.Now().Add(2 * time.Second)
+		return m, nil
+	}
+}
+
+func handleMouse(m attachModel, msg tea.MouseMsg) (attachModel, tea.Cmd) {
+	if m.exited || m.listActive || m.createActive {
+		return m, nil
+	}
+	if msg.Action != tea.MouseActionPress {
+		return m, nil
+	}
+	if msg.Button != tea.MouseButtonLeft && msg.Button != tea.MouseButtonMiddle {
+		return m, nil
+	}
+	if msg.Y != 0 || m.width <= 0 {
+		return m, nil
+	}
+	innerWidth := m.width - 2
+	if innerWidth <= 0 {
+		return m, nil
+	}
+	leftPad, _ := overlayPadding(innerWidth)
+	startX := 1 + leftPad
+	localX := msg.X - startX
+	if localX < 0 {
+		return m, nil
+	}
+	headerWidth := overlayAvailableWidth(innerWidth)
+	if headerWidth <= 0 {
+		return m, nil
+	}
+	tab, ok := tabAtOffsetX(headerView{
+		sessions: m.sessionItems,
+		active:   m.session,
+		width:    headerWidth,
+		exited:   m.exited,
+		exitCode: m.exitCode,
+	}, localX)
+	if !ok {
+		return m, nil
+	}
+	switch msg.Button {
+	case tea.MouseButtonLeft:
+		if tab.name == "" || tab.name == m.session {
+			return m, nil
+		}
+		return switchSession(m, sessionSwitchMsg{name: tab.name})
+	case tea.MouseButtonMiddle:
+		if tab.name == "" {
+			return m, nil
+		}
+		m.statusMsg = "kill sent"
+		m.statusUntil = time.Now().Add(2 * time.Second)
+		return m, killCmd(m.client, tab.name)
+	default:
 		return m, nil
 	}
 }
@@ -1374,6 +1432,24 @@ const (
 
 const borderOverlayOffset = 1
 
+func overlayPadding(innerWidth int) (int, int) {
+	if innerWidth < 0 {
+		innerWidth = 0
+	}
+	leftPad := borderOverlayOffset
+	rightPad := borderOverlayOffset
+	if leftPad+rightPad > innerWidth {
+		leftPad = 0
+		rightPad = 0
+	}
+	return leftPad, rightPad
+}
+
+func overlayAvailableWidth(innerWidth int) int {
+	leftPad, rightPad := overlayPadding(innerWidth)
+	return innerWidth - leftPad - rightPad
+}
+
 func renderHeaderSegments(view headerView) (string, string) {
 	if view.width <= 0 {
 		return "", ""
@@ -1487,31 +1563,19 @@ func stripCoordinatorPrefix(name string) string {
 }
 
 type tabItem struct {
-	label  string
-	width  int
-	active bool
+	name     string
+	label    string
+	width    int
+	active   bool
+	overflow bool
 }
 
 func renderTabBar(view headerView) string {
-	sessions := collectTabSessions(view.sessions, view.active, view.exited, view.exitCode)
-	if len(sessions) == 0 || view.width <= 0 {
+	tabs := visibleTabs(view)
+	if len(tabs) == 0 || view.width <= 0 {
 		return ""
 	}
-	tabs := make([]tabItem, 0, len(sessions))
-	activeIdx := 0
-	for i, session := range sessions {
-		active := session.name == view.active
-		if active {
-			activeIdx = i
-		}
-		label := renderTabLabel(session, active)
-		tabs = append(tabs, tabItem{
-			label:  label,
-			width:  lipgloss.Width(label),
-			active: active,
-		})
-	}
-	return fitTabsToWidth(tabs, activeIdx, view.width)
+	return joinTabItems(tabs, " ")
 }
 
 func collectTabSessions(items []sessionListItem, active string, exited bool, exitCode int32) []sessionListItem {
@@ -1558,15 +1622,75 @@ func renderTabLabel(item sessionListItem, active bool) string {
 	return attachTabStyle.Render(label)
 }
 
+func buildTabItems(view headerView) ([]tabItem, int) {
+	sessions := collectTabSessions(view.sessions, view.active, view.exited, view.exitCode)
+	if len(sessions) == 0 || view.width <= 0 {
+		return nil, 0
+	}
+	tabs := make([]tabItem, 0, len(sessions))
+	activeIdx := 0
+	for i, session := range sessions {
+		active := session.name == view.active
+		if active {
+			activeIdx = i
+		}
+		label := renderTabLabel(session, active)
+		tabs = append(tabs, tabItem{
+			name:   session.name,
+			label:  label,
+			width:  lipgloss.Width(label),
+			active: active,
+		})
+	}
+	return tabs, activeIdx
+}
+
+func visibleTabs(view headerView) []tabItem {
+	tabs, activeIdx := buildTabItems(view)
+	if len(tabs) == 0 || view.width <= 0 {
+		return nil
+	}
+	return fitTabsToWidthItems(tabs, activeIdx, view.width)
+}
+
+func tabAtOffsetX(view headerView, offset int) (tabItem, bool) {
+	if offset < 0 {
+		return tabItem{}, false
+	}
+	tabs := visibleTabs(view)
+	if len(tabs) == 0 {
+		return tabItem{}, false
+	}
+	gapWidth := lipgloss.Width(" ")
+	cursor := 0
+	for i, tab := range tabs {
+		if offset >= cursor && offset < cursor+tab.width {
+			if tab.overflow || tab.name == "" {
+				return tabItem{}, false
+			}
+			return tab, true
+		}
+		cursor += tab.width
+		if i < len(tabs)-1 {
+			cursor += gapWidth
+		}
+	}
+	return tabItem{}, false
+}
+
 func fitTabsToWidth(tabs []tabItem, activeIdx, width int) string {
+	return joinTabItems(fitTabsToWidthItems(tabs, activeIdx, width), " ")
+}
+
+func fitTabsToWidthItems(tabs []tabItem, activeIdx, width int) []tabItem {
 	if len(tabs) == 0 || width <= 0 {
-		return ""
+		return nil
 	}
 	gap := " "
 	gapWidth := lipgloss.Width(gap)
 	total := tabItemsWidth(tabs, gapWidth)
 	if total <= width {
-		return joinTabItems(tabs, gap)
+		return tabs
 	}
 	if activeIdx < 0 || activeIdx >= len(tabs) {
 		activeIdx = 0
@@ -1597,8 +1721,9 @@ func fitTabsToWidth(tabs []tabItem, activeIdx, width int) string {
 		}
 	}
 	ellipsis := tabItem{
-		label: attachOverflowStyle.Render(tabOverflowGlyph),
-		width: lipgloss.Width(tabOverflowGlyph),
+		label:    attachOverflowStyle.Render(tabOverflowGlyph),
+		width:    lipgloss.Width(tabOverflowGlyph),
+		overflow: true,
 	}
 	if left >= 0 {
 		candidate := append([]tabItem{ellipsis}, selected...)
@@ -1620,7 +1745,7 @@ func fitTabsToWidth(tabs []tabItem, activeIdx, width int) string {
 			selected = candidate
 		}
 	}
-	return joinTabItems(selected, gap)
+	return selected
 }
 
 func tabItemsWidth(tabs []tabItem, gapWidth int) int {
