@@ -398,7 +398,7 @@ export function TerminalView({
       <div
         ref={containerRef}
         className={cn(
-          "relative h-full min-h-[320px] w-full rounded-lg border border-tn-border bg-tn-bg-alt",
+          "relative h-full min-h-[320px] w-full rounded-lg border border-tn-border bg-tn-bg-alt focus-within:border-tn-accent",
           "shadow-panel",
         )}
       >
@@ -412,7 +412,7 @@ export function TerminalView({
           }}
         >
           <div
-            className="relative h-full w-full terminal-surface"
+            className="relative h-full w-full terminal-surface focus:outline-none focus-visible:outline-none"
             tabIndex={0}
             role="textbox"
             aria-label="terminal"
