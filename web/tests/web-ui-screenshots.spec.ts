@@ -18,6 +18,8 @@ const vtrBinary = path.join(tmpDir, `vtr-playwright-${process.pid}`);
 const port = 19080 + (process.pid % 1000);
 const baseURL = `http://127.0.0.1:${port}`;
 const sessionName = "web-shot";
+const bootTimeoutMs = Number.parseInt(process.env.E2E_BOOT_TIMEOUT_MS ?? "10000", 10);
+const outputTimeoutMs = Number.parseInt(process.env.E2E_OUTPUT_TIMEOUT_MS ?? "3000", 10);
 
 type ManagedProcess = ReturnType<typeof spawn>;
 
@@ -85,6 +87,14 @@ async function sendCommand(command: string) {
   await runCommand(vtrBinary, ["key", "--socket", socketPath, sessionName, "enter"], repoRoot);
 }
 
+async function waitForOutput(pattern: string) {
+  await runCommand(
+    vtrBinary,
+    ["wait", "--socket", socketPath, "--timeout", `${outputTimeoutMs}ms`, sessionName, pattern],
+    repoRoot,
+  );
+}
+
 test.describe("web UI screenshots", () => {
   test.skip(!process.env.CAPTURE_SCREENSHOTS, "set CAPTURE_SCREENSHOTS=1 to run");
 
@@ -96,16 +106,27 @@ test.describe("web UI screenshots", () => {
     await runCommand("bun", ["run", "build"], path.join(repoRoot, "web"));
     await runCommand("go", ["build", "-o", vtrBinary, "./cmd/vtr"], repoRoot);
     serveProc = startProcess(vtrBinary, ["serve", "--socket", socketPath], repoRoot);
-    await waitForFile(socketPath, 20_000);
+    await waitForFile(socketPath, bootTimeoutMs);
     webProc = startProcess(
       vtrBinary,
       ["web", "--socket", socketPath, "--listen", `127.0.0.1:${port}`],
       repoRoot,
     );
-    await waitForHttp(baseURL, 20_000);
+    await waitForHttp(baseURL, bootTimeoutMs);
     await runCommand(
       vtrBinary,
-      ["spawn", "--socket", socketPath, "--cols", "120", "--rows", "40", "--cmd", "bash", sessionName],
+      [
+        "spawn",
+        "--socket",
+        socketPath,
+        "--cols",
+        "120",
+        "--rows",
+        "40",
+        "--cmd",
+        "bash --noprofile --norc",
+        sessionName,
+      ],
       repoRoot,
     );
   });
@@ -126,12 +147,17 @@ test.describe("web UI screenshots", () => {
     await page.goto(baseURL);
 
     await page.getByPlaceholder("Filter coordinators or sessions").fill(sessionName);
-    await page.getByRole("button", { name: new RegExp(sessionName) }).click();
+    await page
+      .locator("aside")
+      .getByRole("button", { name: new RegExp(sessionName) })
+      .first()
+      .click();
     await expect(page.locator("header").getByText("live", { exact: true })).toBeVisible();
     await runCommand(vtrBinary, ["resize", "--socket", socketPath, sessionName, "120", "40"], repoRoot);
 
     await sendCommand("printf 'vtr web ui\\n'");
     await sendCommand("printf '\\x1b[31mRED\\x1b[0m \\x1b[32mGREEN\\x1b[0m\\n'");
+    await waitForOutput("vtr web ui");
     await expect(page.locator(".terminal-grid")).toContainText("vtr web ui");
 
     const screenshotsDir = path.join(repoRoot, "docs", "screenshots");

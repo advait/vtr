@@ -21,12 +21,20 @@ function defaultWsUrl() {
 export function useVtrStream(sessionName: string | null, options: StreamOptions) {
   const [state, setState] = useState<StreamState>({ status: "idle" });
   const eventRef = useRef<((event: SubscribeEvent) => void) | null>(null);
+  const pendingEventsRef = useRef<SubscribeEvent[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectRef = useRef<{ attempts: number; timer?: number }>({ attempts: 0 });
   const closedByUser = useRef(false);
 
   const setEventHandler = useCallback((handler: (event: SubscribeEvent) => void) => {
     eventRef.current = handler;
+    if (pendingEventsRef.current.length > 0) {
+      const pending = pendingEventsRef.current;
+      pendingEventsRef.current = [];
+      for (const event of pending) {
+        handler(event);
+      }
+    }
   }, []);
 
   const close = useCallback(() => {
@@ -102,6 +110,7 @@ export function useVtrStream(sessionName: string | null, options: StreamOptions)
 
     let cancelled = false;
     closedByUser.current = false;
+    pendingEventsRef.current = [];
 
     const connect = () => {
       if (cancelled) {
@@ -142,7 +151,11 @@ export function useVtrStream(sessionName: string | null, options: StreamOptions)
           }
           if (decoded.typeName === "vtr.SubscribeEvent") {
             const msg = decoded.message as SubscribeEvent;
-            eventRef.current?.(msg);
+            if (eventRef.current) {
+              eventRef.current(msg);
+            } else {
+              pendingEventsRef.current.push(msg);
+            }
           }
         };
 

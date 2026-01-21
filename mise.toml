@@ -72,6 +72,8 @@ sources = [
   "web/tsconfig.json",
   "web/tsconfig.node.json",
   "web/vite.config.ts",
+  "web/public/**",
+  "web/scripts/**",
   "web/src/**",
 ]
 outputs = ["web/dist/index.html"]
@@ -150,6 +152,8 @@ sources = [
   "web/package.json",
   "web/bun.lock",
   "web/playwright.config.ts",
+  "web/public/**",
+  "web/scripts/**",
   "web/tests/**/*.ts",
   "web/src/**",
 ]

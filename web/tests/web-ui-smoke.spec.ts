@@ -18,6 +18,9 @@ const vtrBinary = path.join(tmpDir, `vtr-playwright-${process.pid}`);
 const port = 18080 + (process.pid % 1000);
 const baseURL = `http://127.0.0.1:${port}`;
 const sessionName = "web-smoke";
+const bootTimeoutMs = Number.parseInt(process.env.E2E_BOOT_TIMEOUT_MS ?? "10000", 10);
+const outputTimeoutMs = Number.parseInt(process.env.E2E_OUTPUT_TIMEOUT_MS ?? "3000", 10);
+const skipWebBuild = process.env.E2E_SKIP_WEB_BUILD === "1";
 
 type ManagedProcess = ReturnType<typeof spawn>;
 
@@ -85,22 +88,45 @@ async function sendCommand(command: string) {
   await runCommand(vtrBinary, ["key", "--socket", socketPath, sessionName, "enter"], repoRoot);
 }
 
+async function waitForOutput(pattern: string) {
+  await runCommand(
+    vtrBinary,
+    ["wait", "--socket", socketPath, "--timeout", `${outputTimeoutMs}ms`, sessionName, pattern],
+    repoRoot,
+  );
+}
+
 test.beforeAll(async () => {
   if (existsSync(socketPath)) {
     await fsPromises.unlink(socketPath);
   }
+  if (!skipWebBuild) {
+    await runCommand("bun", ["install"], path.join(repoRoot, "web"));
+    await runCommand("bun", ["run", "build"], path.join(repoRoot, "web"));
+  }
   await runCommand("go", ["build", "-o", vtrBinary, "./cmd/vtr"], repoRoot);
   serveProc = startProcess(vtrBinary, ["serve", "--socket", socketPath], repoRoot);
-  await waitForFile(socketPath, 20_000);
+  await waitForFile(socketPath, bootTimeoutMs);
   webProc = startProcess(
     vtrBinary,
     ["web", "--socket", socketPath, "--listen", `127.0.0.1:${port}`],
     repoRoot,
   );
-  await waitForHttp(baseURL, 20_000);
+  await waitForHttp(baseURL, bootTimeoutMs);
   await runCommand(
     vtrBinary,
-    ["spawn", "--socket", socketPath, "--cols", "120", "--rows", "40", "--cmd", "bash", sessionName],
+    [
+      "spawn",
+      "--socket",
+      socketPath,
+      "--cols",
+      "120",
+      "--rows",
+      "40",
+      "--cmd",
+      "bash --noprofile --norc",
+      sessionName,
+    ],
     repoRoot,
   );
 });
@@ -121,20 +147,27 @@ test("streams ANSI output, attributes, and reconnects", async ({ page }) => {
   await page.goto(baseURL);
 
   await page.getByPlaceholder("Filter coordinators or sessions").fill(sessionName);
-  await page.getByRole("button", { name: new RegExp(sessionName) }).click();
+  await page
+    .locator("aside")
+    .getByRole("button", { name: new RegExp(sessionName) })
+    .first()
+    .click();
   await expect(page.locator("header").getByText("live", { exact: true })).toBeVisible();
   await runCommand(vtrBinary, ["resize", "--socket", socketPath, sessionName, "120", "40"], repoRoot);
 
   await sendCommand('echo "hello from vtr"');
+  await waitForOutput("hello from vtr");
   await expect(page.locator(".terminal-grid")).toContainText("hello from vtr");
 
   await sendCommand("printf '\\x1b[38;2;255;0;0mRED\\x1b[0m normal\\n'");
+  await waitForOutput("RED");
   const redRun = page.locator(".terminal-run").filter({ hasText: /^RED$/ });
   await expect(redRun).toHaveCount(1);
   const redStyle = await redRun.first().evaluate((node) => getComputedStyle(node).color);
   expect(redStyle).toBe("rgb(255, 0, 0)");
 
   await sendCommand("printf '\\x1b[48;2;10;20;30mBG\\x1b[0m\\n'");
+  await waitForOutput("BG");
   const bgRun = page.locator(".terminal-run").filter({ hasText: /^BG$/ });
   const bgStyle = await bgRun.first().evaluate((node) => getComputedStyle(node).backgroundColor);
   expect(bgStyle).toBe("rgb(10, 20, 30)");
@@ -142,6 +175,7 @@ test("streams ANSI output, attributes, and reconnects", async ({ page }) => {
   await sendCommand(
     "printf '\\x1b[1mBOLD\\x1b[0m \\x1b[4mUNDER\\x1b[0m \\x1b[3mITALIC\\x1b[0m\\n'",
   );
+  await waitForOutput("BOLD");
   const boldRun = page
     .locator(".terminal-run")
     .filter({ hasText: /^BOLD$/ })
@@ -176,5 +210,6 @@ test("streams ANSI output, attributes, and reconnects", async ({ page }) => {
   await expect(page.locator("header").getByText("live", { exact: true })).toBeVisible();
 
   await sendCommand('echo "after reconnect"');
+  await waitForOutput("after reconnect");
   await expect(page.locator(".terminal-grid")).toContainText("after reconnect");
 });

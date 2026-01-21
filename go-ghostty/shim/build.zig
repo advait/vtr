@@ -149,6 +149,7 @@ pub fn build(b: *std.Build) void {
         .root_module = shim_module,
         .linkage = .static,
     });
+    lib.bundle_compiler_rt = true;
 
     if (emit_llvm_ir) {
         const llvm_ir = lib.getEmittedLlvmIr();
