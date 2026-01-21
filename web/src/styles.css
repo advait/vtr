@@ -50,6 +50,7 @@ textarea {
 .terminal-surface {
   -webkit-touch-callout: none;
   -webkit-user-drag: none;
+  overflow-y: clip;
 }
 
 @media (min-width: 768px) {
