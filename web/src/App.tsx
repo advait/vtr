@@ -41,6 +41,9 @@ const statusLabels: Record<
 
 const sessionHashKey = "session";
 const showClosedSessionsKey = "showClosedSessions";
+const terminalRendererKey = "terminalRenderer";
+
+type TerminalRenderer = "dom" | "canvas";
 
 function readSessionHash() {
   if (typeof window === "undefined") {
@@ -95,6 +98,43 @@ function writeShowClosedSetting(value: boolean) {
   } catch {}
 }
 
+function normalizeRenderer(value: string | null): TerminalRenderer | null {
+  if (!value) {
+    return null;
+  }
+  const trimmed = value.trim().toLowerCase();
+  if (trimmed === "canvas" || trimmed === "dom") {
+    return trimmed;
+  }
+  return null;
+}
+
+function readRendererSetting(): TerminalRenderer {
+  if (typeof window === "undefined") {
+    return "dom";
+  }
+  const params = new URLSearchParams(window.location.search);
+  const fromQuery = normalizeRenderer(params.get("renderer"));
+  if (fromQuery) {
+    return fromQuery;
+  }
+  try {
+    const stored = normalizeRenderer(window.localStorage.getItem(terminalRendererKey));
+    return stored ?? "dom";
+  } catch {
+    return "dom";
+  }
+}
+
+function writeRendererSetting(value: TerminalRenderer) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    window.localStorage.setItem(terminalRendererKey, value);
+  } catch {}
+}
+
 function findSession(
   coordinators: CoordinatorInfo[],
   name: string,
@@ -126,6 +166,9 @@ export default function App() {
   const [hashSession, setHashSession] = useState(() => readSessionHash());
   const [sessionsLoaded, setSessionsLoaded] = useState(false);
   const [themeId, setThemeId] = useState(() => getTheme(loadThemeId()).id);
+  const [terminalRenderer, setTerminalRenderer] = useState<TerminalRenderer>(() =>
+    readRendererSetting(),
+  );
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [showClosedSessions, setShowClosedSessions] = useState(() => readShowClosedSetting());
   const [createName, setCreateName] = useState("");
@@ -722,6 +765,27 @@ export default function App() {
                   </div>
                   <div className="mt-4 flex flex-col gap-2">
                     <span className="text-xs font-semibold uppercase tracking-wide text-tn-muted">
+                      Renderer
+                    </span>
+                    <select
+                      className="h-9 w-full rounded-md border border-tn-border bg-tn-panel-2 px-3 text-sm text-tn-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tn-accent"
+                      value={terminalRenderer}
+                      onChange={(event) => {
+                        const next = normalizeRenderer(event.target.value) ?? "dom";
+                        setTerminalRenderer(next);
+                        writeRendererSetting(next);
+                      }}
+                      aria-label="Select terminal renderer"
+                    >
+                      <option value="dom">DOM (default)</option>
+                      <option value="canvas">Canvas (experimental)</option>
+                    </select>
+                    <span className="text-[11px] text-tn-text-dim">
+                      Use ?renderer=canvas for a URL override.
+                    </span>
+                  </div>
+                  <div className="mt-4 flex flex-col gap-2">
+                    <span className="text-xs font-semibold uppercase tracking-wide text-tn-muted">
                       Sessions
                     </span>
                     <label className="flex items-center justify-between gap-3 text-sm text-tn-text">
@@ -838,6 +902,8 @@ export default function App() {
                   onPaste={onSendText}
                   autoFocus={isDesktop}
                   focusKey={selectedSession?.name}
+                  renderer={terminalRenderer}
+                  themeKey={activeTheme.id}
                 />
               </div>
               {!isDesktop && (

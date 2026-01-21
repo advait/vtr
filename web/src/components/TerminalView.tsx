@@ -1,6 +1,7 @@
 import type React from "react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { ScreenState, Selection } from "../lib/terminal";
+import type { Cell, ScreenState, Selection } from "../lib/terminal";
+import { cellWidth, emptyCell } from "../lib/terminal";
 import { cn } from "../lib/utils";
 import { TerminalGrid } from "./TerminalGrid";
 
@@ -9,6 +10,8 @@ export type TerminalViewProps = {
   status: string;
   autoFocus?: boolean;
   focusKey?: string | null;
+  renderer?: "dom" | "canvas";
+  themeKey?: string;
   onResize: (cols: number, rows: number) => void;
   onSendText: (text: string) => void;
   onSendKey: (key: string) => void;
@@ -16,6 +19,22 @@ export type TerminalViewProps = {
 };
 
 type CellSize = { width: number; height: number };
+
+const ATTR_BOLD = 1 << 0;
+const ATTR_ITALIC = 1 << 1;
+const ATTR_UNDERLINE = 1 << 2;
+const ATTR_FAINT = 1 << 3;
+const ATTR_INVERSE = 1 << 5;
+const ATTR_INVISIBLE = 1 << 6;
+const ATTR_STRIKE = 1 << 7;
+const ATTR_OVERLINE = 1 << 8;
+
+const FONT_STACK = "JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, monospace";
+
+type ThemeColors = {
+  fg: string;
+  bg: string;
+};
 
 function measureCell(span: HTMLSpanElement | null): CellSize {
   if (!span) {
@@ -27,6 +46,32 @@ function measureCell(span: HTMLSpanElement | null): CellSize {
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
+}
+
+function colorFromInt(value: number) {
+  const unsigned = value >>> 0;
+  const hex = unsigned.toString(16).padStart(6, "0");
+  return `#${hex}`;
+}
+
+function resolveThemeColors(node: HTMLElement | null): ThemeColors {
+  if (typeof window === "undefined") {
+    return { fg: "#e5e5e5", bg: "#0f0f0f" };
+  }
+  const styles = window.getComputedStyle(node ?? document.documentElement);
+  const fg = styles.getPropertyValue("--tn-text").trim() || "#e5e5e5";
+  const bg = styles.getPropertyValue("--tn-bg-alt").trim() || "#0f0f0f";
+  return { fg, bg };
+}
+
+function fontForCell(size: number, bold: boolean, italic: boolean) {
+  const weight = bold ? "600 " : "";
+  const slant = italic ? "italic " : "";
+  return `${slant}${weight}${size}px ${FONT_STACK}`;
+}
+
+function sameCellStyle(a: Cell, b: Cell) {
+  return a.fg === b.fg && a.bg === b.bg && a.attrs === b.attrs;
 }
 
 function selectionText(screen: ScreenState, selection: Selection) {
@@ -59,6 +104,8 @@ export function TerminalView({
   status,
   autoFocus,
   focusKey,
+  renderer = "dom",
+  themeKey,
   onResize,
   onSendKey,
   onSendText,
@@ -67,6 +114,7 @@ export function TerminalView({
   const baseFontSize = 14;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<HTMLDivElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const baseMeasureRef = useRef<HTMLSpanElement | null>(null);
   const measureRef = useRef<HTMLSpanElement | null>(null);
   const [cellSize, setCellSize] = useState<CellSize>({ width: 8, height: 18 });
@@ -110,6 +158,7 @@ export function TerminalView({
   }, [autoFocus, focusKey, status]);
 
   const padding = 12;
+  const rendererIsCanvas = renderer === "canvas";
 
   useEffect(() => {
     if (!containerRef.current) {
@@ -211,6 +260,151 @@ export function TerminalView({
     containerSize,
     fontSize,
     screen,
+  ]);
+
+  useEffect(() => {
+    if (!rendererIsCanvas) {
+      return;
+    }
+    const canvas = canvasRef.current;
+    const container = containerRef.current;
+    if (!canvas || !container) {
+      return;
+    }
+    if (!screen || !screen.cols || !screen.rows || !cellSize.width || !cellSize.height) {
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+      }
+      return;
+    }
+
+    const gridWidth = Math.max(0, Math.round(screen.cols * cellSize.width));
+    const gridHeight = Math.max(0, Math.round(screen.rows * cellSize.height));
+    if (!gridWidth || !gridHeight) {
+      return;
+    }
+
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.max(1, Math.floor(gridWidth * dpr));
+    canvas.height = Math.max(1, Math.floor(gridHeight * dpr));
+    canvas.style.width = `${gridWidth}px`;
+    canvas.style.height = `${gridHeight}px`;
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      return;
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    const { fg: defaultFg, bg: defaultBg } = resolveThemeColors(container);
+    ctx.clearRect(0, 0, gridWidth, gridHeight);
+    ctx.fillStyle = defaultBg;
+    ctx.fillRect(0, 0, gridWidth, gridHeight);
+    ctx.textBaseline = "top";
+    ctx.textAlign = "left";
+
+    const fontSizePx = Math.max(1, Math.round(fontSize * 100) / 100);
+    let lastFont = "";
+    let lastFill = "";
+
+    for (let row = 0; row < screen.rows; row += 1) {
+      const rowCells = screen.rowsData[row] ?? [];
+      let col = 0;
+      while (col < screen.cols) {
+        const cell = rowCells[col] ?? emptyCell();
+        const char = cell.char || " ";
+        const attrs = cell.attrs ?? 0;
+        const isInverse = (attrs & ATTR_INVERSE) !== 0;
+        const isInvisible = (attrs & ATTR_INVISIBLE) !== 0;
+        const isFaint = (attrs & ATTR_FAINT) !== 0;
+        const isBold = (attrs & ATTR_BOLD) !== 0;
+        const isItalic = (attrs & ATTR_ITALIC) !== 0;
+        const isUnderline = (attrs & ATTR_UNDERLINE) !== 0;
+        const isStrike = (attrs & ATTR_STRIKE) !== 0;
+        const isOverline = (attrs & ATTR_OVERLINE) !== 0;
+
+        let fg = cell.fg;
+        let bg = cell.bg;
+        if (isInverse) {
+          const swap = fg;
+          fg = bg;
+          bg = swap;
+        }
+        if (isInvisible) {
+          fg = bg;
+        }
+
+        const fgColor = fg === 0 ? defaultFg : colorFromInt(fg);
+        const bgColor = bg === 0 ? defaultBg : colorFromInt(bg);
+
+        const charWidth = cellWidth(char);
+        let drawCols = 1;
+        if (charWidth === 2 && col + 1 < screen.cols) {
+          const nextCell = rowCells[col + 1] ?? emptyCell();
+          if (nextCell.char === " " && sameCellStyle(cell, nextCell)) {
+            drawCols = 2;
+          }
+        }
+
+        const x = col * cellSize.width;
+        const y = row * cellSize.height;
+        if (bgColor !== defaultBg) {
+          ctx.fillStyle = bgColor;
+          ctx.fillRect(x, y, cellSize.width * drawCols, cellSize.height);
+          lastFill = bgColor;
+        }
+
+        if (!isInvisible && char !== " ") {
+          const font = fontForCell(fontSizePx, isBold, isItalic);
+          if (font !== lastFont) {
+            ctx.font = font;
+            lastFont = font;
+          }
+          const nextFill = fgColor;
+          if (nextFill !== lastFill) {
+            ctx.fillStyle = nextFill;
+            lastFill = nextFill;
+          }
+          ctx.globalAlpha = isFaint ? 0.6 : 1;
+          ctx.fillText(char, x, y);
+        }
+
+        if (isUnderline || isStrike || isOverline) {
+          const nextFill = fgColor;
+          if (nextFill !== lastFill) {
+            ctx.fillStyle = nextFill;
+            lastFill = nextFill;
+          }
+          ctx.globalAlpha = isFaint ? 0.6 : 1;
+          const lineHeight = Math.max(1, Math.round(cellSize.height * 0.08));
+          if (isUnderline) {
+            ctx.fillRect(x, y + cellSize.height - lineHeight, cellSize.width * drawCols, lineHeight);
+          }
+          if (isStrike) {
+            ctx.fillRect(
+              x,
+              y + Math.round(cellSize.height * 0.5),
+              cellSize.width * drawCols,
+              lineHeight,
+            );
+          }
+          if (isOverline) {
+            ctx.fillRect(x, y, cellSize.width * drawCols, lineHeight);
+          }
+        }
+
+        ctx.globalAlpha = 1;
+        col += drawCols;
+      }
+    }
+  }, [
+    cellSize.height,
+    cellSize.width,
+    fontSize,
+    rendererIsCanvas,
+    screen,
+    themeKey,
   ]);
 
   const cursorStyle = useMemo(() => {
@@ -437,7 +631,16 @@ export function TerminalView({
                       : "Connecting..."}
               </div>
             )}
-            {screen && <TerminalGrid rows={screen.rowsData} selection={selection} />}
+            {screen && rendererIsCanvas && (
+              <canvas
+                ref={canvasRef}
+                className="absolute left-0 top-0 pointer-events-none"
+                aria-hidden="true"
+              />
+            )}
+            {screen && !rendererIsCanvas && (
+              <TerminalGrid rows={screen.rowsData} selection={selection} />
+            )}
             {screen?.cursorVisible && cursorStyle && (
               <div
                 className="terminal-cursor"
