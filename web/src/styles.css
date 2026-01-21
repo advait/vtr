@@ -60,6 +60,7 @@ textarea {
 .terminal-row {
   display: flex;
   flex-wrap: nowrap;
+  overflow-x: clip;
 }
 
 .terminal-run {
