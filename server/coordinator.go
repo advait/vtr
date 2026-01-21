@@ -46,6 +46,7 @@ type CoordinatorOptions struct {
 	DefaultRows  uint16
 	Scrollback   uint32
 	KillTimeout  time.Duration
+	IdleThreshold time.Duration
 }
 
 // SpawnOptions configures a new session.
@@ -64,6 +65,7 @@ type SessionInfo struct {
 	Cols      uint16
 	Rows      uint16
 	ExitCode  int
+	Idle      bool
 	CreatedAt time.Time
 	ExitedAt  time.Time
 }
@@ -95,6 +97,9 @@ func NewCoordinator(opts CoordinatorOptions) *Coordinator {
 	}
 	if opts.KillTimeout == 0 {
 		opts.KillTimeout = 5 * time.Second
+	}
+	if opts.IdleThreshold == 0 {
+		opts.IdleThreshold = 5 * time.Second
 	}
 	return &Coordinator{
 		sessions: make(map[string]*Session),
@@ -164,7 +169,7 @@ func (c *Coordinator) Spawn(name string, opts SpawnOptions) (*SessionInfo, error
 		return nil, err
 	}
 
-	session := newSession(name, cols, rows, vt, ptyHandle)
+	session := newSession(name, cols, rows, vt, ptyHandle, c.opts.IdleThreshold)
 
 	c.mu.Lock()
 	c.sessions[name] = session
@@ -222,6 +227,9 @@ func (c *Coordinator) Send(name string, data []byte) error {
 		return ErrSessionNotRunning
 	}
 	_, err = session.pty.Write(data)
+	if err == nil {
+		session.recordActivity()
+	}
 	return err
 }
 
@@ -393,30 +401,43 @@ type Session struct {
 	outputCh    chan struct{}
 	lastOutput  time.Time
 
+	activityMu    sync.Mutex
+	lastActivity  time.Time
+	activityCh    chan struct{}
+	idle          bool
+	idleCh        chan struct{}
+	idleThreshold time.Duration
+
 	resizeMu sync.Mutex
 	resizeCh chan struct{}
 
 	frameID uint64
 }
 
-func newSession(name string, cols, rows uint16, vt *VT, ptyHandle *PTY) *Session {
+func newSession(name string, cols, rows uint16, vt *VT, ptyHandle *PTY, idleThreshold time.Duration) *Session {
+	now := time.Now()
 	return &Session{
-		name:       name,
-		cols:       cols,
-		rows:       rows,
-		pty:        ptyHandle,
-		vt:         vt,
-		createdAt:  time.Now(),
-		state:      SessionRunning,
-		exitCh:     make(chan struct{}),
-		outputCh:   make(chan struct{}),
-		resizeCh:   make(chan struct{}),
-		lastOutput: time.Now(),
+		name:          name,
+		cols:          cols,
+		rows:          rows,
+		pty:           ptyHandle,
+		vt:            vt,
+		createdAt:     now,
+		state:         SessionRunning,
+		exitCh:        make(chan struct{}),
+		outputCh:      make(chan struct{}),
+		resizeCh:      make(chan struct{}),
+		lastOutput:    now,
+		lastActivity:  now,
+		activityCh:    make(chan struct{}),
+		idleCh:        make(chan struct{}),
+		idleThreshold: idleThreshold,
 	}
 }
 
 func (s *Session) start() {
 	s.ioDone = s.pty.StartReadLoop(s.vt, s.recordOutput, nil)
+	go s.trackIdle()
 	go s.waitForExit()
 }
 
@@ -440,15 +461,23 @@ func (s *Session) markExited(code int) {
 // Info returns a copy of the session info.
 func (s *Session) Info() SessionInfo {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	state := s.state
+	cols := s.cols
+	rows := s.rows
+	exitCode := s.exitCode
+	createdAt := s.createdAt
+	exitedAt := s.exitedAt
+	s.mu.Unlock()
+	idle := s.isIdle()
 	return SessionInfo{
 		Name:      s.name,
-		State:     s.state,
-		Cols:      s.cols,
-		Rows:      s.rows,
-		ExitCode:  s.exitCode,
-		CreatedAt: s.createdAt,
-		ExitedAt:  s.exitedAt,
+		State:     state,
+		Cols:      cols,
+		Rows:      rows,
+		ExitCode:  exitCode,
+		Idle:      idle,
+		CreatedAt: createdAt,
+		ExitedAt:  exitedAt,
 	}
 }
 

@@ -374,6 +374,7 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 
 	screenSignal := make(chan struct{}, 1)
 	rawSignal := make(chan struct{}, 1)
+	idleSignal := make(chan struct{}, 1)
 	sendErrCh := make(chan error, 1)
 	exitSignal := make(chan exitPayload, 1)
 	makeKeyframe := func() (*proto.ScreenUpdate, error) {
@@ -435,9 +436,43 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 		return data
 	}
 
+	var idleMu sync.Mutex
+	var latestIdle *proto.SessionIdle
+	setLatestIdle := func(update *proto.SessionIdle) {
+		if update == nil {
+			return
+		}
+		idleMu.Lock()
+		latestIdle = update
+		idleMu.Unlock()
+		select {
+		case idleSignal <- struct{}{}:
+		default:
+		}
+	}
+	drainLatestIdle := func() *proto.SessionIdle {
+		idleMu.Lock()
+		update := latestIdle
+		latestIdle = nil
+		idleMu.Unlock()
+		return update
+	}
+
 	go func() {
-		sendErrCh <- runSubscribeSender(ctx, stream, screenSignal, rawSignal, exitSignal, drainLatestScreen, drainRaw)
+		sendErrCh <- runSubscribeSender(
+			ctx,
+			stream,
+			screenSignal,
+			rawSignal,
+			idleSignal,
+			exitSignal,
+			drainLatestScreen,
+			drainRaw,
+			drainLatestIdle,
+		)
 	}()
+
+	_, idleCh := session.idleState()
 
 	info := session.Info()
 	if info.State == SessionExited {
@@ -508,6 +543,10 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 			return err
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-idleCh:
+			idleState, nextCh := session.idleState()
+			idleCh = nextCh
+			setLatestIdle(&proto.SessionIdle{Name: req.Name, Idle: idleState})
 		case <-session.exitCh:
 			if includeRaw {
 				data, nextOffset, nextCh := session.outputSnapshot(offset)
@@ -585,9 +624,11 @@ func runSubscribeSender(
 	stream proto.VTR_SubscribeServer,
 	screenSignal <-chan struct{},
 	rawSignal <-chan struct{},
+	idleSignal <-chan struct{},
 	exitSignal <-chan exitPayload,
 	drainScreen func() *proto.ScreenUpdate,
 	drainRaw func() []byte,
+	drainIdle func() *proto.SessionIdle,
 ) error {
 	sendScreen := func(update *proto.ScreenUpdate) error {
 		if update == nil {
@@ -609,12 +650,25 @@ func runSubscribeSender(
 			},
 		})
 	}
+	sendIdle := func(update *proto.SessionIdle) error {
+		if update == nil {
+			return nil
+		}
+		return stream.Send(&proto.SubscribeEvent{
+			Event: &proto.SubscribeEvent_SessionIdle{
+				SessionIdle: update,
+			},
+		})
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case payload := <-exitSignal:
 			if err := sendRaw(drainRaw()); err != nil {
+				return err
+			}
+			if err := sendIdle(drainIdle()); err != nil {
 				return err
 			}
 			if err := sendScreen(payload.finalScreen); err != nil {
@@ -632,6 +686,10 @@ func runSubscribeSender(
 			return nil
 		case <-rawSignal:
 			if err := sendRaw(drainRaw()); err != nil {
+				return err
+			}
+		case <-idleSignal:
+			if err := sendIdle(drainIdle()); err != nil {
 				return err
 			}
 		case <-screenSignal:
@@ -733,6 +791,7 @@ func toProtoSession(info *SessionInfo) *proto.Session {
 		Rows:      int32(info.Rows),
 		ExitCode:  int32(info.ExitCode),
 		CreatedAt: timestamppb.New(info.CreatedAt),
+		Idle:      info.Idle,
 	}
 	if info.State != SessionExited {
 		session.ExitCode = 0

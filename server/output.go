@@ -20,6 +20,7 @@ func (s *Session) recordOutput(data []byte) {
 	close(ch)
 	s.outputCh = make(chan struct{})
 	s.outputMu.Unlock()
+	s.recordActivity()
 }
 
 func (s *Session) outputState() (int64, <-chan struct{}, time.Time) {

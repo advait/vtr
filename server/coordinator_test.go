@@ -15,6 +15,7 @@ func newTestCoordinator() *Coordinator {
 		DefaultRows:  24,
 		Scrollback:   2000,
 		KillTimeout:  500 * time.Millisecond,
+		IdleThreshold: 200 * time.Millisecond,
 	})
 }
 

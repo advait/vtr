@@ -8,6 +8,7 @@ export type SessionInfo = {
   status: "running" | "exited" | "unknown";
   cols: number;
   rows: number;
+  idle: boolean;
   exitCode?: number;
 };
 

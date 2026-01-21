@@ -307,6 +307,7 @@ type webSession struct {
 	Status   string `json:"status"`
 	Cols     int32  `json:"cols"`
 	Rows     int32  `json:"rows"`
+	Idle     bool   `json:"idle"`
 	ExitCode int32  `json:"exit_code,omitempty"`
 }
 
@@ -369,6 +370,7 @@ func handleWebSessions(resolver webResolver) http.HandlerFunc {
 					Status:   status,
 					Cols:     session.GetCols(),
 					Rows:     session.GetRows(),
+					Idle:     session.GetIdle(),
 					ExitCode: session.GetExitCode(),
 				})
 			}

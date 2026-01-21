@@ -36,6 +36,7 @@ message Session {
   int32 cols = 3;
   int32 rows = 4;
   int32 exit_code = 5;
+  bool idle = 8;
 }
 
 message ListRequest {}
@@ -87,12 +88,14 @@ message RowDelta {
 }
 
 message SessionExited { int32 exit_code = 1; }
+message SessionIdle { string name = 1; bool idle = 2; }
 
 message SubscribeEvent {
   oneof event {
     ScreenUpdate screen_update = 1;
     bytes raw_output = 2;
     SessionExited session_exited = 3;
+    SessionIdle session_idle = 4;
   }
 }
 
@@ -158,6 +161,7 @@ export type SubscribeEvent = {
   screen_update?: ScreenUpdate | null;
   raw_output?: Uint8Array;
   session_exited?: { exit_code?: number } | null;
+  session_idle?: { name?: string; idle?: boolean } | null;
 };
 
 export type Status = { code?: number; message?: string };

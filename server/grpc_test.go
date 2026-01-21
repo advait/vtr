@@ -548,6 +548,71 @@ func TestGRPCWaitForIdle(t *testing.T) {
 	}
 }
 
+func TestGRPCSubscribeIdleEvents(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty tests not supported on windows")
+	}
+
+	client, cleanup := startGRPCTestServer(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	_, err := client.Spawn(ctx, &proto.SpawnRequest{
+		Name:    "grpc-subscribe-idle",
+		Command: "printf 'ready\\n'; sleep 0.4; printf 'again\\n'; sleep 0.4",
+	})
+	cancel()
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	waitForScreenContains(t, client, "grpc-subscribe-idle", "ready", 2*time.Second)
+
+	ctx, cancel = context.WithTimeout(context.Background(), 3*time.Second)
+	stream, err := client.Subscribe(ctx, &proto.SubscribeRequest{
+		Name:                 "grpc-subscribe-idle",
+		IncludeScreenUpdates: false,
+		IncludeRawOutput:     true,
+	})
+	if err != nil {
+		cancel()
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer cancel()
+
+	sawIdleTrue := false
+	sawIdleFalseAfter := false
+
+	for {
+		event, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv: %v", err)
+		}
+		idle := event.GetSessionIdle()
+		if idle == nil {
+			if event.GetSessionExited() != nil && !sawIdleFalseAfter {
+				t.Fatalf("session exited before idle transition")
+			}
+			continue
+		}
+		if idle.Name != "grpc-subscribe-idle" {
+			t.Fatalf("idle name=%q", idle.Name)
+		}
+		if idle.Idle {
+			sawIdleTrue = true
+			continue
+		}
+		if sawIdleTrue {
+			sawIdleFalseAfter = true
+			break
+		}
+	}
+
+	if !sawIdleTrue || !sawIdleFalseAfter {
+		t.Fatalf("expected idle transition, got idle=%v idle_after=%v", sawIdleTrue, sawIdleFalseAfter)
+	}
+}
+
 func TestGRPCSubscribeInitialSnapshot(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("pty tests not supported on windows")

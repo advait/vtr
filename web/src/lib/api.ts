@@ -9,6 +9,7 @@ export type SessionListResponse = {
       status: string;
       cols: number;
       rows: number;
+      idle?: boolean;
       exit_code?: number;
     }>;
   }>;
@@ -27,6 +28,7 @@ export async function fetchSessions(): Promise<CoordinatorInfo[]> {
         session.status === "running" || session.status === "exited" ? session.status : "unknown",
       cols: session.cols ?? 0,
       rows: session.rows ?? 0,
+      idle: session.idle ?? false,
       exitCode: session.exit_code,
     }));
     return { name: coord.name, path: coord.path, sessions };

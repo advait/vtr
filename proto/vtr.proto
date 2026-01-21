@@ -51,6 +51,7 @@ message Session {
   int32 exit_code = 5;  // only valid when status = EXITED
   google.protobuf.Timestamp created_at = 6;
   google.protobuf.Timestamp exited_at = 7;  // only valid when status = EXITED
+  bool idle = 8;
 }
 
 // Session management messages
@@ -224,11 +225,17 @@ message SessionExited {
   int32 exit_code = 1;
 }
 
+message SessionIdle {
+  string name = 1;
+  bool idle = 2;
+}
+
 message SubscribeEvent {
   oneof event {
     ScreenUpdate screen_update = 1;
     bytes raw_output = 2;
     SessionExited session_exited = 3;
+    SessionIdle session_idle = 4;
   }
 }
 
