@@ -8,11 +8,7 @@ import {
   useState,
 } from "react";
 import { ActionTray } from "./components/ActionTray";
-import {
-  type CoordinatorInfo,
-  CoordinatorTree,
-  type SessionInfo,
-} from "./components/CoordinatorTree";
+import { type CoordinatorInfo, type SessionInfo } from "./components/CoordinatorTree";
 import { InputBar } from "./components/InputBar";
 import { MultiViewDashboard } from "./components/MultiViewDashboard";
 import { SessionTabs } from "./components/SessionTabs";
@@ -20,7 +16,6 @@ import { TerminalView } from "./components/TerminalView";
 import { Badge } from "./components/ui/Badge";
 import { Button } from "./components/ui/Button";
 import { Input } from "./components/ui/Input";
-import { ScrollArea } from "./components/ui/ScrollArea";
 import { createSession, fetchSessions, sendSessionAction } from "./lib/api";
 import type { SubscribeEvent } from "./lib/proto";
 import { applyScreenUpdate, type ScreenState } from "./lib/terminal";
@@ -152,7 +147,6 @@ function findSession(
 
 export default function App() {
   const [coordinators, setCoordinators] = useState<CoordinatorInfo[]>([]);
-  const [filter, setFilter] = useState("");
   const [activeSession, setActiveSession] = useState<string | null>(null);
   const [selectedSession, setSelectedSession] = useState<{
     name: string;
@@ -170,6 +164,7 @@ export default function App() {
     readRendererSetting(),
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
   const [showClosedSessions, setShowClosedSessions] = useState(() => readShowClosedSetting());
   const [createName, setCreateName] = useState("");
   const [createCommand, setCreateCommand] = useState("");
@@ -192,6 +187,7 @@ export default function App() {
   const rafRef = useRef<number | null>(null);
   const lastSize = useRef<{ cols: number; rows: number } | null>(null);
   const settingsRef = useRef<HTMLDivElement | null>(null);
+  const createPanelRef = useRef<HTMLDivElement | null>(null);
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
   const activeTheme = useMemo(() => getTheme(themeId), [themeId]);
   const visibleCoordinators = useMemo(() => {
@@ -261,6 +257,28 @@ export default function App() {
       document.removeEventListener("keydown", handleKey);
     };
   }, [settingsOpen]);
+
+  useEffect(() => {
+    if (!createOpen) {
+      return;
+    }
+    const handleClick = (event: MouseEvent) => {
+      if (!createPanelRef.current?.contains(event.target as Node)) {
+        setCreateOpen(false);
+      }
+    };
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setCreateOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClick);
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("mousedown", handleClick);
+      document.removeEventListener("keydown", handleKey);
+    };
+  }, [createOpen]);
 
   useEffect(() => {
     applyTheme(activeTheme);
@@ -585,6 +603,7 @@ export default function App() {
         });
         setActiveSession(result.session.status === "exited" ? null : sessionKey);
         setViewMode("single");
+        setCreateOpen(false);
         setCreateName("");
         setCreateCommand("");
         try {
@@ -805,93 +824,46 @@ export default function App() {
         </div>
       </header>
 
-      <main className="flex min-h-[calc(100vh-72px)] flex-col gap-4 px-4 pt-4 pb-[calc(1rem+env(safe-area-inset-bottom))] lg:flex-row">
-        <aside className="flex w-full flex-col gap-4 lg:w-80">
-          <form
-            className="rounded-lg border border-tn-border bg-tn-panel"
-            onSubmit={handleCreateSession}
-          >
-            <div className="border-b border-tn-border px-4 py-3">
-              <span className="text-xs font-semibold uppercase tracking-wide text-tn-muted">
-                New session
-              </span>
-            </div>
-            <div className="flex flex-col gap-3 px-4 py-3">
-              <Input
-                placeholder="Session name"
-                value={createName}
-                onChange={(event) => setCreateName(event.target.value)}
-                disabled={createBusy}
-              />
-              {coordinatorOptions.length > 1 && (
-                <select
-                  className="h-9 w-full rounded-md border border-tn-border bg-tn-panel-2 px-3 text-sm text-tn-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tn-accent"
-                  value={createCoordinator}
-                  onChange={(event) => setCreateCoordinator(event.target.value)}
-                  disabled={createBusy}
-                  aria-label="Select coordinator"
-                >
-                  {coordinatorOptions.map((name) => (
-                    <option key={name} value={name}>
-                      {name}
-                    </option>
-                  ))}
-                </select>
-              )}
-              <Input
-                placeholder="Command (optional)"
-                value={createCommand}
-                onChange={(event) => setCreateCommand(event.target.value)}
-                disabled={createBusy}
-              />
-              {createError && <div className="text-xs text-tn-red">{createError}</div>}
-              <Button type="submit" size="sm" disabled={createBusy}>
-                {createBusy ? "Creating..." : "Create session"}
-              </Button>
-            </div>
-          </form>
-          <div className="flex min-h-0 flex-1 flex-col rounded-lg border border-tn-border bg-tn-panel">
-            <ScrollArea className="flex-1 max-h-[420px] lg:max-h-none">
-              <div className="px-4 py-3">
-                <CoordinatorTree
-                  coordinators={visibleCoordinators}
-                  filter={filter}
-                  activeSession={activeSession}
-                  onSelect={(session) => {
-                    setSelectedSession(session);
-                    setActiveSession(session.status === "exited" ? null : session.name);
-                  }}
-                />
-              </div>
-            </ScrollArea>
-            <div className="border-t border-tn-border px-4 py-3">
-              <Input
-                placeholder="Filter coordinators or sessions"
-                value={filter}
-                onChange={(event) => setFilter(event.target.value)}
-              />
-            </div>
-          </div>
-        </aside>
-
+      <main className="flex min-h-[calc(100vh-72px)] flex-col gap-4 px-4 pt-4 pb-[calc(1rem+env(safe-area-inset-bottom))]">
         <section className="flex min-h-[420px] flex-1 flex-col gap-3">
           {viewMode === "single" ? (
             <div className="flex min-h-0 flex-1 flex-col gap-3 lg:pr-4">
-              <SessionTabs
-                sessions={tabSessions}
-                activeSession={activeSession}
-                onSelect={(sessionKey, session) => {
-                  setSelectedSession({
-                    name: sessionKey,
-                    status: session.status,
-                    exitCode: session.exitCode,
-                  });
-                  setActiveSession(session.status === "exited" ? null : sessionKey);
-                }}
-                onClose={handleCloseTab}
-                onContextMenu={openContextMenu}
-                onMenuOpen={openContextMenuFromButton}
-              />
+              <div className="flex flex-wrap items-center gap-2">
+                {tabSessions.length > 0 ? (
+                  <div className="min-w-0 flex-1">
+                    <SessionTabs
+                      sessions={tabSessions}
+                      activeSession={activeSession}
+                      onSelect={(sessionKey, session) => {
+                        setSelectedSession({
+                          name: sessionKey,
+                          status: session.status,
+                          exitCode: session.exitCode,
+                        });
+                        setActiveSession(session.status === "exited" ? null : sessionKey);
+                      }}
+                      onClose={handleCloseTab}
+                      onContextMenu={openContextMenu}
+                      onMenuOpen={openContextMenuFromButton}
+                    />
+                  </div>
+                ) : (
+                  <div className="flex min-h-[44px] flex-1 items-center rounded-lg border border-tn-border bg-tn-panel px-3 text-xs text-tn-muted">
+                    No sessions yet.
+                  </div>
+                )}
+                <Button
+                  type="button"
+                  size="sm"
+                  className="border border-tn-border bg-tn-panel"
+                  onClick={() => {
+                    setCreateError(null);
+                    setCreateOpen(true);
+                  }}
+                >
+                  New session
+                </Button>
+              </div>
               <div className="flex-1 min-h-[320px]">
                 <TerminalView
                   screen={screen}
@@ -935,6 +907,72 @@ export default function App() {
           )}
         </section>
       </main>
+      {createOpen && (
+        <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/50 px-4 py-6">
+          <div
+            ref={createPanelRef}
+            className="w-full max-w-md rounded-lg border border-tn-border bg-tn-panel shadow-panel"
+          >
+            <div className="flex items-center justify-between border-b border-tn-border px-4 py-3">
+              <span className="text-xs font-semibold uppercase tracking-wide text-tn-muted">
+                New session
+              </span>
+              <button
+                type="button"
+                className="rounded px-2 py-1 text-xs text-tn-text-dim hover:text-tn-text"
+                onClick={() => setCreateOpen(false)}
+                aria-label="Close new session dialog"
+              >
+                Close
+              </button>
+            </div>
+            <form className="flex flex-col gap-3 px-4 py-4" onSubmit={handleCreateSession}>
+              <Input
+                placeholder="Session name"
+                value={createName}
+                onChange={(event) => setCreateName(event.target.value)}
+                disabled={createBusy}
+              />
+              {coordinatorOptions.length > 1 && (
+                <select
+                  className="h-9 w-full rounded-md border border-tn-border bg-tn-panel-2 px-3 text-sm text-tn-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tn-accent"
+                  value={createCoordinator}
+                  onChange={(event) => setCreateCoordinator(event.target.value)}
+                  disabled={createBusy}
+                  aria-label="Select coordinator"
+                >
+                  {coordinatorOptions.map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+              )}
+              <Input
+                placeholder="Command (optional)"
+                value={createCommand}
+                onChange={(event) => setCreateCommand(event.target.value)}
+                disabled={createBusy}
+              />
+              {createError && <div className="text-xs text-tn-red">{createError}</div>}
+              <div className="flex justify-end gap-2 pt-1">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="border border-tn-border bg-tn-panel"
+                  onClick={() => setCreateOpen(false)}
+                >
+                  Cancel
+                </Button>
+                <Button type="submit" size="sm" disabled={createBusy}>
+                  {createBusy ? "Creating..." : "Create session"}
+                </Button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
       {contextMenu && (
         <div className="fixed inset-0 z-40">
           <div
