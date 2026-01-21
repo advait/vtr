@@ -28,6 +28,7 @@ All streaming uses the same protobuf types from `proto/vtr.proto`:
 - `ScreenDelta`
 - `RowDelta`
 - `SessionExited`
+- `SessionIdle`
 
 ### SubscribeRequest
 
@@ -50,11 +51,13 @@ message SubscribeEvent {
     ScreenUpdate screen_update = 1;
     bytes raw_output = 2;
     SessionExited session_exited = 3;
+    SessionIdle session_idle = 4;
   }
 }
 ```
 
 - `session_exited` is always the last event before stream close.
+- `session_idle` emits when the coordinator crosses the idle threshold (default 5s) based on input/output activity.
 
 ## Transport Mapping
 
@@ -141,7 +144,7 @@ message ScreenDelta {
 ## Resync Strategy
 
 - Initial keyframe on subscribe when `include_screen_updates` is true.
-- Periodic keyframes at a fixed cadence (TBD).
+- Periodic keyframes every 5s (current default).
 - Keyframe on resize.
 - Client resubscribe forces a keyframe.
 
@@ -170,4 +173,3 @@ message ScreenDelta {
 
 - Maintain a grid and cursor state from `ScreenUpdate`.
 - Ignore `raw_output` unless explicitly enabled for debugging.
-

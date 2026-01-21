@@ -18,7 +18,7 @@ vtr is a terminal multiplexer designed for the agent era. Each container runs a 
 - Multi-coordinator resolution supports `--socket` and `coordinator:session` with auto-disambiguation via per-coordinator lookup.
 - Grep uses scrollback dumps when available; falls back to screen/viewport dumps if history is unavailable.
 - WaitFor scans output emitted after the request starts using a rolling 1MB buffer.
-- M7 (partial): `vtr web` serves static assets from `web/dist` plus a WS bridge using protobuf `Any` frames (SubscribeRequest/SubscribeEvent); a minimal JSON listing endpoint is available at `/api/sessions` while lifecycle APIs remain pending.
+- M7/M7.1: `vtr web` serves embedded `web/dist` assets plus a WS bridge using protobuf `Any` frames (SubscribeRequest/SubscribeEvent); `/api/sessions` provides JSON listing, lifecycle APIs remain pending, and the web UI includes a settings menu with theme presets.
 
 ## Architecture
 
@@ -135,6 +135,7 @@ Passed via CLI flags. Optional config file for defaults (not yet implemented).
 socket_path = "/var/run/vtr.sock"
 scrollback_limit = 10000
 default_shell = "/bin/bash"
+idle_threshold = "5s"
 ```
 
 ## CLI Interface
@@ -146,7 +147,7 @@ Single `vtr` binary serves as both client and server.
 ```bash
 # Start coordinator (foreground)
 vtr serve [--socket /path/to.sock] [--shell /bin/bash] [--cols 80] [--rows 24] \
-  [--scrollback 10000] [--kill-timeout 5s]
+  [--scrollback 10000] [--kill-timeout 5s] [--idle-threshold 5s]
 
 # Daemon mode + config file support (planned)
 # vtr serve --daemon [--socket /path/to.sock] [--pid-file /path/to.pid]
@@ -219,8 +220,8 @@ vtr attach <name> [--socket /path/to.sock]
 ```
 
 TUI features (M6):
-- Bubbletea TUI renders the viewport inside a Lipgloss border with a 1-row status bar.
-- Status bar shows session name, coordinator, local time, leader mode, and transient status messages.
+- Bubbletea TUI renders the viewport inside a Lipgloss border with 1-row header and footer bars.
+- Header shows coordinator/session (and exit code on exit) plus version; footer shows leader hints/legend and transient status messages.
 - Attach uses the standard session addressing rules (`coordinator:session` or `--socket`).
 - Uses `Subscribe` for real-time screen updates (output-driven, throttled to 30fps max).
 - Terminal runs in raw mode; input not bound to leader commands is forwarded via `SendBytes`
@@ -232,16 +233,16 @@ TUI features (M6):
   - `c` - Create new session (prompt for name; `tab` toggles focus between name and coordinator;
     j/k changes coordinator; uses coordinator default shell/cwd; attaches to the new session)
   - `d` - Detach (exit TUI, session keeps running)
-  - `k` - Kill current session
-  - `n` - Next session (current coordinator, name-sorted; includes exited)
-  - `p` - Previous session (current coordinator, name-sorted; includes exited)
+  - `x` - Kill current session
+  - `j`/`n` - Next session (current coordinator, name-sorted; includes exited)
+  - `k`/`p` - Previous session (current coordinator, name-sorted; includes exited)
   - `w` - List sessions (current coordinator; fuzzy finder picker using Bubbletea filter component;
     selection switches sessions)
 - `Esc` closes the session picker or create dialog.
-- Window resize sends `Resize` with viewport dimensions (terminal size minus border and status bar).
+- Window resize sends `Resize` with viewport dimensions (terminal size minus border).
 - Session exit keeps the final screen visible, disables input, and marks the UI
   clearly exited (border color change + EXITED badge with exit code); press
-  `q` or `enter` to close the TUI.
+  `q` or `enter` to close the TUI, or use leader commands to switch sessions.
 
 ## Web UI (M7)
 
@@ -289,15 +290,16 @@ protocol; additional HTTP endpoints can be added later if needed.
 - Framework: React with shadcn/ui (Radix + Tailwind) components.
 - Dev tooling: Bun + Vite for fast HMR and modern tooling.
 - Typography: JetBrains Mono for UI + terminal, fallback to `ui-monospace`.
-- Theme: Tokyo Night dark palette (see UI design spec).
+- Theme: Tokyo Night default with selectable presets (Tokyo Night, Nord, Solarized Light).
 - Layout: single-column mobile layout, bottom input bar, tap-to-focus, and a
   minimal action tray (Ctrl, Esc, Tab, arrows, PgUp/PgDn).
 - Session navigation: coordinator tree view with expandable groups (see
   Session Tree View).
 
-### UI design (Tokyo Night)
+### UI design (Tokyo Night default)
 
 Design goals: minimalist, dark, high-contrast, and production-grade.
+Default theme is Tokyo Night; other presets override the same CSS variables.
 
 Design tokens (CSS variables):
 ```css
@@ -328,13 +330,14 @@ Typography:
   keep UI labels non-ligatured for legibility.
 
 Component specs (shadcn/ui primitives):
-- App shell: sticky top bar with coordinator filter + status; background `--tn-panel`.
+- App shell: sticky top bar with status + settings; background `--tn-panel`.
 - Coordinator tree: `Accordion` + `ScrollArea`, group headers 44px tall.
-- Session rows: 44px min height, full-width tap target, status `Badge`.
+- Session rows: compact tap targets with status `Badge` and size metadata.
 - Terminal panel: full-bleed dark panel with subtle border and inset shadow.
 - Input bar: bottom-docked `Input` + `Button` row, 48px height.
 - Action tray: row of ghost buttons (Ctrl, Esc, Tab, arrows), 40px touch targets.
 - Status chip: `Badge` with running/exited colors (`--tn-green` / `--tn-red`).
+- Coordinator filter input: anchored at the bottom of the left panel.
 
 Spacing and shape:
 - Radius: 10px for panels, 8px for inputs/buttons.
@@ -527,8 +530,8 @@ Bridge behavior:
 - When coalescing, the server must ensure any delta is based on the last frame
   it sent to that subscriber; otherwise it sends a keyframe.
 - Server keeps a small ring buffer of recent keyframes (and deltas post-M7) for
-  resync; sends periodic keyframes and on new subscriptions (resubscribe is the
-  resync request).
+  resync; sends periodic keyframes (currently every 5s) and on new subscriptions
+  (resubscribe is the resync request).
 - Compression: off by default for local/Tailscale; for remote links prefer
   transport-level compression (gRPC/HTTP; for WebSocket, consider permessage-deflate
   only after benchmarking). App-level zstd requires explicit framing/negotiation (future).
@@ -558,6 +561,7 @@ Client -> server (Any-wrapped protobuf):
 Server -> client (Any-wrapped protobuf):
 - `vtr.SubscribeEvent { screen_update: { frame_id: 42, base_frame_id: 0, is_keyframe: true, screen: GetScreenResponse{...} } }`
 - `vtr.SubscribeEvent { raw_output: "ls -la\n" }`
+- `vtr.SubscribeEvent { session_idle: { name: "project-a:codex", idle: true } }`
 - `vtr.SubscribeEvent { session_exited: { exit_code: 0 } }`
 - `google.rpc.Status { code: 5, message: "unknown session" }`
 
@@ -607,7 +611,7 @@ explicitly out of scope for this milestone.
 
 - Delta format: `ScreenUpdate` supports keyframes and row-level `row_deltas`; M7 emits keyframes only.
 - Streaming semantics: latest-only policy (drop stale frames per subscriber), no client ACKs;
-  keyframes periodic, on resubscribe, and when base frames are missing.
+  keyframes periodic (currently every 5s), on resubscribe, and when base frames are missing.
 - Cursor: block cursor with no blink; visibility is assumed true in M7.
 - Wide/combining: client-side `wcwidth` heuristic (see Rendering considerations);
   accept limitations until wide metadata is exposed.
@@ -758,6 +762,7 @@ message Session {
   int32 exit_code = 5;  // only valid when status = EXITED
   google.protobuf.Timestamp created_at = 6;
   google.protobuf.Timestamp exited_at = 7;  // only valid when status = EXITED
+  bool idle = 8;
 }
 
 enum SessionStatus {
@@ -868,11 +873,17 @@ message SessionExited {
   int32 exit_code = 1;
 }
 
+message SessionIdle {
+  string name = 1;
+  bool idle = 2;
+}
+
 message SubscribeEvent {
   oneof event {
     ScreenUpdate screen_update = 1;
     bytes raw_output = 2;
     SessionExited session_exited = 3;
+    SessionIdle session_idle = 4;
   }
 }
 ```
@@ -893,6 +904,7 @@ message SubscribeEvent {
   needing a snapshot should call `GetScreen` separately.
 - If `include_screen_updates` is true, the server sends a final keyframe `ScreenUpdate` before
   `session_exited`; `session_exited` is always the last event before stream close.
+- `session_idle` emits whenever the inactivity threshold (default 5s) is crossed based on input/output activity.
 - M8: `mouse_mode_changed` will be emitted on Subscribe start and whenever the app enables or disables
   mouse tracking; clients gate mouse input on this event.
 - `session_exited` is sent once with the exit code; the server closes the stream afterward.
