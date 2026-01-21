@@ -16,6 +16,15 @@ export type MultiViewDashboardProps = {
   onBroadcast: (mode: "text" | "key", value: string, targets: string[]) => boolean;
 };
 
+type ThumbnailSize = "small" | "medium" | "large";
+
+type ThumbnailConfig = {
+  minWidth: number;
+  height: number;
+  fontSize: number;
+  cellHeight: number;
+};
+
 const statusVariants: Record<
   SessionInfo["status"],
   { label: string; variant: "default" | "green" | "red" | "yellow" }
@@ -52,6 +61,7 @@ function SessionThumbnail({
   sessionKey,
   active,
   selected,
+  config,
   onOpen,
   onToggleSelect,
 }: {
@@ -59,6 +69,7 @@ function SessionThumbnail({
   sessionKey: string;
   active: boolean;
   selected: boolean;
+  config: ThumbnailConfig;
   onOpen: (sessionKey: string, session: SessionInfo) => void;
   onToggleSelect: (sessionKey: string) => void;
 }) {
@@ -156,13 +167,16 @@ function SessionThumbnail({
         <span className="truncate text-xs font-semibold text-tn-text">{session.name}</span>
         <Badge variant={status.variant}>{status.label}</Badge>
       </div>
-      <div className="relative flex h-32 items-center justify-center bg-tn-bg-alt px-2 py-2">
+      <div
+        className="relative flex items-center justify-center bg-tn-bg-alt px-2 py-2"
+        style={{ height: `${config.height}px` }}
+      >
         {screen ? (
           <div
             className="h-full w-full overflow-hidden"
             style={{
-              "--terminal-font-size": "8px",
-              "--cell-h": 1.2,
+              "--terminal-font-size": `${config.fontSize}px`,
+              "--cell-h": config.cellHeight,
             } as CSSProperties}
           >
             <TerminalGrid rows={screen.rowsData} selection={null} />
@@ -191,6 +205,17 @@ export function MultiViewDashboard({
   const [selectedSessions, setSelectedSessions] = useState<Set<string>>(() => new Set());
   const [broadcastMode, setBroadcastMode] = useState<"text" | "key">("text");
   const [broadcastValue, setBroadcastValue] = useState("");
+  const [thumbnailSize, setThumbnailSize] = useState<ThumbnailSize>("medium");
+  const thumbnailConfig = useMemo<ThumbnailConfig>(() => {
+    switch (thumbnailSize) {
+      case "small":
+        return { minWidth: 220, height: 96, fontSize: 7, cellHeight: 1.1 };
+      case "large":
+        return { minWidth: 320, height: 160, fontSize: 9, cellHeight: 1.25 };
+      default:
+        return { minWidth: 260, height: 128, fontSize: 8, cellHeight: 1.2 };
+    }
+  }, [thumbnailSize]);
 
   const filtered = useMemo(() => {
     const query = filter.trim().toLowerCase();
@@ -331,6 +356,38 @@ export function MultiViewDashboard({
           value={filter}
           onChange={(event) => setFilter(event.target.value)}
         />
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs text-tn-text-dim">Thumbnail size</span>
+          <div className="flex items-center gap-1 rounded-md border border-tn-border bg-tn-panel-2 p-1">
+            <Button
+              type="button"
+              size="sm"
+              variant={thumbnailSize === "small" ? "default" : "ghost"}
+              className="h-7 px-3 text-[11px]"
+              onClick={() => setThumbnailSize("small")}
+            >
+              Small
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant={thumbnailSize === "medium" ? "default" : "ghost"}
+              className="h-7 px-3 text-[11px]"
+              onClick={() => setThumbnailSize("medium")}
+            >
+              Medium
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant={thumbnailSize === "large" ? "default" : "ghost"}
+              className="h-7 px-3 text-[11px]"
+              onClick={() => setThumbnailSize("large")}
+            >
+              Large
+            </Button>
+          </div>
+        </div>
         <div className="text-xs text-tn-text-dim">
           Use status:running, status:active, status:idle, status:exited or plain text for
           coordinator/session.
@@ -396,7 +453,12 @@ export function MultiViewDashboard({
               No sessions running.
             </div>
           ) : (
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            <div
+              className="grid gap-3"
+              style={{
+                gridTemplateColumns: `repeat(auto-fit, minmax(${thumbnailConfig.minWidth}px, 1fr))`,
+              }}
+            >
               {coord.sessions.map((session) => {
                 const key = sessionKey(coord.name, session);
                 return (
@@ -406,6 +468,7 @@ export function MultiViewDashboard({
                     sessionKey={key}
                     active={activeSession === key}
                     selected={selectedSessions.has(key)}
+                    config={thumbnailConfig}
                     onOpen={onSelect}
                     onToggleSelect={toggleSelect}
                   />
