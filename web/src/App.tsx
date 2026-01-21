@@ -170,8 +170,14 @@ export default function App() {
     }
   }, [selectedSession]);
 
+  const selectedSessionName = selectedSession?.name ?? null;
+
   useEffect(() => {
     setScreen(null);
+    setExitCode(null);
+  }, [selectedSessionName]);
+
+  useEffect(() => {
     if (!selectedSession || selectedSession.status !== "exited") {
       setExitCode(null);
       return;
