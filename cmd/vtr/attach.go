@@ -1484,6 +1484,7 @@ const (
 	sessionIconExited  = "■"
 	sessionIconUnknown = "·"
 	tabOverflowGlyph   = "…"
+	tabNameMaxWidth    = 20
 )
 
 const borderOverlayOffset = 1
@@ -1617,6 +1618,18 @@ func stripCoordinatorPrefix(name string) string {
 	}
 	return name
 }
+func truncateTabName(name string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	if lipgloss.Width(name) <= max {
+		return name
+	}
+	if max == 1 {
+		return tabOverflowGlyph
+	}
+	return ansi.Truncate(name, max, tabOverflowGlyph)
+}
 
 type tabItem struct {
 	name     string
@@ -1702,6 +1715,7 @@ func collectTabSessions(items []sessionListItem, active string, exited bool, exi
 
 func renderTabLabel(item sessionListItem, active bool) string {
 	name := stripCoordinatorPrefix(item.name)
+	name = truncateTabName(name, tabNameMaxWidth)
 	textStyle := attachTabTextStyle
 	if active {
 		textStyle = attachTabTextActiveStyle
