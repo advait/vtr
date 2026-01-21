@@ -1208,14 +1208,13 @@ type legendSegment struct {
 }
 
 var leaderLegend = []legendSegment{
-	{key: "g", label: "LOCK"},
-	{key: "p", label: "PANE"},
-	{key: "t", label: "TAB"},
-	{key: "n", label: "RESIZE"},
-	{key: "h", label: "MOVE"},
-	{key: "s", label: "SEARCH"},
-	{key: "o", label: "SESSION"},
-	{key: "q", label: "QUIT"},
+	{key: "w", label: "LIST"},
+	{key: "j", label: "NEXT"},
+	{key: "k", label: "PREV"},
+	{key: "c", label: "CREATE"},
+	{key: "d", label: "DETACH"},
+	{key: "x", label: "KILL"},
+	{key: "Ctrl+b", label: "SEND"},
 }
 
 const borderOverlayOffset = 1
@@ -1274,7 +1273,7 @@ func renderFooterSegments(view footerView) (string, string) {
 }
 
 func renderLeaderHint() string {
-	return renderLegendSegment("b", "LEADER")
+	return renderLegendSegment("Ctrl+b", "LEADER")
 }
 
 func renderLeaderLegend() string {
@@ -1288,13 +1287,17 @@ func renderLeaderLegend() string {
 func renderExitHints() string {
 	segments := []string{
 		renderLegendSegment("q", "QUIT"),
-		renderLegendSegment("b", "LEADER"),
+		renderLegendSegment("Ctrl+b", "LEADER"),
 	}
 	return joinLegendSegments(segments)
 }
 
 func renderLegendSegment(key, label string) string {
-	return fmt.Sprintf("%s %s", attachHintKeyStyle.Render("Ctrl + "+key), label)
+	displayKey := strings.TrimSpace(key)
+	if strings.HasPrefix(strings.ToLower(displayKey), "ctrl+") {
+		displayKey = "Ctrl+" + strings.TrimSpace(displayKey[len("ctrl+"):])
+	}
+	return fmt.Sprintf("%s %s", attachHintKeyStyle.Render(displayKey), label)
 }
 
 func joinLegendSegments(segments []string) string {
