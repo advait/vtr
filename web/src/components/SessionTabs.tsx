@@ -63,7 +63,7 @@ export function SessionTabs({
   }, [sessions]);
 
   return (
-    <div className="flex items-center gap-2 rounded-lg border border-tn-border bg-tn-panel px-2 py-2">
+    <div className="flex items-center gap-2 rounded-t-lg border border-b-0 border-tn-border bg-tn-panel px-2 pt-2 pb-1">
       <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto">
         {sessions.length === 0 ? (
           <span className="px-3 text-xs text-tn-text-dim">No sessions yet.</span>
@@ -83,7 +83,7 @@ export function SessionTabs({
                     tabIndex={0}
                     title={key}
                     className={cn(
-                      "group flex items-center gap-2 rounded-md border px-3 py-2 text-xs transition-colors",
+                      "group flex items-center gap-2 rounded-t-md rounded-b-none border border-b-0 px-3 py-2 text-xs transition-colors",
                       "cursor-pointer border-tn-border/60 bg-tn-panel text-tn-text",
                       "hover:border-tn-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tn-accent",
                       isActive && "border-tn-accent bg-tn-panel-2",

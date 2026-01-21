@@ -592,7 +592,7 @@ export function TerminalView({
       <div
         ref={containerRef}
         className={cn(
-          "relative h-full min-h-[360px] md:min-h-[420px] w-full rounded-lg border border-tn-border bg-tn-bg-alt focus-within:border-tn-accent",
+          "relative h-full min-h-[360px] md:min-h-[420px] w-full rounded-b-lg rounded-t-none border border-tn-border border-t-0 bg-tn-bg-alt focus-within:border-tn-accent",
           "shadow-panel",
         )}
       >

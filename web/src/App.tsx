@@ -828,38 +828,40 @@ export default function App() {
         <section className="flex min-h-[420px] flex-1 flex-col gap-3">
           {viewMode === "single" ? (
             <div className="flex min-h-0 flex-1 flex-col gap-3 lg:pr-4">
-              <SessionTabs
-                sessions={tabSessions}
-                activeSession={activeSession}
-                onSelect={(sessionKey, session) => {
-                  setSelectedSession({
-                    name: sessionKey,
-                    status: session.status,
-                    exitCode: session.exitCode,
-                  });
-                  setActiveSession(session.status === "exited" ? null : sessionKey);
-                }}
-                onClose={handleCloseTab}
-                onContextMenu={openContextMenu}
-                onMenuOpen={openContextMenuFromButton}
-                onCreate={() => {
-                  setCreateError(null);
-                  setCreateOpen(true);
-                }}
-              />
-              <div className="flex-1 min-h-[360px] md:min-h-[420px]">
-                <TerminalView
-                  screen={screen}
-                  status={displayStatus}
-                  onResize={onResize}
-                  onSendKey={onSendKey}
-                  onSendText={onSendText}
-                  onPaste={onSendText}
-                  autoFocus={isDesktop}
-                  focusKey={selectedSession?.name}
-                  renderer={terminalRenderer}
-                  themeKey={activeTheme.id}
+              <div className="flex min-h-0 flex-1 flex-col">
+                <SessionTabs
+                  sessions={tabSessions}
+                  activeSession={activeSession}
+                  onSelect={(sessionKey, session) => {
+                    setSelectedSession({
+                      name: sessionKey,
+                      status: session.status,
+                      exitCode: session.exitCode,
+                    });
+                    setActiveSession(session.status === "exited" ? null : sessionKey);
+                  }}
+                  onClose={handleCloseTab}
+                  onContextMenu={openContextMenu}
+                  onMenuOpen={openContextMenuFromButton}
+                  onCreate={() => {
+                    setCreateError(null);
+                    setCreateOpen(true);
+                  }}
                 />
+                <div className="flex-1 min-h-[360px] md:min-h-[420px]">
+                  <TerminalView
+                    screen={screen}
+                    status={displayStatus}
+                    onResize={onResize}
+                    onSendKey={onSendKey}
+                    onSendText={onSendText}
+                    onPaste={onSendText}
+                    autoFocus={isDesktop}
+                    focusKey={selectedSession?.name}
+                    renderer={terminalRenderer}
+                    themeKey={activeTheme.id}
+                  />
+                </div>
               </div>
               {!isDesktop && (
                 <>
