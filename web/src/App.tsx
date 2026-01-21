@@ -847,7 +847,7 @@ export default function App() {
                   setCreateOpen(true);
                 }}
               />
-              <div className="flex-1 min-h-[320px]">
+              <div className="flex-1 min-h-[360px] md:min-h-[420px]">
                 <TerminalView
                   screen={screen}
                   status={displayStatus}

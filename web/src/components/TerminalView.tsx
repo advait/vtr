@@ -574,7 +574,7 @@ export function TerminalView({
   };
 
   return (
-    <div className="relative h-full min-h-[320px] w-full">
+    <div className="relative h-full min-h-[360px] md:min-h-[420px] w-full">
       <span
         ref={baseMeasureRef}
         className="absolute -left-[9999px] -top-[9999px] font-mono"
@@ -592,7 +592,7 @@ export function TerminalView({
       <div
         ref={containerRef}
         className={cn(
-          "relative h-full min-h-[320px] w-full rounded-lg border border-tn-border bg-tn-bg-alt focus-within:border-tn-accent",
+          "relative h-full min-h-[360px] md:min-h-[420px] w-full rounded-lg border border-tn-border bg-tn-bg-alt focus-within:border-tn-accent",
           "shadow-panel",
         )}
       >
