@@ -115,6 +115,7 @@ func runWeb(opts webOptions) error {
 	mux.HandleFunc("/api/ws", wsHandler)
 	mux.HandleFunc("/ws", wsHandler)
 	mux.HandleFunc("/api/sessions", handleWebSessions(resolver))
+	mux.HandleFunc("/api/sessions/action", handleWebSessionAction(resolver))
 	if opts.dev {
 		proxy, target, err := newViteProxy(opts.devServer)
 		if err != nil {
@@ -322,67 +323,303 @@ type webSessionsResponse struct {
 	Coordinators []webCoordinator `json:"coordinators"`
 }
 
+type webSessionCreateRequest struct {
+	Name        string `json:"name"`
+	Coordinator string `json:"coordinator,omitempty"`
+	Command     string `json:"command,omitempty"`
+	WorkingDir  string `json:"working_dir,omitempty"`
+	Cols        int32  `json:"cols,omitempty"`
+	Rows        int32  `json:"rows,omitempty"`
+}
+
+type webSessionCreateResponse struct {
+	Coordinator string     `json:"coordinator"`
+	Session     webSession `json:"session"`
+}
+
+type webSessionActionRequest struct {
+	Name   string `json:"name"`
+	Action string `json:"action"`
+	Key    string `json:"key,omitempty"`
+	Signal string `json:"signal,omitempty"`
+}
+
+type webSessionActionResponse struct {
+	OK bool `json:"ok"`
+}
+
 func handleWebSessions(resolver webResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
+		switch r.Method {
+		case http.MethodGet:
+			handleWebSessionsList(w, r, resolver)
+		case http.MethodPost:
+			handleWebSessionCreate(w, r, resolver)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	}
+}
+
+func handleWebSessionsList(w http.ResponseWriter, r *http.Request, resolver webResolver) {
+	coords, err := resolver.coordinators()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	out := webSessionsResponse{Coordinators: make([]webCoordinator, 0, len(coords))}
+	for _, coord := range coords {
+		entry := webCoordinator{Name: coord.Name, Path: coord.Path}
+		ctx, cancel := context.WithTimeout(r.Context(), rpcTimeout)
+		conn, err := dialClient(ctx, coord.Path)
+		cancel()
+		if err != nil {
+			entry.Error = err.Error()
+			out.Coordinators = append(out.Coordinators, entry)
+			continue
+		}
+		client := proto.NewVTRClient(conn)
+		ctx, cancel = context.WithTimeout(r.Context(), rpcTimeout)
+		resp, err := client.List(ctx, &proto.ListRequest{})
+		cancel()
+		_ = conn.Close()
+		if err != nil {
+			entry.Error = err.Error()
+			out.Coordinators = append(out.Coordinators, entry)
+			continue
+		}
+		entry.Sessions = make([]webSession, 0, len(resp.Sessions))
+		for _, session := range resp.Sessions {
+			entry.Sessions = append(entry.Sessions, webSessionFromProto(session))
+		}
+		out.Coordinators = append(out.Coordinators, entry)
+	}
+
+	writeWebJSON(w, out)
+}
+
+func handleWebSessionCreate(w http.ResponseWriter, r *http.Request, resolver webResolver) {
+	var req webSessionCreateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON payload", http.StatusBadRequest)
+		return
+	}
+
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		http.Error(w, "session name is required", http.StatusBadRequest)
+		return
+	}
+
+	coords, err := resolver.coordinators()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	coord, err := selectCoordinator(coords, strings.TrimSpace(req.Coordinator))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), rpcTimeout)
+	conn, err := dialClient(ctx, coord.Path)
+	cancel()
+	if err != nil {
+		writeWebError(w, err)
+		return
+	}
+	defer conn.Close()
+
+	client := proto.NewVTRClient(conn)
+	ctx, cancel = context.WithTimeout(r.Context(), rpcTimeout)
+	resp, err := client.Spawn(ctx, &proto.SpawnRequest{
+		Name:       name,
+		Command:    strings.TrimSpace(req.Command),
+		WorkingDir: strings.TrimSpace(req.WorkingDir),
+		Cols:       req.Cols,
+		Rows:       req.Rows,
+	})
+	cancel()
+	if err != nil {
+		writeWebError(w, err)
+		return
+	}
+
+	writeWebJSON(w, webSessionCreateResponse{
+		Coordinator: coord.Name,
+		Session:     webSessionFromProto(resp.GetSession()),
+	})
+}
+
+func handleWebSessionAction(resolver webResolver) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 
-		coords, err := resolver.coordinators()
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+		var req webSessionActionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid JSON payload", http.StatusBadRequest)
 			return
 		}
 
-		out := webSessionsResponse{Coordinators: make([]webCoordinator, 0, len(coords))}
-		for _, coord := range coords {
-			entry := webCoordinator{Name: coord.Name, Path: coord.Path}
-			ctx, cancel := context.WithTimeout(r.Context(), rpcTimeout)
-			conn, err := dialClient(ctx, coord.Path)
-			cancel()
-			if err != nil {
-				entry.Error = err.Error()
-				out.Coordinators = append(out.Coordinators, entry)
-				continue
-			}
-			client := proto.NewVTRClient(conn)
-			ctx, cancel = context.WithTimeout(r.Context(), rpcTimeout)
-			resp, err := client.List(ctx, &proto.ListRequest{})
-			cancel()
-			_ = conn.Close()
-			if err != nil {
-				entry.Error = err.Error()
-				out.Coordinators = append(out.Coordinators, entry)
-				continue
-			}
-			entry.Sessions = make([]webSession, 0, len(resp.Sessions))
-			for _, session := range resp.Sessions {
-				status := "unknown"
-				switch session.GetStatus() {
-				case proto.SessionStatus_SESSION_STATUS_RUNNING:
-					status = "running"
-				case proto.SessionStatus_SESSION_STATUS_EXITED:
-					status = "exited"
-				}
-				entry.Sessions = append(entry.Sessions, webSession{
-					Name:     session.GetName(),
-					Status:   status,
-					Cols:     session.GetCols(),
-					Rows:     session.GetRows(),
-					Idle:     session.GetIdle(),
-					ExitCode: session.GetExitCode(),
-				})
-			}
-			out.Coordinators = append(out.Coordinators, entry)
+		action := strings.ToLower(strings.TrimSpace(req.Action))
+		name := strings.TrimSpace(req.Name)
+		if name == "" {
+			http.Error(w, "session name is required", http.StatusBadRequest)
+			return
+		}
+		if action == "" {
+			http.Error(w, "action is required", http.StatusBadRequest)
+			return
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		enc := json.NewEncoder(w)
-		if err := enc.Encode(out); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+		target, err := resolveWebTarget(r.Context(), name, resolver)
+		if err != nil {
+			writeWebError(w, err)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), rpcTimeout)
+		conn, err := dialClient(ctx, target.Coordinator.Path)
+		cancel()
+		if err != nil {
+			writeWebError(w, err)
+			return
+		}
+		defer conn.Close()
+
+		client := proto.NewVTRClient(conn)
+		switch action {
+		case "send_key":
+			key := strings.TrimSpace(req.Key)
+			if key == "" {
+				http.Error(w, "key is required for send_key", http.StatusBadRequest)
+				return
+			}
+			ctx, cancel = context.WithTimeout(r.Context(), rpcTimeout)
+			_, err = client.SendKey(ctx, &proto.SendKeyRequest{
+				Name: target.Session,
+				Key:  key,
+			})
+			cancel()
+		case "signal":
+			sig := strings.TrimSpace(req.Signal)
+			if sig == "" {
+				sig = "TERM"
+			}
+			ctx, cancel = context.WithTimeout(r.Context(), rpcTimeout)
+			_, err = client.Kill(ctx, &proto.KillRequest{
+				Name:   target.Session,
+				Signal: sig,
+			})
+			cancel()
+		case "remove":
+			ctx, cancel = context.WithTimeout(r.Context(), rpcTimeout)
+			_, err = client.Remove(ctx, &proto.RemoveRequest{Name: target.Session})
+			cancel()
+		default:
+			http.Error(w, fmt.Sprintf("unknown action %q", action), http.StatusBadRequest)
+			return
+		}
+		if err != nil {
+			writeWebError(w, err)
+			return
+		}
+
+		writeWebJSON(w, webSessionActionResponse{OK: true})
+	}
+}
+
+func selectCoordinator(coords []coordinatorRef, name string) (coordinatorRef, error) {
+	if name != "" {
+		return findCoordinatorByName(coords, name)
+	}
+	if len(coords) == 1 {
+		return coords[0], nil
+	}
+	if len(coords) == 0 {
+		return coordinatorRef{}, errors.New("no coordinators configured")
+	}
+	return coordinatorRef{}, errors.New("multiple coordinators configured; select a coordinator")
+}
+
+func webSessionFromProto(session *proto.Session) webSession {
+	if session == nil {
+		return webSession{}
+	}
+	return webSession{
+		Name:     session.GetName(),
+		Status:   sessionStatusLabel(session),
+		Cols:     session.GetCols(),
+		Rows:     session.GetRows(),
+		Idle:     session.GetIdle(),
+		ExitCode: session.GetExitCode(),
+	}
+}
+
+func sessionStatusLabel(session *proto.Session) string {
+	switch session.GetStatus() {
+	case proto.SessionStatus_SESSION_STATUS_RUNNING:
+		return "running"
+	case proto.SessionStatus_SESSION_STATUS_EXITED:
+		return "exited"
+	default:
+		return "unknown"
+	}
+}
+
+func writeWebJSON(w http.ResponseWriter, value any) {
+	w.Header().Set("Content-Type", "application/json")
+	enc := json.NewEncoder(w)
+	if err := enc.Encode(value); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func writeWebError(w http.ResponseWriter, err error) {
+	code := http.StatusInternalServerError
+	msg := err.Error()
+	if errors.Is(err, context.Canceled) {
+		code = http.StatusRequestTimeout
+	} else {
+		var wsErr wsProtocolError
+		if errors.As(err, &wsErr) {
+			switch wsErr.Code {
+			case codes.InvalidArgument:
+				code = http.StatusBadRequest
+			case codes.NotFound:
+				code = http.StatusNotFound
+			case codes.FailedPrecondition:
+				code = http.StatusPreconditionFailed
+			default:
+				code = http.StatusInternalServerError
+			}
+			msg = wsErr.Message
+			http.Error(w, msg, code)
+			return
 		}
 	}
+	if st, ok := status.FromError(err); ok {
+		switch st.Code() {
+		case codes.InvalidArgument:
+			code = http.StatusBadRequest
+		case codes.NotFound:
+			code = http.StatusNotFound
+		case codes.AlreadyExists:
+			code = http.StatusConflict
+		case codes.FailedPrecondition:
+			code = http.StatusPreconditionFailed
+		case codes.Unavailable:
+			code = http.StatusServiceUnavailable
+		}
+		msg = st.Message()
+	}
+	http.Error(w, msg, code)
 }
 
 func readHello(ctx context.Context, conn *websocket.Conn) (*proto.SubscribeRequest, error) {

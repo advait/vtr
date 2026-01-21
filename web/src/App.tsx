@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type FormEvent,
+  type MouseEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { ActionTray } from "./components/ActionTray";
 import {
   type CoordinatorInfo,
@@ -7,12 +15,13 @@ import {
 } from "./components/CoordinatorTree";
 import { InputBar } from "./components/InputBar";
 import { MultiViewDashboard } from "./components/MultiViewDashboard";
+import { SessionTabs } from "./components/SessionTabs";
 import { TerminalView } from "./components/TerminalView";
 import { Badge } from "./components/ui/Badge";
 import { Button } from "./components/ui/Button";
 import { Input } from "./components/ui/Input";
 import { ScrollArea } from "./components/ui/ScrollArea";
-import { fetchSessions } from "./lib/api";
+import { createSession, fetchSessions, sendSessionAction } from "./lib/api";
 import type { SubscribeEvent } from "./lib/proto";
 import { applyScreenUpdate, type ScreenState } from "./lib/terminal";
 import { applyTheme, getTheme, loadThemeId, storeThemeId, themes } from "./lib/theme";
@@ -119,6 +128,17 @@ export default function App() {
   const [themeId, setThemeId] = useState(() => getTheme(loadThemeId()).id);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [showClosedSessions, setShowClosedSessions] = useState(() => readShowClosedSetting());
+  const [createName, setCreateName] = useState("");
+  const [createCommand, setCreateCommand] = useState("");
+  const [createCoordinator, setCreateCoordinator] = useState("");
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [createBusy, setCreateBusy] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    sessionKey: string;
+    status: SessionInfo["status"];
+  } | null>(null);
   const [isDesktop, setIsDesktop] = useState(() => {
     if (typeof window === "undefined" || !window.matchMedia) {
       return false;
@@ -129,6 +149,7 @@ export default function App() {
   const rafRef = useRef<number | null>(null);
   const lastSize = useRef<{ cols: number; rows: number } | null>(null);
   const settingsRef = useRef<HTMLDivElement | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement | null>(null);
   const activeTheme = useMemo(() => getTheme(themeId), [themeId]);
   const visibleCoordinators = useMemo(() => {
     if (showClosedSessions) {
@@ -141,6 +162,27 @@ export default function App() {
       }))
       .filter((coord) => coord.sessions.length > 0);
   }, [coordinators, showClosedSessions]);
+  const coordinatorOptions = useMemo(
+    () => coordinators.map((coord) => coord.name),
+    [coordinators],
+  );
+  const tabSessions = useMemo(() => {
+    const entries: Array<{
+      key: string;
+      coordinator: string;
+      session: SessionInfo;
+    }> = [];
+    for (const coord of visibleCoordinators) {
+      for (const session of coord.sessions) {
+        entries.push({
+          key: `${coord.name}:${session.name}`,
+          coordinator: coord.name,
+          session,
+        });
+      }
+    }
+    return entries;
+  }, [visibleCoordinators]);
 
   const {
     state,
@@ -182,6 +224,32 @@ export default function App() {
     storeThemeId(activeTheme.id);
   }, [activeTheme]);
 
+  const applySessions = useCallback((data: CoordinatorInfo[]) => {
+    setCoordinators(data);
+    setSelectedSession((prev) => {
+      if (!prev) {
+        return prev;
+      }
+      const match = findSession(data, prev.name);
+      if (!match) {
+        return prev;
+      }
+      if (
+        prev.status === match.status &&
+        prev.exitCode === match.exitCode &&
+        prev.name === match.name
+      ) {
+        return prev;
+      }
+      return { ...prev, ...match };
+    });
+  }, [applySessions]);
+
+  const refreshSessions = useCallback(async () => {
+    const data = await fetchSessions();
+    applySessions(data);
+  }, [applySessions]);
+
   useEffect(() => {
     let active = true;
     let firstLoad = true;
@@ -191,24 +259,7 @@ export default function App() {
         if (!active) {
           return;
         }
-        setCoordinators(data);
-        setSelectedSession((prev) => {
-          if (!prev) {
-            return prev;
-          }
-          const match = findSession(data, prev.name);
-          if (!match) {
-            return prev;
-          }
-          if (
-            prev.status === match.status &&
-            prev.exitCode === match.exitCode &&
-            prev.name === match.name
-          ) {
-            return prev;
-          }
-          return { ...prev, ...match };
-        });
+        applySessions(data);
       } catch {
         if (active) {
           setCoordinators([]);
@@ -252,6 +303,44 @@ export default function App() {
   useEffect(() => {
     writeShowClosedSetting(showClosedSessions);
   }, [showClosedSessions]);
+
+  useEffect(() => {
+    if (coordinatorOptions.length === 0) {
+      return;
+    }
+    if (createCoordinator && coordinatorOptions.includes(createCoordinator)) {
+      return;
+    }
+    setCreateCoordinator(coordinatorOptions[0]);
+  }, [coordinatorOptions, createCoordinator]);
+
+  useEffect(() => {
+    if (!contextMenu) {
+      return;
+    }
+    const handleClick = (event: MouseEvent) => {
+      if (contextMenuRef.current?.contains(event.target as Node)) {
+        return;
+      }
+      setContextMenu(null);
+    };
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setContextMenu(null);
+      }
+    };
+    const handleScroll = () => {
+      setContextMenu(null);
+    };
+    window.addEventListener("mousedown", handleClick);
+    window.addEventListener("keydown", handleKey);
+    window.addEventListener("scroll", handleScroll, true);
+    return () => {
+      window.removeEventListener("mousedown", handleClick);
+      window.removeEventListener("keydown", handleKey);
+      window.removeEventListener("scroll", handleScroll, true);
+    };
+  }, [contextMenu]);
 
   const selectedSessionName = selectedSession?.name ?? null;
 
@@ -401,6 +490,145 @@ export default function App() {
     [sendKeyTo, sendTextTo, state.status],
   );
 
+  const handleCreateSession = useCallback(
+    async (event?: FormEvent) => {
+      event?.preventDefault();
+      const name = createName.trim();
+      if (!name) {
+        setCreateError("Session name is required.");
+        return;
+      }
+      let coordinator = createCoordinator.trim();
+      if (!coordinator && coordinatorOptions.length === 1) {
+        coordinator = coordinatorOptions[0];
+      }
+      if (!coordinator && coordinatorOptions.length > 1) {
+        setCreateError("Select a coordinator.");
+        return;
+      }
+      setCreateBusy(true);
+      setCreateError(null);
+      try {
+        const result = await createSession({
+          name,
+          coordinator: coordinator || undefined,
+          command: createCommand.trim() || undefined,
+        });
+        const sessionKey = `${result.coordinator}:${result.session.name}`;
+        setSelectedSession({
+          name: sessionKey,
+          status: result.session.status,
+          exitCode: result.session.exitCode,
+        });
+        setActiveSession(result.session.status === "exited" ? null : sessionKey);
+        setViewMode("single");
+        setCreateName("");
+        setCreateCommand("");
+        try {
+          await refreshSessions();
+        } catch {
+          // ignore refresh errors; periodic fetch will retry
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Unable to create session.";
+        setCreateError(message);
+      } finally {
+        setCreateBusy(false);
+      }
+    },
+    [
+      createCommand,
+      createCoordinator,
+      createName,
+      coordinatorOptions,
+      refreshSessions,
+    ],
+  );
+
+  const runSessionAction = useCallback(
+    async (payload: Parameters<typeof sendSessionAction>[0], refreshAfter = false) => {
+      try {
+        await sendSessionAction(payload);
+        if (refreshAfter) {
+          await refreshSessions();
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Session action failed.";
+        window.alert(message);
+      } finally {
+        setContextMenu(null);
+      }
+    },
+    [refreshSessions],
+  );
+
+  const handleCloseTab = useCallback(
+    (sessionKey: string, session: SessionInfo) => {
+      if (session.status === "exited") {
+        if (!window.confirm(`Remove exited session ${sessionKey}?`)) {
+          return;
+        }
+        runSessionAction({ name: sessionKey, action: "remove" }, true);
+        return;
+      }
+      if (!window.confirm(`Close session ${sessionKey}?`)) {
+        return;
+      }
+      runSessionAction({ name: sessionKey, action: "signal", signal: "TERM" }, true);
+    },
+    [runSessionAction],
+  );
+
+  const openContextMenu = useCallback(
+    (event: MouseEvent<HTMLDivElement>, sessionKey: string, session: SessionInfo) => {
+      event.preventDefault();
+      const menuWidth = 220;
+      const menuHeight = 240;
+      const viewportWidth = window.innerWidth || 0;
+      const viewportHeight = window.innerHeight || 0;
+      let x = event.clientX;
+      let y = event.clientY;
+      if (viewportWidth) {
+        x = Math.min(x, Math.max(8, viewportWidth - menuWidth - 8));
+      }
+      if (viewportHeight) {
+        y = Math.min(y, Math.max(8, viewportHeight - menuHeight - 8));
+      }
+      setContextMenu({
+        x,
+        y,
+        sessionKey,
+        status: session.status,
+      });
+    },
+    [],
+  );
+
+  const openContextMenuFromButton = useCallback(
+    (event: MouseEvent<HTMLButtonElement>, sessionKey: string, session: SessionInfo) => {
+      const rect = event.currentTarget.getBoundingClientRect();
+      const menuWidth = 220;
+      const menuHeight = 240;
+      const viewportWidth = window.innerWidth || 0;
+      const viewportHeight = window.innerHeight || 0;
+      let x = rect.left;
+      let y = rect.bottom + 6;
+      if (viewportWidth) {
+        x = Math.min(x, Math.max(8, viewportWidth - menuWidth - 8));
+      }
+      if (viewportHeight) {
+        y = Math.min(y, Math.max(8, viewportHeight - menuHeight - 8));
+      }
+      setContextMenu({
+        x,
+        y,
+        sessionKey,
+        status: session.status,
+      });
+    },
+    [],
+  );
+
   const statusBadge = useMemo(() => {
     if (selectedSession?.status === "exited") {
       const label = exitCode !== null ? `exited (${exitCode})` : "exited";
@@ -412,6 +640,8 @@ export default function App() {
 
   const showExit = exitCode !== null && selectedSession?.status !== "exited";
   const displayStatus = selectedSession?.status === "exited" ? "exited" : state.status;
+  const contextLabel = contextMenu?.sessionKey ?? "";
+  const contextRunning = contextMenu?.status === "running";
 
   return (
     <div className="min-h-screen bg-tn-bg text-tn-text">
@@ -493,6 +723,49 @@ export default function App() {
 
       <main className="flex min-h-[calc(100vh-72px)] flex-col gap-4 px-4 pt-4 pb-[calc(1rem+env(safe-area-inset-bottom))] lg:flex-row">
         <aside className="flex w-full flex-col gap-4 lg:w-80">
+          <form
+            className="rounded-lg border border-tn-border bg-tn-panel"
+            onSubmit={handleCreateSession}
+          >
+            <div className="border-b border-tn-border px-4 py-3">
+              <span className="text-xs font-semibold uppercase tracking-wide text-tn-muted">
+                New session
+              </span>
+            </div>
+            <div className="flex flex-col gap-3 px-4 py-3">
+              <Input
+                placeholder="Session name"
+                value={createName}
+                onChange={(event) => setCreateName(event.target.value)}
+                disabled={createBusy}
+              />
+              {coordinatorOptions.length > 1 && (
+                <select
+                  className="h-9 w-full rounded-md border border-tn-border bg-tn-panel-2 px-3 text-sm text-tn-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tn-accent"
+                  value={createCoordinator}
+                  onChange={(event) => setCreateCoordinator(event.target.value)}
+                  disabled={createBusy}
+                  aria-label="Select coordinator"
+                >
+                  {coordinatorOptions.map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+              )}
+              <Input
+                placeholder="Command (optional)"
+                value={createCommand}
+                onChange={(event) => setCreateCommand(event.target.value)}
+                disabled={createBusy}
+              />
+              {createError && <div className="text-xs text-tn-red">{createError}</div>}
+              <Button type="submit" size="sm" disabled={createBusy}>
+                {createBusy ? "Creating..." : "Create session"}
+              </Button>
+            </div>
+          </form>
           <div className="flex min-h-0 flex-1 flex-col rounded-lg border border-tn-border bg-tn-panel">
             <ScrollArea className="flex-1 max-h-[420px] lg:max-h-none">
               <div className="px-4 py-3">
@@ -520,6 +793,21 @@ export default function App() {
         <section className="flex min-h-[420px] flex-1 flex-col gap-3">
           {viewMode === "single" ? (
             <>
+              <SessionTabs
+                sessions={tabSessions}
+                activeSession={activeSession}
+                onSelect={(sessionKey, session) => {
+                  setSelectedSession({
+                    name: sessionKey,
+                    status: session.status,
+                    exitCode: session.exitCode,
+                  });
+                  setActiveSession(session.status === "exited" ? null : sessionKey);
+                }}
+                onClose={handleCloseTab}
+                onContextMenu={openContextMenu}
+                onMenuOpen={openContextMenuFromButton}
+              />
               <div className="flex-1">
                 <TerminalView
                   screen={screen}
@@ -561,6 +849,126 @@ export default function App() {
           )}
         </section>
       </main>
+      {contextMenu && (
+        <div className="fixed inset-0 z-40">
+          <div
+            ref={contextMenuRef}
+            className="absolute w-56 rounded-lg border border-tn-border bg-tn-panel shadow-panel"
+            style={{ left: contextMenu.x, top: contextMenu.y }}
+          >
+            <div className="border-b border-tn-border px-3 py-2 text-xs font-semibold uppercase tracking-wide text-tn-muted">
+              Session actions
+            </div>
+            <div className="flex flex-col py-1 text-sm">
+              <button
+                type="button"
+                className={`px-3 py-2 text-left transition-colors ${
+                  contextRunning
+                    ? "text-tn-text hover:bg-tn-panel-2"
+                    : "cursor-not-allowed text-tn-muted"
+                }`}
+                onClick={() => {
+                  if (!contextRunning) {
+                    return;
+                  }
+                  if (!window.confirm(`Close session ${contextLabel}?`)) {
+                    return;
+                  }
+                  runSessionAction({ name: contextLabel, action: "signal", signal: "TERM" }, true);
+                }}
+                disabled={!contextRunning}
+              >
+                Close session (SIGTERM)
+              </button>
+              <button
+                type="button"
+                className={`px-3 py-2 text-left transition-colors ${
+                  contextRunning
+                    ? "text-tn-text hover:bg-tn-panel-2"
+                    : "cursor-not-allowed text-tn-muted"
+                }`}
+                onClick={() => {
+                  if (!contextRunning) {
+                    return;
+                  }
+                  if (!window.confirm(`Force kill ${contextLabel}?`)) {
+                    return;
+                  }
+                  runSessionAction({ name: contextLabel, action: "signal", signal: "KILL" }, true);
+                }}
+                disabled={!contextRunning}
+              >
+                Force kill (SIGKILL)
+              </button>
+              <div className="my-1 h-px bg-tn-border" />
+              <button
+                type="button"
+                className={`px-3 py-2 text-left transition-colors ${
+                  contextRunning
+                    ? "text-tn-text hover:bg-tn-panel-2"
+                    : "cursor-not-allowed text-tn-muted"
+                }`}
+                onClick={() => {
+                  if (!contextRunning) {
+                    return;
+                  }
+                  runSessionAction({ name: contextLabel, action: "send_key", key: "ctrl+c" });
+                }}
+                disabled={!contextRunning}
+              >
+                Send Ctrl+C
+              </button>
+              <button
+                type="button"
+                className={`px-3 py-2 text-left transition-colors ${
+                  contextRunning
+                    ? "text-tn-text hover:bg-tn-panel-2"
+                    : "cursor-not-allowed text-tn-muted"
+                }`}
+                onClick={() => {
+                  if (!contextRunning) {
+                    return;
+                  }
+                  runSessionAction({ name: contextLabel, action: "send_key", key: "ctrl+z" });
+                }}
+                disabled={!contextRunning}
+              >
+                Send Ctrl+Z
+              </button>
+              <button
+                type="button"
+                className={`px-3 py-2 text-left transition-colors ${
+                  contextRunning
+                    ? "text-tn-text hover:bg-tn-panel-2"
+                    : "cursor-not-allowed text-tn-muted"
+                }`}
+                onClick={() => {
+                  if (!contextRunning) {
+                    return;
+                  }
+                  runSessionAction({ name: contextLabel, action: "send_key", key: "ctrl+d" });
+                }}
+                disabled={!contextRunning}
+              >
+                Send Ctrl+D
+              </button>
+              <div className="my-1 h-px bg-tn-border" />
+              <button
+                type="button"
+                className="px-3 py-2 text-left text-tn-text transition-colors hover:bg-tn-panel-2"
+                onClick={() => {
+                  if (!window.confirm(`Remove session ${contextLabel}?`)) {
+                    return;
+                  }
+                  runSessionAction({ name: contextLabel, action: "remove" }, true);
+                }}
+              >
+                Remove session
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
