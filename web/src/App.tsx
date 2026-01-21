@@ -8,6 +8,7 @@ import {
 import { InputBar } from "./components/InputBar";
 import { TerminalView } from "./components/TerminalView";
 import { Badge } from "./components/ui/Badge";
+import { Button } from "./components/ui/Button";
 import { Input } from "./components/ui/Input";
 import { ScrollArea } from "./components/ui/ScrollArea";
 import { fetchSessions } from "./lib/api";
@@ -93,6 +94,7 @@ export default function App() {
   const [hashSession, setHashSession] = useState(() => readSessionHash());
   const [sessionsLoaded, setSessionsLoaded] = useState(false);
   const [themeId, setThemeId] = useState(() => getTheme(loadThemeId()).id);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [isDesktop, setIsDesktop] = useState(() => {
     if (typeof window === "undefined" || !window.matchMedia) {
       return false;
@@ -102,11 +104,34 @@ export default function App() {
   const latestUpdate = useRef<SubscribeEvent | null>(null);
   const rafRef = useRef<number | null>(null);
   const lastSize = useRef<{ cols: number; rows: number } | null>(null);
+  const settingsRef = useRef<HTMLDivElement | null>(null);
   const activeTheme = useMemo(() => getTheme(themeId), [themeId]);
 
   const { state, setEventHandler, sendText, sendKey, resize, close } = useVtrStream(activeSession, {
     includeRawOutput: false,
   });
+
+  useEffect(() => {
+    if (!settingsOpen) {
+      return;
+    }
+    const handleClick = (event: MouseEvent) => {
+      if (!settingsRef.current?.contains(event.target as Node)) {
+        setSettingsOpen(false);
+      }
+    };
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setSettingsOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClick);
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("mousedown", handleClick);
+      document.removeEventListener("keydown", handleKey);
+    };
+  }, [settingsOpen]);
 
   useEffect(() => {
     applyTheme(activeTheme);
@@ -302,22 +327,44 @@ export default function App() {
               <span className="text-xs text-tn-text-dim">{selectedSession.name}</span>
             )}
           </div>
-          <div className="flex items-center gap-2 lg:ml-auto">
-            <span className="text-xs font-semibold uppercase tracking-wide text-tn-muted">
-              Theme
-            </span>
-            <select
-              className="h-9 rounded-md border border-tn-border bg-tn-panel px-3 text-sm text-tn-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tn-accent"
-              value={activeTheme.id}
-              onChange={(event) => setThemeId(event.target.value)}
-              aria-label="Select theme"
-            >
-              {themes.map((theme) => (
-                <option key={theme.id} value={theme.id}>
-                  {theme.label}
-                </option>
-              ))}
-            </select>
+          <div className="flex items-center gap-2 lg:ml-auto" ref={settingsRef}>
+            <div className="relative">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="border border-tn-border bg-tn-panel"
+                onClick={() => setSettingsOpen((prev) => !prev)}
+                aria-expanded={settingsOpen}
+                aria-controls="settings-menu"
+              >
+                Settings
+              </Button>
+              {settingsOpen && (
+                <div
+                  id="settings-menu"
+                  className="absolute right-0 mt-2 w-64 rounded-lg border border-tn-border bg-tn-panel p-3 shadow-panel"
+                >
+                  <div className="flex flex-col gap-2">
+                    <span className="text-xs font-semibold uppercase tracking-wide text-tn-muted">
+                      Theme
+                    </span>
+                    <select
+                      className="h-9 w-full rounded-md border border-tn-border bg-tn-panel-2 px-3 text-sm text-tn-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tn-accent"
+                      value={activeTheme.id}
+                      onChange={(event) => setThemeId(event.target.value)}
+                      aria-label="Select theme"
+                    >
+                      {themes.map((theme) => (
+                        <option key={theme.id} value={theme.id}>
+                          {theme.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </header>
