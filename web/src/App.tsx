@@ -1,5 +1,4 @@
 import {
-  type FormEvent,
   type MouseEvent,
   useCallback,
   useEffect,
@@ -15,7 +14,6 @@ import { SessionTabs } from "./components/SessionTabs";
 import { TerminalView } from "./components/TerminalView";
 import { Badge } from "./components/ui/Badge";
 import { Button } from "./components/ui/Button";
-import { Input } from "./components/ui/Input";
 import { createSession, fetchSessions, sendSessionAction } from "./lib/api";
 import type { SubscribeEvent } from "./lib/proto";
 import { applyScreenUpdate, type ScreenState } from "./lib/terminal";
@@ -164,12 +162,7 @@ export default function App() {
     readRendererSetting(),
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [createOpen, setCreateOpen] = useState(false);
   const [showClosedSessions, setShowClosedSessions] = useState(() => readShowClosedSetting());
-  const [createName, setCreateName] = useState("");
-  const [createCommand, setCreateCommand] = useState("");
-  const [createCoordinator, setCreateCoordinator] = useState("");
-  const [createError, setCreateError] = useState<string | null>(null);
   const [createBusy, setCreateBusy] = useState(false);
   const [contextMenu, setContextMenu] = useState<{
     x: number;
@@ -187,7 +180,6 @@ export default function App() {
   const rafRef = useRef<number | null>(null);
   const lastSize = useRef<{ cols: number; rows: number } | null>(null);
   const settingsRef = useRef<HTMLDivElement | null>(null);
-  const createPanelRef = useRef<HTMLDivElement | null>(null);
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
   const activeTheme = useMemo(() => getTheme(themeId), [themeId]);
   const visibleCoordinators = useMemo(() => {
@@ -258,27 +250,6 @@ export default function App() {
     };
   }, [settingsOpen]);
 
-  useEffect(() => {
-    if (!createOpen) {
-      return;
-    }
-    const handleClick = (event: MouseEvent) => {
-      if (!createPanelRef.current?.contains(event.target as Node)) {
-        setCreateOpen(false);
-      }
-    };
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setCreateOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handleClick);
-    document.addEventListener("keydown", handleKey);
-    return () => {
-      document.removeEventListener("mousedown", handleClick);
-      document.removeEventListener("keydown", handleKey);
-    };
-  }, [createOpen]);
 
   useEffect(() => {
     applyTheme(activeTheme);
@@ -365,15 +336,6 @@ export default function App() {
     writeShowClosedSetting(showClosedSessions);
   }, [showClosedSessions]);
 
-  useEffect(() => {
-    if (coordinatorOptions.length === 0) {
-      return;
-    }
-    if (createCoordinator && coordinatorOptions.includes(createCoordinator)) {
-      return;
-    }
-    setCreateCoordinator(coordinatorOptions[0]);
-  }, [coordinatorOptions, createCoordinator]);
 
   useEffect(() => {
     if (!contextMenu) {
@@ -571,62 +533,55 @@ export default function App() {
     [sendKeyTo, sendTextTo, state.status],
   );
 
-  const handleCreateSession = useCallback(
-    async (event?: FormEvent) => {
-      event?.preventDefault();
-      const name = createName.trim();
-      if (!name) {
-        setCreateError("Session name is required.");
-        return;
+  const handleCreateSession = useCallback(async () => {
+    if (createBusy) {
+      return;
+    }
+    const activeCoordinator = activeSession?.split(":")[0] ?? "";
+    const coordinator =
+      (activeCoordinator && coordinatorOptions.includes(activeCoordinator)
+        ? activeCoordinator
+        : coordinatorOptions[0]) || "";
+    if (!coordinator) {
+      window.alert("No coordinators available to create a session.");
+      return;
+    }
+    const existing = new Set<string>();
+    const coord = coordinators.find((entry) => entry.name === coordinator);
+    if (coord) {
+      for (const session of coord.sessions) {
+        existing.add(session.name);
       }
-      let coordinator = createCoordinator.trim();
-      if (!coordinator && coordinatorOptions.length === 1) {
-        coordinator = coordinatorOptions[0];
-      }
-      if (!coordinator && coordinatorOptions.length > 1) {
-        setCreateError("Select a coordinator.");
-        return;
-      }
-      setCreateBusy(true);
-      setCreateError(null);
+    }
+    let index = 1;
+    let name = `session-${index}`;
+    while (existing.has(name)) {
+      index += 1;
+      name = `session-${index}`;
+    }
+    setCreateBusy(true);
+    try {
+      const result = await createSession({ name, coordinator });
+      const sessionKey = `${result.coordinator}:${result.session.name}`;
+      setSelectedSession({
+        name: sessionKey,
+        status: result.session.status,
+        exitCode: result.session.exitCode,
+      });
+      setActiveSession(result.session.status === "exited" ? null : sessionKey);
+      setViewMode("single");
       try {
-        const result = await createSession({
-          name,
-          coordinator: coordinator || undefined,
-          command: createCommand.trim() || undefined,
-        });
-        const sessionKey = `${result.coordinator}:${result.session.name}`;
-        setSelectedSession({
-          name: sessionKey,
-          status: result.session.status,
-          exitCode: result.session.exitCode,
-        });
-        setActiveSession(result.session.status === "exited" ? null : sessionKey);
-        setViewMode("single");
-        setCreateOpen(false);
-        setCreateName("");
-        setCreateCommand("");
-        try {
-          await refreshSessions();
-        } catch {
-          // ignore refresh errors; periodic fetch will retry
-        }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : "Unable to create session.";
-        setCreateError(message);
-      } finally {
-        setCreateBusy(false);
+        await refreshSessions();
+      } catch {
+        // ignore refresh errors; periodic fetch will retry
       }
-    },
-    [
-      createCommand,
-      createCoordinator,
-      createName,
-      coordinatorOptions,
-      refreshSessions,
-    ],
-  );
-
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unable to create session.";
+      window.alert(message);
+    } finally {
+      setCreateBusy(false);
+    }
+  }, [activeSession, coordinatorOptions, coordinators, createBusy, refreshSessions]);
   const runSessionAction = useCallback(
     async (payload: Parameters<typeof sendSessionAction>[0], refreshAfter = false) => {
       try {
@@ -843,10 +798,7 @@ export default function App() {
                   onClose={handleCloseTab}
                   onContextMenu={openContextMenu}
                   onMenuOpen={openContextMenuFromButton}
-                  onCreate={() => {
-                    setCreateError(null);
-                    setCreateOpen(true);
-                  }}
+                  onCreate={handleCreateSession}
                 />
                 <div className="flex-1 min-h-[360px] md:min-h-[420px]">
                   <TerminalView
@@ -892,72 +844,6 @@ export default function App() {
           )}
         </section>
       </main>
-      {createOpen && (
-        <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/50 px-4 py-6">
-          <div
-            ref={createPanelRef}
-            className="w-full max-w-md rounded-lg border border-tn-border bg-tn-panel shadow-panel"
-          >
-            <div className="flex items-center justify-between border-b border-tn-border px-4 py-3">
-              <span className="text-xs font-semibold uppercase tracking-wide text-tn-muted">
-                New session
-              </span>
-              <button
-                type="button"
-                className="rounded px-2 py-1 text-xs text-tn-text-dim hover:text-tn-text"
-                onClick={() => setCreateOpen(false)}
-                aria-label="Close new session dialog"
-              >
-                Close
-              </button>
-            </div>
-            <form className="flex flex-col gap-3 px-4 py-4" onSubmit={handleCreateSession}>
-              <Input
-                placeholder="Session name"
-                value={createName}
-                onChange={(event) => setCreateName(event.target.value)}
-                disabled={createBusy}
-              />
-              {coordinatorOptions.length > 1 && (
-                <select
-                  className="h-9 w-full rounded-md border border-tn-border bg-tn-panel-2 px-3 text-sm text-tn-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tn-accent"
-                  value={createCoordinator}
-                  onChange={(event) => setCreateCoordinator(event.target.value)}
-                  disabled={createBusy}
-                  aria-label="Select coordinator"
-                >
-                  {coordinatorOptions.map((name) => (
-                    <option key={name} value={name}>
-                      {name}
-                    </option>
-                  ))}
-                </select>
-              )}
-              <Input
-                placeholder="Command (optional)"
-                value={createCommand}
-                onChange={(event) => setCreateCommand(event.target.value)}
-                disabled={createBusy}
-              />
-              {createError && <div className="text-xs text-tn-red">{createError}</div>}
-              <div className="flex justify-end gap-2 pt-1">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="border border-tn-border bg-tn-panel"
-                  onClick={() => setCreateOpen(false)}
-                >
-                  Cancel
-                </Button>
-                <Button type="submit" size="sm" disabled={createBusy}>
-                  {createBusy ? "Creating..." : "Create session"}
-                </Button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
       {contextMenu && (
         <div className="fixed inset-0 z-40">
           <div
