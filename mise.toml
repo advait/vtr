@@ -46,7 +46,7 @@ outputs = ["go-ghostty/shim/zig-out/llvm-ir/vtr-ghostty-vt.ll"]
 
 [tasks.shim-llvm-asan]
 depends = ["shim-llvm-ir"]
-run = "mkdir -p go-ghostty/shim/zig-out-asan/lib go-ghostty/shim/zig-out-asan/include && clang -x ir -c -fsanitize=address -fno-omit-frame-pointer -fPIC -o go-ghostty/shim/zig-out-asan/lib/vtr-ghostty-vt-asan.o go-ghostty/shim/zig-out/llvm-ir/vtr-ghostty-vt.ll && ar rcs go-ghostty/shim/zig-out-asan/lib/libvtr-ghostty-vt.a go-ghostty/shim/zig-out-asan/lib/vtr-ghostty-vt-asan.o && cp go-ghostty/shim/zig-out/include/vtr_ghostty_vt.h go-ghostty/shim/zig-out-asan/include/"
+run = "mkdir -p go-ghostty/shim/zig-out-asan/lib go-ghostty/shim/zig-out-asan/include && clang -x ir -c -fsanitize=address -fno-omit-frame-pointer -fPIC -o go-ghostty/shim/zig-out-asan/lib/vtr-ghostty-vt-asan.o go-ghostty/shim/zig-out/llvm-ir/vtr-ghostty-vt.ll && ZIG_LIB_DIR=$(zig env | awk '/lib_dir/ {print $3}' | tr -d '\",') && zig build-obj -OReleaseFast -femit-bin=go-ghostty/shim/zig-out-asan/lib/stack_probe.o \"$ZIG_LIB_DIR/compiler_rt/stack_probe.zig\" && ar rcs go-ghostty/shim/zig-out-asan/lib/libvtr-ghostty-vt.a go-ghostty/shim/zig-out-asan/lib/vtr-ghostty-vt-asan.o go-ghostty/shim/zig-out-asan/lib/stack_probe.o && cp go-ghostty/shim/zig-out/include/vtr_ghostty_vt.h go-ghostty/shim/zig-out-asan/include/"
 sources = [
   "go-ghostty/shim/zig-out/llvm-ir/vtr-ghostty-vt.ll",
   "go-ghostty/shim/zig-out/include/vtr_ghostty_vt.h",
@@ -126,7 +126,7 @@ outputs = ["bin/.mise-test-race-cgo.stamp"]
 
 [tasks.test-sanitize-cgo]
 depends = ["proto", "shim-llvm-asan"]
-run = "GODEBUG=cgocheck=2 GOEXPERIMENT=${GOEXPERIMENT:-cgocheck2} ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:suppressions=go-ghostty/shim/sanitizers/asan.supp LSAN_OPTIONS=suppressions=go-ghostty/shim/sanitizers/lsan.supp CGO_ENABLED=1 CC=clang CXX=clang++ go test -asan -tags=asan ./go-ghostty/... ./server/... && mkdir -p bin && touch bin/.mise-test-sanitize-cgo.stamp"
+run = "GOEXPERIMENT=${GOEXPERIMENT:-cgocheck2} ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:suppressions=$PWD/go-ghostty/shim/sanitizers/asan.supp LSAN_OPTIONS=suppressions=$PWD/go-ghostty/shim/sanitizers/lsan.supp CGO_ENABLED=1 CC=clang CXX=clang++ go test -asan -tags=asan ./go-ghostty/... ./server/... && mkdir -p bin && touch bin/.mise-test-sanitize-cgo.stamp"
 sources = [
   "go.mod",
   "go.sum",
