@@ -40,6 +40,7 @@ type attachModel struct {
 	screen         *proto.GetScreenResponse
 
 	sessionList      list.Model
+	sessionItems     []sessionListItem
 	listActive       bool
 	createActive     bool
 	createInput      textinput.Model
@@ -51,6 +52,7 @@ type attachModel struct {
 	exitCode     int32
 	statusMsg    string
 	statusUntil  time.Time
+	lastListAt   time.Time
 
 	now time.Time
 	err error
@@ -102,8 +104,10 @@ type sessionSwitchMsg struct {
 }
 
 type sessionListMsg struct {
-	items []list.Item
-	err   error
+	items    []list.Item
+	sessions []sessionListItem
+	activate bool
+	err      error
 }
 
 type spawnSessionMsg struct {
@@ -117,10 +121,11 @@ type sessionListItem struct {
 	name     string
 	status   proto.SessionStatus
 	exitCode int32
+	idle     bool
 }
 
 func (s sessionListItem) Title() string {
-	return s.name
+	return fmt.Sprintf("%s %s", renderSessionStatusIcon(s), s.name)
 }
 
 func (s sessionListItem) Description() string {
@@ -128,7 +133,10 @@ func (s sessionListItem) Description() string {
 	case proto.SessionStatus_SESSION_STATUS_EXITED:
 		return fmt.Sprintf("exited (%d)", s.exitCode)
 	case proto.SessionStatus_SESSION_STATUS_RUNNING:
-		return "running"
+		if s.idle {
+			return "idle"
+		}
+		return "active"
 	default:
 		return "unknown"
 	}
@@ -156,6 +164,33 @@ var (
 				Bold(true)
 	attachHintChevronStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("240"))
+	attachTabStyle = lipgloss.NewStyle().
+			Background(lipgloss.Color("236")).
+			Padding(0, 1)
+	attachTabActiveStyle = lipgloss.NewStyle().
+				Background(lipgloss.Color("238")).
+				Padding(0, 1).
+				Bold(true)
+	attachTabTextStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("252"))
+	attachTabTextActiveStyle = lipgloss.NewStyle().
+					Foreground(lipgloss.Color("255")).
+					Bold(true)
+	attachTabTextExitedStyle = lipgloss.NewStyle().
+					Foreground(lipgloss.Color("244"))
+	attachStatusActiveStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("2"))
+	attachStatusIdleStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("3"))
+	attachStatusExitedStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("1"))
+	attachStatusUnknownStyle = lipgloss.NewStyle().
+					Foreground(lipgloss.Color("245"))
+	attachFooterTagStyle = lipgloss.NewStyle().
+				Background(lipgloss.Color("235")).
+				Foreground(lipgloss.Color("250"))
+	attachOverflowStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("244"))
 	attachModalStyle = lipgloss.NewStyle().
 				Border(lipgloss.NormalBorder()).
 				BorderForeground(lipgloss.Color("240")).
@@ -213,6 +248,7 @@ func newAttachCmd() *cobra.Command {
 				createCoordIdx:   coordIdx,
 				createFocusInput: true,
 				now:              time.Now(),
+				lastListAt:       time.Now(),
 			}
 
 			prog := tea.NewProgram(model, tea.WithAltScreen())
@@ -282,7 +318,11 @@ func confirmCreateSession(name string) (bool, error) {
 }
 
 func (m attachModel) Init() tea.Cmd {
-	return tea.Batch(startSubscribeCmd(m.client, m.session, m.streamID), tickCmd())
+	return tea.Batch(
+		startSubscribeCmd(m.client, m.session, m.streamID),
+		loadSessionListCmd(m.client, false),
+		tickCmd(),
+	)
 }
 
 func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -322,15 +362,24 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, waitSubscribeCmd(m.stream, m.streamID)
 		}
+		if idle := msg.event.GetSessionIdle(); idle != nil {
+			var cmd tea.Cmd
+			m, cmd = applySessionIdle(m, idle.Name, idle.Idle)
+			if cmd != nil {
+				return m, tea.Batch(cmd, waitSubscribeCmd(m.stream, m.streamID))
+			}
+			return m, waitSubscribeCmd(m.stream, m.streamID)
+		}
 		if exited := msg.event.GetSessionExited(); exited != nil {
 			m.exited = true
 			m.exitCode = exited.ExitCode
 			m.leaderActive = false
+			m.sessionItems = ensureSessionItem(m.sessionItems, m.session, true, exited.ExitCode)
 			if m.streamCancel != nil {
 				m.streamCancel()
 				m.streamCancel = nil
 			}
-			return m, nil
+			return m, m.sessionList.SetItems(sessionItemsToListItems(m.sessionItems))
 		}
 		return m, waitSubscribeCmd(m.stream, m.streamID)
 	case tickMsg:
@@ -339,7 +388,12 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMsg = ""
 			m.statusUntil = time.Time{}
 		}
-		return m, tickCmd()
+		cmds := []tea.Cmd{tickCmd()}
+		if m.client != nil && !m.listActive && !m.createActive && (m.lastListAt.IsZero() || m.now.Sub(m.lastListAt) > 5*time.Second) {
+			m.lastListAt = m.now
+			cmds = append(cmds, loadSessionListCmd(m.client, false))
+		}
+		return m, tea.Batch(cmds...)
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -361,14 +415,20 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return switchSession(m, msg)
 	case sessionListMsg:
 		if msg.err != nil {
-			m.listActive = false
-			m.statusMsg = fmt.Sprintf("list: %v", msg.err)
-			m.statusUntil = time.Now().Add(2 * time.Second)
+			if msg.activate || m.listActive {
+				m.listActive = false
+				m.statusMsg = fmt.Sprintf("list: %v", msg.err)
+				m.statusUntil = time.Now().Add(2 * time.Second)
+			}
 			return m, nil
 		}
-		m.sessionList = newSessionListModel(msg.items, m.viewportWidth, m.viewportHeight)
-		m.listActive = true
-		return m, nil
+		m.sessionItems = msg.sessions
+		m.lastListAt = time.Now()
+		cmd := m.sessionList.SetItems(msg.items)
+		if msg.activate {
+			m.listActive = true
+		}
+		return m, cmd
 	case spawnSessionMsg:
 		if msg.err != nil {
 			if msg.conn != nil {
@@ -450,17 +510,20 @@ func (m attachModel) View() string {
 		border = attachExitedBorderStyle
 	}
 	headerLeft, headerRight := renderHeaderSegments(headerView{
-		session:     m.session,
-		coordinator: m.coordinator.Name,
-		width:       innerWidth,
-		exited:      m.exited,
-		exitCode:    m.exitCode,
+		sessions: m.sessionItems,
+		active:   m.session,
+		width:    innerWidth,
+		exited:   m.exited,
+		exitCode: m.exitCode,
 	})
+	activeItem := currentSessionItem(m)
 	footerLeft, footerRight := renderFooterSegments(footerView{
-		width:     innerWidth,
-		leader:    m.leaderActive,
-		statusMsg: m.statusMsg,
-		exited:    m.exited,
+		width:       innerWidth,
+		leader:      m.leaderActive,
+		statusMsg:   m.statusMsg,
+		exited:      m.exited,
+		coordinator: m.coordinator.Name,
+		active:      activeItem,
 	})
 	view := renderBorderOverlay(content, m.width, m.height, border, headerLeft, headerRight, footerLeft, footerRight)
 	return clampViewHeight(view, m.height)
@@ -606,13 +669,13 @@ func nextSessionCmd(client proto.VTRClient, current string, forward bool) tea.Cm
 	}
 }
 
-func loadSessionListCmd(client proto.VTRClient) tea.Cmd {
+func loadSessionListCmd(client proto.VTRClient, activate bool) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 		defer cancel()
 		resp, err := client.List(ctx, &proto.ListRequest{})
 		if err != nil {
-			return sessionListMsg{err: err}
+			return sessionListMsg{err: err, activate: activate}
 		}
 		sessions := resp.Sessions
 		sort.Slice(sessions, func(i, j int) bool {
@@ -622,17 +685,21 @@ func loadSessionListCmd(client proto.VTRClient) tea.Cmd {
 			return sessions[i].Name < sessions[j].Name
 		})
 		items := make([]list.Item, 0, len(sessions))
+		out := make([]sessionListItem, 0, len(sessions))
 		for _, session := range sessions {
 			if session == nil || session.Name == "" {
 				continue
 			}
-			items = append(items, sessionListItem{
+			entry := sessionListItem{
 				name:     session.Name,
 				status:   session.Status,
 				exitCode: session.ExitCode,
-			})
+				idle:     session.GetIdle(),
+			}
+			out = append(out, entry)
+			items = append(items, entry)
 		}
-		return sessionListMsg{items: items}
+		return sessionListMsg{items: items, sessions: out, activate: activate}
 	}
 }
 
@@ -688,7 +755,7 @@ func handleLeaderKey(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
 		return beginCreateModal(m)
 	case "w":
 		m.listActive = true
-		return m, loadSessionListCmd(m.client)
+		return m, loadSessionListCmd(m.client, true)
 	default:
 		m.statusMsg = fmt.Sprintf("unknown leader key: %s", key)
 		m.statusUntil = time.Now().Add(2 * time.Second)
@@ -882,11 +949,87 @@ func switchSession(m attachModel, msg sessionSwitchMsg) (attachModel, tea.Cmd) {
 	m.createInput.Blur()
 	m.statusMsg = fmt.Sprintf("attached to %s", msg.name)
 	m.statusUntil = time.Now().Add(2 * time.Second)
+	m.sessionItems = ensureSessionItem(m.sessionItems, m.session, false, 0)
 	cmds := []tea.Cmd{startSubscribeCmd(m.client, m.session, m.streamID)}
 	if m.viewportWidth > 0 && m.viewportHeight > 0 {
 		cmds = append(cmds, resizeCmd(m.client, m.session, m.viewportWidth, m.viewportHeight))
 	}
+	cmds = append(cmds, loadSessionListCmd(m.client, false))
 	return m, tea.Batch(cmds...)
+}
+
+func applySessionIdle(m attachModel, name string, idle bool) (attachModel, tea.Cmd) {
+	if name == "" {
+		return m, nil
+	}
+	updated := false
+	for i := range m.sessionItems {
+		if m.sessionItems[i].name == name {
+			m.sessionItems[i].idle = idle
+			updated = true
+			break
+		}
+	}
+	if !updated {
+		m.sessionItems = append(m.sessionItems, sessionListItem{
+			name:   name,
+			status: proto.SessionStatus_SESSION_STATUS_RUNNING,
+			idle:   idle,
+		})
+		sort.Slice(m.sessionItems, func(i, j int) bool {
+			return m.sessionItems[i].name < m.sessionItems[j].name
+		})
+	}
+	return m, m.sessionList.SetItems(sessionItemsToListItems(m.sessionItems))
+}
+
+func ensureSessionItem(items []sessionListItem, name string, exited bool, exitCode int32) []sessionListItem {
+	if name == "" {
+		return items
+	}
+	for i := range items {
+		if items[i].name == name {
+			if exited {
+				items[i].status = proto.SessionStatus_SESSION_STATUS_EXITED
+				items[i].exitCode = exitCode
+			}
+			return items
+		}
+	}
+	status := proto.SessionStatus_SESSION_STATUS_RUNNING
+	if exited {
+		status = proto.SessionStatus_SESSION_STATUS_EXITED
+	}
+	items = append(items, sessionListItem{name: name, status: status, exitCode: exitCode})
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].name < items[j].name
+	})
+	return items
+}
+
+func sessionItemsToListItems(items []sessionListItem) []list.Item {
+	out := make([]list.Item, 0, len(items))
+	for _, item := range items {
+		out = append(out, item)
+	}
+	return out
+}
+
+func currentSessionItem(m attachModel) sessionListItem {
+	for _, item := range m.sessionItems {
+		if item.name == m.session {
+			if m.exited {
+				item.status = proto.SessionStatus_SESSION_STATUS_EXITED
+				item.exitCode = m.exitCode
+			}
+			return item
+		}
+	}
+	status := proto.SessionStatus_SESSION_STATUS_RUNNING
+	if m.exited {
+		status = proto.SessionStatus_SESSION_STATUS_EXITED
+	}
+	return sessionListItem{name: m.session, status: status, exitCode: m.exitCode}
 }
 
 func applyScreenUpdate(m attachModel, update *proto.ScreenUpdate) (attachModel, tea.Cmd) {
@@ -1190,18 +1333,20 @@ func clampViewHeight(view string, height int) string {
 }
 
 type headerView struct {
-	session     string
-	coordinator string
-	width       int
-	exited      bool
-	exitCode    int32
+	sessions []sessionListItem
+	active   string
+	width    int
+	exited   bool
+	exitCode int32
 }
 
 type footerView struct {
-	width     int
-	leader    bool
-	statusMsg string
-	exited    bool
+	width       int
+	leader      bool
+	statusMsg   string
+	exited      bool
+	coordinator string
+	active      sessionListItem
 }
 
 type legendSegment struct {
@@ -1219,46 +1364,42 @@ var leaderLegend = []legendSegment{
 	{key: "Ctrl+b", label: "SEND"},
 }
 
+const (
+	sessionIconActive  = "●"
+	sessionIconIdle    = "○"
+	sessionIconExited  = "■"
+	sessionIconUnknown = "·"
+	tabOverflowGlyph   = "…"
+)
+
 const borderOverlayOffset = 1
 
 func renderHeaderSegments(view headerView) (string, string) {
 	if view.width <= 0 {
 		return "", ""
 	}
-	left := ""
-	switch {
-	case view.coordinator != "" && view.session != "":
-		left = fmt.Sprintf("%s:%s", view.coordinator, view.session)
-	case view.coordinator != "":
-		left = view.coordinator
-	case view.session != "":
-		left = view.session
-	}
-	if view.exited {
-		if left != "" {
-			left = fmt.Sprintf("EXITED %d | %s", view.exitCode, left)
-		} else {
-			left = fmt.Sprintf("EXITED %d", view.exitCode)
-		}
-	}
-	right := fmt.Sprintf("vtr %s", Version)
-	if left != "" {
-		left = attachHeaderStyle.Render(" " + left + " ")
-	}
-	if right != "" {
-		right = attachHeaderStyle.Render(" " + right + " ")
-	}
-	return left, right
+	return renderTabBar(view), ""
 }
 
 func renderFooterSegments(view footerView) (string, string) {
 	if view.width <= 0 {
 		return "", ""
 	}
-	left := ""
-	if view.statusMsg != "" {
-		left = attachStatusStyle.Render(" " + view.statusMsg + " ")
+	leftSegments := make([]string, 0, 3)
+	if view.coordinator != "" {
+		leftSegments = append(leftSegments, attachFooterTagStyle.Render(" "+view.coordinator+" "))
 	}
+	if view.active.name != "" {
+		state := sessionStateLabel(view.active)
+		if state != "" {
+			leftSegments = append(leftSegments, attachFooterTagStyle.Render(" "+state+" "))
+		}
+	}
+	if view.statusMsg != "" {
+		leftSegments = append(leftSegments, attachStatusStyle.Render(" "+view.statusMsg+" "))
+	}
+	left := strings.Join(leftSegments, " ")
+
 	right := ""
 	switch {
 	case view.leader:
@@ -1294,6 +1435,37 @@ func renderExitHints() string {
 	return joinLegendSegments(segments)
 }
 
+func renderSessionStatusIcon(item sessionListItem) string {
+	switch item.status {
+	case proto.SessionStatus_SESSION_STATUS_RUNNING:
+		if item.idle {
+			return attachStatusIdleStyle.Render(sessionIconIdle)
+		}
+		return attachStatusActiveStyle.Render(sessionIconActive)
+	case proto.SessionStatus_SESSION_STATUS_EXITED:
+		return attachStatusExitedStyle.Render(sessionIconExited)
+	default:
+		return attachStatusUnknownStyle.Render(sessionIconUnknown)
+	}
+}
+
+func sessionStateLabel(item sessionListItem) string {
+	switch item.status {
+	case proto.SessionStatus_SESSION_STATUS_RUNNING:
+		if item.idle {
+			return fmt.Sprintf("%s idle", renderSessionStatusIcon(item))
+		}
+		return fmt.Sprintf("%s active", renderSessionStatusIcon(item))
+	case proto.SessionStatus_SESSION_STATUS_EXITED:
+		if item.exitCode != 0 {
+			return fmt.Sprintf("%s exited (%d)", renderSessionStatusIcon(item), item.exitCode)
+		}
+		return fmt.Sprintf("%s exited", renderSessionStatusIcon(item))
+	default:
+		return fmt.Sprintf("%s unknown", renderSessionStatusIcon(item))
+	}
+}
+
 func renderLegendSegment(key, label string) string {
 	displayKey := strings.TrimSpace(key)
 	if strings.HasPrefix(strings.ToLower(displayKey), "ctrl+") {
@@ -1305,6 +1477,175 @@ func renderLegendSegment(key, label string) string {
 func joinLegendSegments(segments []string) string {
 	sep := attachHintChevronStyle.Render(">")
 	return strings.Join(segments, " "+sep+" ")
+}
+
+func stripCoordinatorPrefix(name string) string {
+	if idx := strings.LastIndex(name, ":"); idx >= 0 && idx < len(name)-1 {
+		return name[idx+1:]
+	}
+	return name
+}
+
+type tabItem struct {
+	label  string
+	width  int
+	active bool
+}
+
+func renderTabBar(view headerView) string {
+	sessions := collectTabSessions(view.sessions, view.active, view.exited, view.exitCode)
+	if len(sessions) == 0 || view.width <= 0 {
+		return ""
+	}
+	tabs := make([]tabItem, 0, len(sessions))
+	activeIdx := 0
+	for i, session := range sessions {
+		active := session.name == view.active
+		if active {
+			activeIdx = i
+		}
+		label := renderTabLabel(session, active)
+		tabs = append(tabs, tabItem{
+			label:  label,
+			width:  lipgloss.Width(label),
+			active: active,
+		})
+	}
+	return fitTabsToWidth(tabs, activeIdx, view.width)
+}
+
+func collectTabSessions(items []sessionListItem, active string, exited bool, exitCode int32) []sessionListItem {
+	if active == "" && len(items) == 0 {
+		return nil
+	}
+	out := append([]sessionListItem(nil), items...)
+	found := false
+	for i := range out {
+		if out[i].name == active {
+			found = true
+			if exited {
+				out[i].status = proto.SessionStatus_SESSION_STATUS_EXITED
+				out[i].exitCode = exitCode
+			}
+			break
+		}
+	}
+	if !found && active != "" {
+		status := proto.SessionStatus_SESSION_STATUS_RUNNING
+		if exited {
+			status = proto.SessionStatus_SESSION_STATUS_EXITED
+		}
+		out = append(out, sessionListItem{name: active, status: status, exitCode: exitCode})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].name < out[j].name
+	})
+	return out
+}
+
+func renderTabLabel(item sessionListItem, active bool) string {
+	name := stripCoordinatorPrefix(item.name)
+	textStyle := attachTabTextStyle
+	if active {
+		textStyle = attachTabTextActiveStyle
+	} else if item.status == proto.SessionStatus_SESSION_STATUS_EXITED {
+		textStyle = attachTabTextExitedStyle
+	}
+	label := fmt.Sprintf("%s %s", renderSessionStatusIcon(item), textStyle.Render(name))
+	if active {
+		return attachTabActiveStyle.Render(label)
+	}
+	return attachTabStyle.Render(label)
+}
+
+func fitTabsToWidth(tabs []tabItem, activeIdx, width int) string {
+	if len(tabs) == 0 || width <= 0 {
+		return ""
+	}
+	gap := " "
+	gapWidth := lipgloss.Width(gap)
+	total := tabItemsWidth(tabs, gapWidth)
+	if total <= width {
+		return joinTabItems(tabs, gap)
+	}
+	if activeIdx < 0 || activeIdx >= len(tabs) {
+		activeIdx = 0
+	}
+	selected := []tabItem{tabs[activeIdx]}
+	left := activeIdx - 1
+	right := activeIdx + 1
+	for {
+		added := false
+		if left >= 0 {
+			candidate := append([]tabItem{tabs[left]}, selected...)
+			if tabItemsWidth(candidate, gapWidth) <= width {
+				selected = candidate
+				left--
+				added = true
+			}
+		}
+		if right < len(tabs) {
+			candidate := append(append([]tabItem(nil), selected...), tabs[right])
+			if tabItemsWidth(candidate, gapWidth) <= width {
+				selected = candidate
+				right++
+				added = true
+			}
+		}
+		if !added {
+			break
+		}
+	}
+	ellipsis := tabItem{
+		label: attachOverflowStyle.Render(tabOverflowGlyph),
+		width: lipgloss.Width(tabOverflowGlyph),
+	}
+	if left >= 0 {
+		candidate := append([]tabItem{ellipsis}, selected...)
+		for tabItemsWidth(candidate, gapWidth) > width && len(selected) > 1 {
+			selected = selected[1:]
+			candidate = append([]tabItem{ellipsis}, selected...)
+		}
+		if tabItemsWidth(candidate, gapWidth) <= width {
+			selected = candidate
+		}
+	}
+	if right < len(tabs) {
+		candidate := append(append([]tabItem(nil), selected...), ellipsis)
+		for tabItemsWidth(candidate, gapWidth) > width && len(selected) > 1 {
+			selected = selected[:len(selected)-1]
+			candidate = append(append([]tabItem(nil), selected...), ellipsis)
+		}
+		if tabItemsWidth(candidate, gapWidth) <= width {
+			selected = candidate
+		}
+	}
+	return joinTabItems(selected, gap)
+}
+
+func tabItemsWidth(tabs []tabItem, gapWidth int) int {
+	if len(tabs) == 0 {
+		return 0
+	}
+	total := gapWidth * (len(tabs) - 1)
+	for _, tab := range tabs {
+		total += tab.width
+	}
+	return total
+}
+
+func joinTabItems(tabs []tabItem, gap string) string {
+	if len(tabs) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i, tab := range tabs {
+		if i > 0 {
+			b.WriteString(gap)
+		}
+		b.WriteString(tab.label)
+	}
+	return b.String()
 }
 
 func renderBorderOverlay(content string, width, height int, borderStyle lipgloss.Style, headerLeft, headerRight, footerLeft, footerRight string) string {
