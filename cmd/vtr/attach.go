@@ -750,9 +750,9 @@ func handleLeaderKey(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
 		m.statusMsg = "kill sent"
 		m.statusUntil = time.Now().Add(2 * time.Second)
 		return m, killCmd(m.client, m.session)
-	case "j", "n":
+	case "j", "n", "l":
 		return m, nextSessionCmd(m.client, m.session, true)
-	case "k", "p":
+	case "k", "p", "h":
 		return m, nextSessionCmd(m.client, m.session, false)
 	case "c":
 		return beginCreateModal(m)
@@ -1414,8 +1414,8 @@ type legendSegment struct {
 
 var leaderLegend = []legendSegment{
 	{key: "w", label: "LIST"},
-	{key: "j", label: "NEXT"},
-	{key: "k", label: "PREV"},
+	{key: "j/l", label: "NEXT"},
+	{key: "k/h", label: "PREV"},
 	{key: "c", label: "CREATE"},
 	{key: "d", label: "DETACH"},
 	{key: "x", label: "KILL"},
