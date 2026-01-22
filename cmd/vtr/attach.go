@@ -51,6 +51,7 @@ type attachModel struct {
 	hoverNew bool
 
 	leaderActive bool
+	showExited   bool
 	exited       bool
 	exitCode     int32
 	statusMsg    string
@@ -452,7 +453,7 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.streamCancel()
 				m.streamCancel = nil
 			}
-			return m, m.sessionList.SetItems(sessionItemsToListItems(m.sessionItems))
+			return m, m.sessionList.SetItems(sessionItemsToListItems(visibleSessionItems(m)))
 		}
 		return m, waitSubscribeCmd(m.stream, m.streamID)
 	case tickMsg:
@@ -500,7 +501,7 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.sessionItems = msg.sessions
 		m.lastListAt = time.Now()
-		cmd := m.sessionList.SetItems(msg.items)
+		cmd := m.sessionList.SetItems(sessionItemsToListItems(visibleSessionItems(m)))
 		if msg.activate {
 			m.listActive = true
 		}
@@ -572,7 +573,7 @@ func (m attachModel) View() string {
 		border = attachExitedBorderStyle
 	}
 	headerLeft, headerRight := renderHeaderSegments(headerView{
-		sessions: m.sessionItems,
+		sessions: visibleSessionItems(m),
 		active:   m.session,
 		width:    overlayWidth,
 		exited:   m.exited,
@@ -696,7 +697,7 @@ func killCmd(client proto.VTRClient, name string) tea.Cmd {
 	}
 }
 
-func nextSessionCmd(client proto.VTRClient, current string, forward bool) tea.Cmd {
+func nextSessionCmd(client proto.VTRClient, current string, forward bool, showExited bool) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 		defer cancel()
@@ -707,6 +708,9 @@ func nextSessionCmd(client proto.VTRClient, current string, forward bool) tea.Cm
 		names := make([]string, 0, len(resp.Sessions))
 		for _, session := range resp.Sessions {
 			if session != nil && session.Name != "" {
+				if !showExited && session.Status == proto.SessionStatus_SESSION_STATUS_EXITED {
+					continue
+				}
 				names = append(names, session.Name)
 			}
 		}
@@ -865,11 +869,20 @@ func handleLeaderKey(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
 		m.statusUntil = time.Now().Add(2 * time.Second)
 		return m, killCmd(m.client, m.session)
 	case "j", "n", "l":
-		return m, nextSessionCmd(m.client, m.session, true)
+		return m, nextSessionCmd(m.client, m.session, true, m.showExited)
 	case "k", "p", "h":
-		return m, nextSessionCmd(m.client, m.session, false)
+		return m, nextSessionCmd(m.client, m.session, false, m.showExited)
 	case "c":
 		return beginCreateModal(m)
+	case "e":
+		m.showExited = !m.showExited
+		if m.showExited {
+			m.statusMsg = "showing closed sessions"
+		} else {
+			m.statusMsg = "hiding closed sessions"
+		}
+		m.statusUntil = time.Now().Add(2 * time.Second)
+		return m, m.sessionList.SetItems(sessionItemsToListItems(visibleSessionItems(m)))
 	case "w":
 		m.listActive = true
 		return m, loadSessionListCmd(m.client, true)
@@ -922,7 +935,7 @@ func handleMouse(m attachModel, msg tea.MouseMsg) (attachModel, tea.Cmd) {
 			return m, nil
 		}
 		tab, ok := tabAtOffsetX(headerView{
-			sessions: m.sessionItems,
+			sessions: visibleSessionItems(m),
 			active:   m.session,
 			width:    headerWidth,
 			exited:   m.exited,
@@ -949,9 +962,9 @@ func handleMouse(m attachModel, msg tea.MouseMsg) (attachModel, tea.Cmd) {
 		}
 		switch msg.Button {
 		case tea.MouseButtonWheelUp, tea.MouseButtonWheelLeft:
-			return m, nextSessionCmd(m.client, m.session, false)
+			return m, nextSessionCmd(m.client, m.session, false, m.showExited)
 		default:
-			return m, nextSessionCmd(m.client, m.session, true)
+			return m, nextSessionCmd(m.client, m.session, true, m.showExited)
 		}
 	}
 	if msg.Action != tea.MouseActionPress {
@@ -978,7 +991,7 @@ func handleMouse(m attachModel, msg tea.MouseMsg) (attachModel, tea.Cmd) {
 		return m, nil
 	}
 	tab, ok := tabAtOffsetX(headerView{
-		sessions: m.sessionItems,
+		sessions: visibleSessionItems(m),
 		active:   m.session,
 		width:    headerWidth,
 		exited:   m.exited,
@@ -1234,7 +1247,7 @@ func applySessionIdle(m attachModel, name string, idle bool) (attachModel, tea.C
 			return m.sessionItems[i].name < m.sessionItems[j].name
 		})
 	}
-	return m, m.sessionList.SetItems(sessionItemsToListItems(m.sessionItems))
+	return m, m.sessionList.SetItems(sessionItemsToListItems(visibleSessionItems(m)))
 }
 
 func ensureSessionItem(items []sessionListItem, name string, exited bool, exitCode int32) []sessionListItem {
@@ -1259,6 +1272,24 @@ func ensureSessionItem(items []sessionListItem, name string, exited bool, exitCo
 		return items[i].name < items[j].name
 	})
 	return items
+}
+
+func visibleSessionItems(m attachModel) []sessionListItem {
+	return filterVisibleSessionItems(m.sessionItems, m.showExited, m.session)
+}
+
+func filterVisibleSessionItems(items []sessionListItem, showExited bool, active string) []sessionListItem {
+	if showExited {
+		return items
+	}
+	out := make([]sessionListItem, 0, len(items))
+	for _, item := range items {
+		if item.status == proto.SessionStatus_SESSION_STATUS_EXITED && item.name != active {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 func sessionItemsToListItems(items []sessionListItem) []list.Item {
@@ -1614,6 +1645,7 @@ var leaderLegend = []legendSegment{
 	{key: "j/l", label: "NEXT"},
 	{key: "k/h", label: "PREV"},
 	{key: "c", label: "CREATE"},
+	{key: "e", label: "CLOSED"},
 	{key: "d", label: "DETACH"},
 	{key: "x", label: "KILL"},
 	{key: "Ctrl+b", label: "SEND"},
