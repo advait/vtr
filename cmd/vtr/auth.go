@@ -68,6 +68,9 @@ func buildServerTLSConfig(cfg serverConfig, auth authConfig, requireClientCert b
 	}
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("missing server TLS cert/key (cert_file=%s key_file=%s). Run `vtr setup` or set [server] cert_file/key_file to valid paths", certFile, keyFile)
+		}
 		return nil, err
 	}
 	tlsConfig := &tls.Config{
@@ -81,6 +84,9 @@ func buildServerTLSConfig(cfg serverConfig, auth authConfig, requireClientCert b
 		}
 		caData, err := os.ReadFile(caFile)
 		if err != nil {
+			if os.IsNotExist(err) {
+				return nil, fmt.Errorf("missing auth CA file (ca_file=%s). Run `vtr setup` or set [auth] ca_file to a valid path", caFile)
+			}
 			return nil, err
 		}
 		pool := x509.NewCertPool()

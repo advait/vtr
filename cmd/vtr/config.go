@@ -99,7 +99,7 @@ func resolveConfigPaths(cfg *clientConfig, dir string) *clientConfig {
 	out := *cfg
 	out.Hub = resolveHubConfig(out.Hub)
 	out.Auth = resolveAuthConfig(out.Auth, dir)
-	out.Server = resolveServerConfig(out.Server, dir)
+	out.Server = resolveServerConfig(out.Server, out.Auth, dir)
 	return &out
 }
 
@@ -129,7 +129,14 @@ func resolveAuthConfig(cfg authConfig, dir string) authConfig {
 	return cfg
 }
 
-func resolveServerConfig(cfg serverConfig, dir string) serverConfig {
+func resolveServerConfig(cfg serverConfig, auth authConfig, dir string) serverConfig {
+	certTrim := strings.TrimSpace(cfg.CertFile)
+	keyTrim := strings.TrimSpace(cfg.KeyFile)
+	mode := strings.ToLower(strings.TrimSpace(auth.Mode))
+	requireTLS := mode == "mtls" || mode == "both"
+	if certTrim == "" && keyTrim == "" && !requireTLS {
+		return cfg
+	}
 	cfg.CertFile = resolvePath(cfg.CertFile, dir, "server.crt")
 	cfg.KeyFile = resolvePath(cfg.KeyFile, dir, "server.key")
 	return cfg
