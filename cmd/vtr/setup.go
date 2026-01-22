@@ -138,9 +138,33 @@ func printSetupBanner() {
 		"  ░▒▓█▓▓█▓▒░    ░▒▓█▓▒░   ░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░      ░▒▓█▓▒░░▒▓█▓▒░ ",
 		"   ░▒▓██▓▒░     ░▒▓█▓▒░   ░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░       ░▒▓██████▓▒░  ",
 	}
-	fmt.Fprintln(os.Stdout, strings.Join(banner, "\n"))
+	fmt.Fprintln(os.Stdout)
+	if supportsColor() {
+		colors := []string{"31", "33", "32", "36", "34", "35", "31"}
+		for i, line := range banner {
+			color := colors[i%len(colors)]
+			fmt.Fprintf(os.Stdout, "\x1b[%sm%s\x1b[0m\n", color, line)
+		}
+	} else {
+		fmt.Fprintln(os.Stdout, strings.Join(banner, "\n"))
+	}
 	fmt.Fprintln(os.Stdout, "Welcome to vtrpc setup.")
 	fmt.Fprintln(os.Stdout)
+}
+
+func supportsColor() bool {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("NO_COLOR")), "1") {
+		return false
+	}
+	term := strings.TrimSpace(os.Getenv("TERM"))
+	if term == "" || term == "dumb" {
+		return false
+	}
+	info, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return (info.Mode() & os.ModeCharDevice) != 0
 }
 
 func buildSetupConfig(socketPath, configDir string) string {
