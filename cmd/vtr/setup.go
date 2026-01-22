@@ -42,11 +42,17 @@ func newSetupCmd() *cobra.Command {
 func runSetup(_ setupOptions) error {
 	printSetupBanner()
 
-	configDir, err := resolveSetupConfigDir()
+	baseDir := configDir()
+	if strings.TrimSpace(baseDir) == "" {
+		return errors.New("config directory is unavailable (set VTRPC_CONFIG_DIR)")
+	}
+	printSetupPlan(baseDir)
+
+	configDir, err := resolveSetupConfigDir(baseDir)
 	if err != nil {
 		return err
 	}
-	printSetupPlan(configDir)
+	fmt.Fprintf(os.Stdout, "Using config directory: %s\n\n", configDir)
 
 	configPath := filepath.Join(configDir, defaultConfigFileName)
 	if exists(configPath) {
@@ -157,8 +163,8 @@ func printSetupBanner() {
 func printSetupPlan(configDir string) {
 	fmt.Fprintln(os.Stdout, "This will bootstrap vtrpc on this machine:")
 	fmt.Fprintf(os.Stdout, "- Create config in %s (override with VTRPC_CONFIG_DIR)\n", configDir)
-	fmt.Fprintln(os.Stdout, "- Generate a local CA, server/client certs, and an auth token")
-	fmt.Fprintln(os.Stdout, "- Write vtrpc.toml, ca.crt, server.crt, server.key, client.crt, client.key, token")
+	fmt.Fprintln(os.Stdout, "- Generate keys and certificates for secure connection")
+	fmt.Fprintln(os.Stdout, "- Create vtrpc.toml config based on your preferences")
 	fmt.Fprintln(os.Stdout)
 }
 
@@ -381,8 +387,7 @@ func canWriteDir(dir string) bool {
 	return true
 }
 
-func resolveSetupConfigDir() (string, error) {
-	dir := configDir()
+func resolveSetupConfigDir(dir string) (string, error) {
 	if strings.TrimSpace(dir) == "" {
 		return "", errors.New("config directory is unavailable (set VTRPC_CONFIG_DIR)")
 	}
@@ -390,20 +395,33 @@ func resolveSetupConfigDir() (string, error) {
 		return dir, nil
 	}
 	fallback := fallbackConfigDir()
-	if fallback == "" || !isWritableConfigDir(fallback) {
-		return "", fmt.Errorf("%s is not writable; set VTRPC_CONFIG_DIR to a writable location", dir)
+	if fallback != "" && isWritableConfigDir(fallback) {
+		confirm, err := promptConfirm(
+			fmt.Sprintf("%s is not writable; use %s instead? (set VTRPC_CONFIG_DIR to persist)", dir, fallback),
+			true,
+		)
+		if err != nil {
+			return "", err
+		}
+		if confirm {
+			return fallback, nil
+		}
 	}
-	confirm, err := promptConfirm(
-		fmt.Sprintf("%s is not writable; use %s instead? (set VTRPC_CONFIG_DIR to persist)", dir, fallback),
-		true,
-	)
-	if err != nil {
-		return "", err
+
+	for {
+		value, err := promptInput("Enter a writable config directory (or press Enter to cancel)")
+		if err != nil {
+			return "", err
+		}
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return "", fmt.Errorf("%s is not writable; set VTRPC_CONFIG_DIR to a writable location", dir)
+		}
+		if isWritableConfigDir(value) {
+			return value, nil
+		}
+		fmt.Fprintf(os.Stdout, "%s is not writable.\n", value)
 	}
-	if !confirm {
-		return "", fmt.Errorf("%s is not writable; set VTRPC_CONFIG_DIR to a writable location", dir)
-	}
-	return fallback, nil
 }
 
 func isWritableConfigDir(dir string) bool {
@@ -453,4 +471,14 @@ func promptConfirm(prompt string, defaultYes bool) (bool, error) {
 			fmt.Fprintln(os.Stdout, "Please answer y or n.")
 		}
 	}
+}
+
+func promptInput(prompt string) (string, error) {
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Fprintf(os.Stdout, "%s: ", prompt)
+	input, err := reader.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(input), nil
 }
