@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"image/color"
 	"log"
@@ -17,6 +18,8 @@ import (
 	proto "github.com/advait/vtrpc/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
@@ -110,6 +113,112 @@ func ServeUnix(ctx context.Context, coord *Coordinator, socketPath string) error
 	case err := <-errCh:
 		return err
 	}
+}
+
+// ServeTCP runs the gRPC server on a TCP address until ctx is canceled.
+// TLS is required when binding to a non-loopback address.
+func ServeTCP(ctx context.Context, coord *Coordinator, addr string, tlsConfig *tls.Config, token string) error {
+	if strings.TrimSpace(addr) == "" {
+		return errors.New("grpc: tcp address is required")
+	}
+	if !isLoopbackAddress(addr) && tlsConfig == nil {
+		return errors.New("grpc: tls config is required for non-loopback tcp")
+	}
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = listener.Close()
+	}()
+
+	opts := []grpc.ServerOption{
+		grpc.UnaryInterceptor(tokenUnaryInterceptor(token)),
+		grpc.StreamInterceptor(tokenStreamInterceptor(token)),
+	}
+	if tlsConfig != nil {
+		opts = append(opts, grpc.Creds(credentials.NewTLS(tlsConfig)))
+	}
+
+	grpcServer := grpc.NewServer(opts...)
+	proto.RegisterVTRServer(grpcServer, NewGRPCServer(coord))
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- grpcServer.Serve(listener)
+	}()
+
+	select {
+	case <-ctx.Done():
+		grpcServer.GracefulStop()
+		err := <-errCh
+		if err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+			return err
+		}
+		return ctx.Err()
+	case err := <-errCh:
+		return err
+	}
+}
+
+func tokenUnaryInterceptor(token string) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+		if token != "" && !hasValidToken(ctx, token) {
+			return nil, status.Error(codes.Unauthenticated, "missing or invalid authorization token")
+		}
+		return handler(ctx, req)
+	}
+}
+
+func tokenStreamInterceptor(token string) grpc.StreamServerInterceptor {
+	return func(srv interface{}, stream grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		if token != "" && !hasValidToken(stream.Context(), token) {
+			return status.Error(codes.Unauthenticated, "missing or invalid authorization token")
+		}
+		return handler(srv, stream)
+	}
+}
+
+func hasValidToken(ctx context.Context, token string) bool {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return false
+	}
+	for _, value := range md.Get("authorization") {
+		if matchesBearerToken(value, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesBearerToken(value, token string) bool {
+	fields := strings.Fields(value)
+	if len(fields) != 2 {
+		return false
+	}
+	if strings.ToLower(fields[0]) != "bearer" {
+		return false
+	}
+	return fields[1] == token
+}
+
+func isLoopbackAddress(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "" {
+		return false
+	}
+	trimmed := strings.Trim(host, "[]")
+	if strings.EqualFold(trimmed, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(trimmed); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 func (s *GRPCServer) Spawn(_ context.Context, req *proto.SpawnRequest) (*proto.SpawnResponse, error) {
