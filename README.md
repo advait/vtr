@@ -23,20 +23,20 @@ own terms.
 
 ## Quickstart
 
-Start a coordinator, spawn a session, and attach a TUI:
+Start a hub coordinator, spawn a session, and attach a TUI:
 
 ```bash
-go run ./cmd/vtr serve --socket /tmp/vtr.sock
+go run ./cmd/vtr hub --socket /tmp/vtrpc.sock --grpc-addr 127.0.0.1:4621 --web-addr 127.0.0.1:4620
 
-go run ./cmd/vtr spawn --socket /tmp/vtr.sock --cmd bash demo
+go run ./cmd/vtr agent spawn --hub /tmp/vtrpc.sock --cmd bash demo
 
-go run ./cmd/vtr attach --socket /tmp/vtr.sock demo
+go run ./cmd/vtr tui --hub /tmp/vtrpc.sock demo
 ```
 
-Run the web UI:
+The web UI is served by the hub:
 
 ```bash
-go run ./cmd/vtr web --listen 127.0.0.1:8080 --socket /tmp/vtr.sock
+open http://127.0.0.1:4620
 ```
 
 ## Docs

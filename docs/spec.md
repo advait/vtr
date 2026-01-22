@@ -13,9 +13,9 @@ vtr is a terminal multiplexer designed for the agent era. Each container runs a 
 - Implemented gRPC methods: Spawn, List, Info, Kill, Close, Remove, Rename, GetScreen, Grep, SendText, SendKey, SendBytes, Resize, WaitFor, WaitForIdle, Subscribe.
 - DumpAsciinema remains defined in `proto/vtr.proto` but is not implemented yet (gRPC returns UNIMPLEMENTED).
 - CLI supports `hub`, `spoke`, `tui`, `agent`, and `setup` (JSON-only agent output).
-- Attach TUI uses Subscribe streaming updates with leader key bindings for session actions.
+- TUI uses Subscribe streaming updates with leader key bindings for session actions.
 - Mouse support is not implemented yet; M8 adds mouse mode tracking, Subscribe events, and SendMouse RPC.
-- Multi-coordinator resolution supports `--socket` and `coordinator:session` with auto-disambiguation via per-coordinator lookup.
+- Agent/TUI target a single hub via `--hub` (unix socket path or host:port).
 - Grep uses scrollback dumps when available; falls back to screen/viewport dumps if history is unavailable.
 - WaitFor scans output emitted after the request starts using a rolling 1MB buffer.
 - M7/M7.1: `vtr hub` serves embedded `web/dist` assets plus a WS bridge using protobuf `Any` frames (SubscribeRequest/SubscribeEvent); HTTP JSON endpoints include `GET/POST /api/sessions` (list/spawn) and `POST /api/sessions/action` (send_key/signal/close/remove/rename); the web UI includes a settings menu with theme presets.
@@ -216,7 +216,7 @@ vtr tui <name> [--hub <addr|socket>]
 TUI features (M6):
 - Bubbletea TUI renders the viewport inside a Lipgloss border with 1-row header and footer bars.
 - Header shows coordinator/session (and exit code on exit) plus version; footer shows leader hints/legend and transient status messages.
-- Attach uses the standard session addressing rules (`coordinator:session` or `--socket`).
+- TUI uses the standard session addressing rules (`spoke:session` or `--hub`).
 - Uses `Subscribe` for real-time screen updates (output-driven, throttled to 30fps max).
 - Terminal runs in raw mode; input not bound to leader commands is forwarded via `SendBytes`
   (or `SendKey` for special keys).
@@ -625,7 +625,7 @@ configuration is done by editing `vtrpc.toml` directly.
 
 ### Session Addressing
 
-When multiple coordinators are configured:
+When the hub aggregates multiple spokes:
 
 1. **Unambiguous**: Session name unique across all coordinators → use name directly
 2. **Ambiguous**: Session name exists on multiple coordinators → error with suggestion
