@@ -3,9 +3,10 @@ import ReactDOM from "react-dom/client";
 import "@fontsource/jetbrains-mono/latin.css";
 import "./styles.css";
 import App from "./App";
-import { applyTheme, getTheme, loadThemeId } from "./lib/theme";
+import { loadPreferences } from "./lib/preferences";
+import { applyTheme, getTheme } from "./lib/theme";
 
-applyTheme(getTheme(loadThemeId()));
+applyTheme(getTheme(loadPreferences().themeId));
 
 const root = document.getElementById("root");
 if (!root) {

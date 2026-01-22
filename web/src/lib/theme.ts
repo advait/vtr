@@ -242,6 +242,10 @@ export const themes: Theme[] = [
   },
 ];
 
+export const sortedThemes = [...themes].sort((a, b) =>
+  a.label.localeCompare(b.label, "en", { sensitivity: "base" }),
+);
+
 const themeMap = new Map(themes.map((theme) => [theme.id, theme]));
 export const defaultThemeId = "tokyo-night";
 const storageKey = "vtr.theme";
