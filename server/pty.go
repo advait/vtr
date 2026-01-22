@@ -122,21 +122,58 @@ func (p *PTY) StartReadLoop(vt *VT, onData func([]byte), onErr func(error)) <-ch
 	go func() {
 		defer close(done)
 		buf := make([]byte, 32*1024)
+		scanner := newDSRScanner()
 		for {
 			n, err := p.Read(buf)
 			if n > 0 {
+				chunk := buf[:n]
 				if onData != nil {
-					onData(buf[:n])
+					onData(chunk)
 				}
-				reply, feedErr := vt.Feed(buf[:n])
-				if feedErr != nil {
-					if onErr != nil {
-						onErr(feedErr)
+				reqs := scanner.scan(chunk)
+				start := 0
+				var replies []byte
+				for _, req := range reqs {
+					end := req.index + 1
+					if end > len(chunk) {
+						end = len(chunk)
 					}
-					return
+					if end > start {
+						reply, feedErr := vt.Feed(chunk[start:end])
+						if feedErr != nil {
+							if onErr != nil {
+								onErr(feedErr)
+							}
+							return
+						}
+						if len(reply) > 0 {
+							replies = append(replies, reply...)
+						}
+					}
+					snap, snapErr := vt.Snapshot()
+					if snapErr != nil {
+						if onErr != nil {
+							onErr(snapErr)
+						}
+						return
+					}
+					replies = append(replies, buildCPRReply(snap, req.private)...)
+					start = end
 				}
-				if len(reply) > 0 {
-					if _, werr := p.Write(reply); werr != nil {
+				if start < len(chunk) {
+					reply, feedErr := vt.Feed(chunk[start:])
+					if feedErr != nil {
+						if onErr != nil {
+							onErr(feedErr)
+						}
+						return
+					}
+					if len(reply) > 0 {
+						replies = append(replies, reply...)
+					}
+				}
+				if len(replies) > 0 {
+					if _, werr := p.Write(replies); werr != nil {
 						if onErr != nil {
 							onErr(werr)
 						}
