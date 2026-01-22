@@ -1711,8 +1711,6 @@ func renderFooterSegments(view footerView) (string, string) {
 	switch {
 	case view.leader:
 		right = renderLeaderLegend()
-	case view.exited:
-		right = renderExitHints()
 	case view.statusMsg == "":
 		right = renderLeaderHint()
 	}
@@ -1730,14 +1728,6 @@ func renderLeaderLegend() string {
 	segments := make([]string, 0, len(leaderLegend))
 	for _, hint := range leaderLegend {
 		segments = append(segments, renderLegendSegment(hint.key, hint.label))
-	}
-	return joinLegendSegments(segments)
-}
-
-func renderExitHints() string {
-	segments := []string{
-		renderLegendSegment("q", "QUIT"),
-		renderLegendSegment("Ctrl+b", "LEADER"),
 	}
 	return joinLegendSegments(segments)
 }
