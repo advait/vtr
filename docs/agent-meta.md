@@ -48,6 +48,7 @@ Each milestone must be:
 | File | Purpose |
 |------|---------|
 | `docs/spec.md` | Protocol and architecture spec |
+| `docs/debugging.md` | Runtime debugging guide and logging notes |
 | `.beads/` | Milestone tracking, tasks, and status (beads) |
 | `docs/agent-meta.md` | This file |
 | `go-ghostty/README.md` | VT engine integration design |
