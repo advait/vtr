@@ -4,13 +4,13 @@
 
 ## Overview
 
-vtr is a terminal multiplexer designed for the agent era. Each container runs a coordinator that manages multiple named PTY sessions. Clients connect via gRPC over Unix sockets (local) or TCP when exposed externally to query screen state, search scrollback, send input, and wait for output patterns.
+vtr is a terminal multiplexer designed for the agent era. Each container runs a coordinator that manages multiple named PTY sessions. Clients connect via gRPC over Unix sockets (local) or TCP (hub/spoke) to query screen state, search scrollback, send input, and wait for output patterns.
 
 **Core insight**: Agents don't need 60fps terminal streaming. They need consistent screen state on demand, pattern matching on output, and reliable input delivery.
 
 ## Implementation Status (post-M6)
 
-- Implemented gRPC methods: Spawn, List, Info, Kill, Remove, GetScreen, Grep, SendText, SendKey, SendBytes, Resize, WaitFor, WaitForIdle, Subscribe.
+- Implemented gRPC methods: Spawn, List, Info, Kill, Close, Remove, Rename, GetScreen, Grep, SendText, SendKey, SendBytes, Resize, WaitFor, WaitForIdle, Subscribe.
 - DumpAsciinema remains defined in `proto/vtr.proto` but is not implemented yet (gRPC returns UNIMPLEMENTED).
 - CLI supports `serve`, `web`, `attach`, `version`, `config resolve`, and client commands (`ls`, `spawn`, `info`, `screen`, `send`, `key`, `raw`, `resize`, `kill`, `rm`, `grep`, `wait`, `idle`).
 - Attach TUI uses Subscribe streaming updates with leader key bindings for session actions.
@@ -1240,7 +1240,7 @@ run = "rm -rf bin/ && rm -f proto/*.pb.go"
 1. React + shadcn/ui frontend with Tokyo Night palette and JetBrains Mono
 2. Bun + Vite dev tooling and HMR workflow
 3. Custom grid renderer using `ScreenUpdate` frames (no ANSI parsing; deltas optional)
-4. WebSocket -> gRPC bridge in `vtr web`
+4. WebSocket -> gRPC bridge in `vtr hub`
 5. Multi-coordinator tree view from `~/.config/vtrpc/vtrpc.toml`
 6. Tailnet-only Tailscale Serve integration
 7. E2E tests covering ANSI -> coordinator -> web -> render pipeline
