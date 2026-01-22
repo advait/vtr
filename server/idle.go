@@ -14,6 +14,9 @@ func (s *Session) recordActivity() {
 		ch := s.idleCh
 		close(ch)
 		s.idleCh = make(chan struct{})
+		if s.onListChange != nil {
+			s.onListChange()
+		}
 	}
 	ch := s.activityCh
 	close(ch)
@@ -55,6 +58,9 @@ func (s *Session) setIdle(idle bool) {
 	close(ch)
 	s.idleCh = make(chan struct{})
 	s.activityMu.Unlock()
+	if s.onListChange != nil {
+		s.onListChange()
+	}
 }
 
 func (s *Session) trackIdle() {

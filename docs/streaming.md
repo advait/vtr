@@ -78,6 +78,14 @@ message SubscribeEvent {
 
 The WebSocket bridge forwards the exact protobuf payloads used by gRPC.
 
+### WebSocket (Session list)
+
+- Server exposes `GET /api/ws/sessions`.
+- All frames are binary protobuf `google.protobuf.Any`.
+- First client frame must be `SubscribeSessionsRequest` wrapped in `Any`.
+- Server frames are `SessionsSnapshot` wrapped in `Any` (full list per update).
+- Errors are `google.rpc.Status` wrapped in `Any`, followed by socket close.
+
 ## Streaming Semantics
 
 ### ScreenUpdate fields

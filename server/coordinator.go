@@ -78,6 +78,8 @@ type Coordinator struct {
 	mu       sync.Mutex
 	sessions map[string]*Session
 	opts     CoordinatorOptions
+	changeMu sync.Mutex
+	changeCh chan struct{}
 }
 
 // NewCoordinator creates a coordinator with defaults applied.
@@ -109,6 +111,7 @@ func NewCoordinator(opts CoordinatorOptions) *Coordinator {
 	return &Coordinator{
 		sessions: make(map[string]*Session),
 		opts:     opts,
+		changeCh: make(chan struct{}),
 	}
 }
 
@@ -174,7 +177,7 @@ func (c *Coordinator) Spawn(name string, opts SpawnOptions) (*SessionInfo, error
 		return nil, err
 	}
 
-	session := newSession(name, cols, rows, vt, ptyHandle, c.opts.IdleThreshold)
+	session := newSession(name, cols, rows, vt, ptyHandle, c.opts.IdleThreshold, c.signalSessionsChanged)
 
 	c.mu.Lock()
 	c.sessions[name] = session
@@ -183,6 +186,7 @@ func (c *Coordinator) Spawn(name string, opts SpawnOptions) (*SessionInfo, error
 
 	session.start()
 	info := session.Info()
+	c.signalSessionsChanged()
 	return &info, nil
 }
 
@@ -215,6 +219,21 @@ func (c *Coordinator) List() []SessionInfo {
 		return out[i].Name < out[j].Name
 	})
 	return out
+}
+
+func (c *Coordinator) sessionsChanged() <-chan struct{} {
+	c.changeMu.Lock()
+	ch := c.changeCh
+	c.changeMu.Unlock()
+	return ch
+}
+
+func (c *Coordinator) signalSessionsChanged() {
+	c.changeMu.Lock()
+	ch := c.changeCh
+	close(ch)
+	c.changeCh = make(chan struct{})
+	c.changeMu.Unlock()
 }
 
 // DefaultShell returns the configured shell path.
@@ -257,6 +276,7 @@ func (c *Coordinator) Resize(name string, cols, rows uint16) error {
 		return err
 	}
 	session.SetSize(cols, rows)
+	c.signalSessionsChanged()
 	return nil
 }
 
@@ -302,7 +322,9 @@ func (c *Coordinator) Close(name string) error {
 	if session.IsExited() {
 		return nil
 	}
-	session.MarkClosing()
+	if session.MarkClosing() {
+		c.signalSessionsChanged()
+	}
 	if err := session.pty.SignalGroup(syscall.SIGHUP); err != nil {
 		return err
 	}
@@ -337,6 +359,7 @@ func (c *Coordinator) Remove(name string) error {
 	c.mu.Lock()
 	delete(c.sessions, name)
 	c.mu.Unlock()
+	c.signalSessionsChanged()
 	return nil
 }
 
@@ -360,6 +383,7 @@ func (c *Coordinator) Rename(name, newName string) error {
 	delete(c.sessions, name)
 	c.sessions[newName] = session
 	session.SetName(newName)
+	c.signalSessionsChanged()
 	return nil
 }
 
@@ -433,12 +457,13 @@ func defaultWorkingDir() string {
 }
 
 type Session struct {
-	name      string
-	cols      uint16
-	rows      uint16
-	pty       *PTY
-	vt        *VT
-	createdAt time.Time
+	name         string
+	cols         uint16
+	rows         uint16
+	pty          *PTY
+	vt           *VT
+	createdAt    time.Time
+	onListChange func()
 
 	mu       sync.Mutex
 	state    SessionState
@@ -468,7 +493,7 @@ type Session struct {
 	frameID uint64
 }
 
-func newSession(name string, cols, rows uint16, vt *VT, ptyHandle *PTY, idleThreshold time.Duration) *Session {
+func newSession(name string, cols, rows uint16, vt *VT, ptyHandle *PTY, idleThreshold time.Duration, onListChange func()) *Session {
 	now := time.Now()
 	return &Session{
 		name:          name,
@@ -477,6 +502,7 @@ func newSession(name string, cols, rows uint16, vt *VT, ptyHandle *PTY, idleThre
 		pty:           ptyHandle,
 		vt:            vt,
 		createdAt:     now,
+		onListChange:  onListChange,
 		state:         SessionRunning,
 		exitCh:        make(chan struct{}),
 		outputCh:      make(chan struct{}),
@@ -508,6 +534,9 @@ func (s *Session) markExited(code int) {
 		s.exitCode = code
 		s.exitedAt = time.Now()
 		s.mu.Unlock()
+		if s.onListChange != nil {
+			s.onListChange()
+		}
 		close(s.exitCh)
 	})
 }

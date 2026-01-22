@@ -18,7 +18,7 @@ vtr is a terminal multiplexer designed for the agent era. Each container runs a 
 - Agent/TUI target a single hub via `--hub` (unix socket path or host:port).
 - Grep uses scrollback dumps when available; falls back to screen/viewport dumps if history is unavailable.
 - WaitFor scans output emitted after the request starts using a rolling 1MB buffer.
-- M7/M7.1: `vtr hub` serves embedded `web/dist` assets plus a WS bridge using protobuf `Any` frames (SubscribeRequest/SubscribeEvent); HTTP JSON endpoints include `GET/POST /api/sessions` (list/spawn) and `POST /api/sessions/action` (send_key/signal/close/remove/rename); the web UI includes a settings menu with theme presets.
+- M7/M7.1: `vtr hub` serves embedded `web/dist` assets plus WS bridges using protobuf `Any` frames (`SubscribeRequest/SubscribeEvent` for terminal streaming, `SubscribeSessionsRequest/SessionsSnapshot` for session list updates). HTTP JSON endpoints include `POST /api/sessions` (spawn) and `POST /api/sessions/action` (send_key/signal/close/remove/rename); `GET /api/sessions` remains for manual debugging. The web UI includes a settings menu with theme presets.
 
 ## Architecture
 
@@ -256,9 +256,10 @@ Spokes (vtr spoke)
 
 The Web UI runs inside `vtr hub` (enabled by default; use `--no-web` to disable).
 It serves static assets and bridges `Subscribe` streaming + input over WebSocket using protobuf frames.
-HTTP JSON endpoints include `GET/POST /api/sessions` (list/spawn) and
-`POST /api/sessions/action` (send_key/signal/close/remove/rename); streaming and
-input (`Subscribe`, `SendText`, `SendKey`, `SendBytes`, `Resize`) still flow over the WebSocket protobuf protocol.
+Session list updates stream over WebSocket (`SubscribeSessionsRequest` → `SessionsSnapshot`), while streaming
+and input (`Subscribe`, `SendText`, `SendKey`, `SendBytes`, `Resize`) flow over the terminal WebSocket.
+HTTP JSON endpoints include `POST /api/sessions` (spawn) and `POST /api/sessions/action`
+(send_key/signal/close/remove/rename); `GET /api/sessions` remains available for manual debugging.
 
 ### Command and configuration
 
@@ -270,7 +271,7 @@ input (`Subscribe`, `SendText`, `SendKey`, `SendBytes`, `Resize`) still flow ove
 
 HTTP JSON API for session listing and lifecycle:
 
-- `GET /api/sessions` returns `{"coordinators":[{"name","path","sessions":[{"name","status","cols","rows","idle","exit_code"}],"error"}]}`.
+- `GET /api/sessions` returns `{"coordinators":[{"name","path","sessions":[{"name","status","cols","rows","idle","exit_code"}],"error"}]}` (debugging only).
 - `POST /api/sessions` accepts `{"name","coordinator","command","working_dir","cols","rows"}` and returns `{"coordinator","session":{...}}`.
 - `POST /api/sessions/action` accepts `{"name","action","key","signal","new_name"}` where `action` is `send_key`, `signal`, `close`, `remove`, or `rename`.
 
@@ -490,6 +491,7 @@ Recommended: server-side bridge in Go, not gRPC-Web.
 
 Bridge behavior:
 - WS endpoint: `GET /api/ws`.
+- Sessions WS endpoint: `GET /api/ws/sessions`.
 - Frames are binary protobuf `google.protobuf.Any` messages.
 - First client frame must be `SubscribeRequest` (name can use `coordinator:session`
   when multiple coordinators are configured). The server resolves the target or
@@ -534,6 +536,7 @@ identifies the payload.
 
 Endpoint:
 - `GET /api/ws` (alias: `/ws`).
+- `GET /api/ws/sessions` (alias: `/ws/sessions`).
 
 Compression: disabled server-side by default.
 
@@ -542,6 +545,11 @@ Message flow:
 2. Client may send `ResizeRequest` immediately after to set initial size.
 3. Server streams `SubscribeEvent` (Any) until `SessionExited`.
 4. On error, server sends `google.rpc.Status` (Any) and closes the socket.
+
+Session list flow (sessions WS):
+1. Client sends `SubscribeSessionsRequest` (Any).
+2. Server streams `SessionsSnapshot` (Any) on every session list update.
+3. On error, server sends `google.rpc.Status` (Any) and closes the socket.
 
 Client -> server (Any-wrapped protobuf):
 - `vtr.SubscribeRequest { name: "project-a:codex", include_screen_updates: true }`
@@ -667,7 +675,7 @@ Auth: POSIX filesystem permissions for Unix sockets; TLS + token for non-loopbac
 
 ### Service Definition
 
-**Status (post-M6):** Spawn, List, Info, Kill, Close, Remove, Rename, GetScreen, Grep, SendText, SendKey, SendBytes, Resize, WaitFor, WaitForIdle, and Subscribe are implemented. SendMouse and mouse mode events are planned for M8. DumpAsciinema is defined but not implemented yet.
+**Status (post-M6):** Spawn, List, SubscribeSessions, Info, Kill, Close, Remove, Rename, GetScreen, Grep, SendText, SendKey, SendBytes, Resize, WaitFor, WaitForIdle, and Subscribe are implemented. SendMouse and mouse mode events are planned for M8. DumpAsciinema is defined but not implemented yet.
 
 ```protobuf
 syntax = "proto3";
@@ -677,6 +685,7 @@ service VTR {
   // Session management
   rpc Spawn(SpawnRequest) returns (SpawnResponse);
   rpc List(ListRequest) returns (ListResponse);
+  rpc SubscribeSessions(SubscribeSessionsRequest) returns (stream SubscribeSessionsEvent);
   rpc Info(InfoRequest) returns (InfoResponse);
   rpc Kill(KillRequest) returns (KillResponse);
   rpc Close(CloseRequest) returns (CloseResponse);
@@ -734,6 +743,14 @@ message SpawnRequest {
   map<string, string> env = 4;  // merged with default env
   int32 cols = 5;  // default: 80
   int32 rows = 6;  // default: 24
+}
+
+message SubscribeSessionsRequest {
+  bool exclude_exited = 1;
+}
+
+message SubscribeSessionsEvent {
+  repeated Session sessions = 1;
 }
 
 message GetScreenResponse {

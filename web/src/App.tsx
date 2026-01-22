@@ -14,12 +14,12 @@ import { SessionTabs } from "./components/SessionTabs";
 import { TerminalView } from "./components/TerminalView";
 import { Badge } from "./components/ui/Badge";
 import { Button } from "./components/ui/Button";
-import { createSession, fetchSessions, sendSessionAction } from "./lib/api";
+import { createSession, sendSessionAction } from "./lib/api";
 import { loadPreferences, type TerminalRenderer, updatePreferences } from "./lib/preferences";
 import type { SubscribeEvent } from "./lib/proto";
 import { applyScreenUpdate, type ScreenState } from "./lib/terminal";
 import { applyTheme, getTheme, sortedThemes } from "./lib/theme";
-import { useVtrStream } from "./lib/ws";
+import { useVtrSessionsStream, useVtrStream } from "./lib/ws";
 
 const statusLabels: Record<
   string,
@@ -125,7 +125,7 @@ export default function App() {
   const [exitCode, setExitCode] = useState<number | null>(null);
   const [ctrlArmed, setCtrlArmed] = useState(false);
   const [hashSession, setHashSession] = useState(() => readSessionHash());
-  const [sessionsLoaded, setSessionsLoaded] = useState(false);
+  const { coordinators: streamCoordinators, loaded: sessionsLoaded } = useVtrSessionsStream();
   const [themeId, setThemeId] = useState(() => getTheme(initialPreferences.themeId).id);
   const [terminalRenderer, setTerminalRenderer] = useState<TerminalRenderer>(() =>
     readRendererSetting(initialPreferences.terminalRenderer),
@@ -256,40 +256,9 @@ export default function App() {
     });
   }, []);
 
-  const refreshSessions = useCallback(async () => {
-    const data = await fetchSessions();
-    applySessions(data);
-  }, [applySessions]);
-
   useEffect(() => {
-    let active = true;
-    let firstLoad = true;
-    const refresh = async () => {
-      try {
-        const data = await fetchSessions();
-        if (!active) {
-          return;
-        }
-        applySessions(data);
-      } catch {
-        if (active) {
-          setCoordinators([]);
-        }
-      } finally {
-        if (active && firstLoad) {
-          firstLoad = false;
-          setSessionsLoaded(true);
-        }
-      }
-    };
-
-    refresh();
-    const intervalId = window.setInterval(refresh, 3000);
-    return () => {
-      active = false;
-      window.clearInterval(intervalId);
-    };
-  }, [applySessions]);
+    applySessions(streamCoordinators);
+  }, [applySessions, streamCoordinators]);
 
   useEffect(() => {
     if (!hashSession || selectedSession || !sessionsLoaded) {
@@ -547,25 +516,17 @@ export default function App() {
       });
       setActiveSession(result.session.status === "exited" ? null : sessionKey);
       setViewMode("single");
-      try {
-        await refreshSessions();
-      } catch {
-        // ignore refresh errors; periodic fetch will retry
-      }
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unable to create session.";
       window.alert(message);
     } finally {
       setCreateBusy(false);
     }
-  }, [activeSession, coordinatorOptions, coordinators, createBusy, refreshSessions]);
+  }, [activeSession, coordinatorOptions, coordinators, createBusy]);
   const runSessionAction = useCallback(
-    async (payload: Parameters<typeof sendSessionAction>[0], refreshAfter = false) => {
+    async (payload: Parameters<typeof sendSessionAction>[0]) => {
       try {
         await sendSessionAction(payload);
-        if (refreshAfter) {
-          await refreshSessions();
-        }
       } catch (err) {
         const message = err instanceof Error ? err.message : "Session action failed.";
         window.alert(message);
@@ -573,7 +534,7 @@ export default function App() {
         setContextMenu(null);
       }
     },
-    [refreshSessions],
+    [],
   );
 
   const handleRenameSubmit = async () => {
@@ -607,7 +568,6 @@ export default function App() {
     setRenameError(null);
     try {
       await sendSessionAction({ name: currentKey, action: "rename", newName: nextName });
-      await refreshSessions();
       const newKey = `${coordinator}:${nextName}`;
       setSelectedSession((prev) =>
         prev && prev.name === currentKey ? { ...prev, name: newKey } : prev,
@@ -628,13 +588,13 @@ export default function App() {
         if (!window.confirm(`Remove exited session ${sessionKey}?`)) {
           return;
         }
-        runSessionAction({ name: sessionKey, action: "remove" }, true);
+        runSessionAction({ name: sessionKey, action: "remove" });
         return;
       }
       if (!window.confirm(`Close session ${sessionKey}?`)) {
         return;
       }
-      runSessionAction({ name: sessionKey, action: "close" }, true);
+      runSessionAction({ name: sessionKey, action: "close" });
     },
     [runSessionAction],
   );
@@ -971,7 +931,7 @@ export default function App() {
                   if (!window.confirm(`Close session ${contextLabel}?`)) {
                     return;
                   }
-                  runSessionAction({ name: contextLabel, action: "close" }, true);
+                  runSessionAction({ name: contextLabel, action: "close" });
                 }}
                 disabled={!contextRunning}
               >
@@ -991,7 +951,7 @@ export default function App() {
                   if (!window.confirm(`Force kill ${contextLabel}?`)) {
                     return;
                   }
-                  runSessionAction({ name: contextLabel, action: "signal", signal: "KILL" }, true);
+                  runSessionAction({ name: contextLabel, action: "signal", signal: "KILL" });
                 }}
                 disabled={!contextRunning}
               >

@@ -294,6 +294,66 @@ func TestGRPCListInfoResize(t *testing.T) {
 	}
 }
 
+func TestGRPCSubscribeSessions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty tests not supported on windows")
+	}
+
+	client, cleanup := startGRPCTestServer(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	stream, err := client.SubscribeSessions(ctx, &proto.SubscribeSessionsRequest{})
+	if err != nil {
+		cancel()
+		t.Fatalf("SubscribeSessions: %v", err)
+	}
+
+	first, err := stream.Recv()
+	if err != nil {
+		cancel()
+		t.Fatalf("SubscribeSessions recv: %v", err)
+	}
+	if streamHasSession(first, "grpc-subscribe") {
+		cancel()
+		t.Fatalf("SubscribeSessions unexpected session in initial snapshot")
+	}
+
+	spawnCtx, spawnCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	_, err = client.Spawn(spawnCtx, &proto.SpawnRequest{
+		Name:    "grpc-subscribe",
+		Command: "printf 'ready\\n'; while true; do sleep 0.2; done",
+	})
+	spawnCancel()
+	if err != nil {
+		cancel()
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	found := false
+	for !found {
+		event, err := stream.Recv()
+		if err != nil {
+			cancel()
+			t.Fatalf("SubscribeSessions recv after spawn: %v", err)
+		}
+		found = streamHasSession(event, "grpc-subscribe")
+	}
+	cancel()
+}
+
+func streamHasSession(event *proto.SubscribeSessionsEvent, name string) bool {
+	if event == nil {
+		return false
+	}
+	for _, session := range event.Sessions {
+		if session != nil && session.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 func TestGRPCKillRemove(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("pty tests not supported on windows")

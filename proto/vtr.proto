@@ -10,6 +10,7 @@ service VTR {
   // Session management
   rpc Spawn(SpawnRequest) returns (SpawnResponse);
   rpc List(ListRequest) returns (ListResponse);
+  rpc SubscribeSessions(SubscribeSessionsRequest) returns (stream SubscribeSessionsEvent);
   rpc Info(InfoRequest) returns (InfoResponse);
   rpc Kill(KillRequest) returns (KillResponse);
   rpc Close(CloseRequest) returns (CloseResponse);
@@ -75,6 +76,25 @@ message ListRequest {}
 
 message ListResponse {
   repeated Session sessions = 1;
+}
+
+message SubscribeSessionsRequest {
+  bool exclude_exited = 1;
+}
+
+message SubscribeSessionsEvent {
+  repeated Session sessions = 1;
+}
+
+message CoordinatorSessions {
+  string name = 1;
+  string path = 2;
+  repeated Session sessions = 3;
+  string error = 4;
+}
+
+message SessionsSnapshot {
+  repeated CoordinatorSessions coordinators = 1;
 }
 
 message InfoRequest {

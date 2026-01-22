@@ -43,6 +43,18 @@ message Session {
 message ListRequest {}
 message ListResponse { repeated Session sessions = 1; }
 
+message SubscribeSessionsRequest { bool exclude_exited = 1; }
+message SubscribeSessionsEvent { repeated Session sessions = 1; }
+
+message CoordinatorSessions {
+  string name = 1;
+  string path = 2;
+  repeated Session sessions = 3;
+  string error = 4;
+}
+
+message SessionsSnapshot { repeated CoordinatorSessions coordinators = 1; }
+
 message SubscribeRequest {
   string name = 1;
   bool include_screen_updates = 2;
@@ -119,6 +131,8 @@ export type ProtoMessageName =
   | "vtr.SubscribeEvent"
   | "vtr.ListRequest"
   | "vtr.ListResponse"
+  | "vtr.SubscribeSessionsRequest"
+  | "vtr.SessionsSnapshot"
   | "vtr.SendTextRequest"
   | "vtr.SendKeyRequest"
   | "vtr.SendBytesRequest"
@@ -129,6 +143,15 @@ export type ScreenCell = {
   fg_color?: number;
   bg_color?: number;
   attributes?: number;
+};
+
+export type Session = {
+  name?: string;
+  status?: number;
+  cols?: number;
+  rows?: number;
+  exit_code?: number;
+  idle?: boolean;
 };
 
 export type ScreenRow = { cells?: ScreenCell[] };
@@ -163,6 +186,17 @@ export type SubscribeEvent = {
   raw_output?: Uint8Array;
   session_exited?: { exit_code?: number } | null;
   session_idle?: { name?: string; idle?: boolean } | null;
+};
+
+export type CoordinatorSessions = {
+  name?: string;
+  path?: string;
+  sessions?: Session[];
+  error?: string;
+};
+
+export type SessionsSnapshot = {
+  coordinators?: CoordinatorSessions[];
 };
 
 export type Status = { code?: number; message?: string };

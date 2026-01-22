@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	proto "github.com/advait/vtrpc/proto"
 	webassets "github.com/advait/vtrpc/web"
@@ -129,6 +130,9 @@ func newWebServer(opts webOptions, resolver webResolver) (*http.Server, error) {
 	wsHandler := handleWebsocket(resolver)
 	mux.HandleFunc("/api/ws", wsHandler)
 	mux.HandleFunc("/ws", wsHandler)
+	sessionsWsHandler := handleWebSessionsStream(resolver)
+	mux.HandleFunc("/api/ws/sessions", sessionsWsHandler)
+	mux.HandleFunc("/ws/sessions", sessionsWsHandler)
 	mux.HandleFunc("/api/sessions", handleWebSessions(resolver))
 	mux.HandleFunc("/api/sessions/action", handleWebSessionAction(resolver))
 	if opts.dev {
@@ -308,6 +312,227 @@ func handleWebsocket(resolver webResolver) http.HandlerFunc {
 			return
 		}
 		_ = sendWSError(ctx, sender, err)
+	}
+}
+
+type sessionListEntry struct {
+	name     string
+	path     string
+	sessions []*proto.Session
+	err      string
+}
+
+type sessionListState struct {
+	mu      sync.Mutex
+	order   []string
+	entries map[string]*sessionListEntry
+}
+
+func newSessionListState(coords []coordinatorRef) *sessionListState {
+	order := make([]string, 0, len(coords))
+	entries := make(map[string]*sessionListEntry, len(coords))
+	for _, coord := range coords {
+		order = append(order, coord.Name)
+		entries[coord.Name] = &sessionListEntry{name: coord.Name, path: coord.Path}
+	}
+	return &sessionListState{order: order, entries: entries}
+}
+
+func (s *sessionListState) setSessions(name string, sessions []*proto.Session) {
+	s.mu.Lock()
+	entry := s.entries[name]
+	if entry == nil {
+		s.mu.Unlock()
+		return
+	}
+	entry.sessions = cloneProtoSessions(sessions)
+	entry.err = ""
+	s.mu.Unlock()
+}
+
+func (s *sessionListState) setError(name string, err error) {
+	s.mu.Lock()
+	entry := s.entries[name]
+	if entry == nil {
+		s.mu.Unlock()
+		return
+	}
+	if err == nil {
+		entry.err = ""
+	} else {
+		entry.err = err.Error()
+		entry.sessions = nil
+	}
+	s.mu.Unlock()
+}
+
+func (s *sessionListState) snapshot() *proto.SessionsSnapshot {
+	s.mu.Lock()
+	coords := make([]*proto.CoordinatorSessions, 0, len(s.order))
+	for _, name := range s.order {
+		entry := s.entries[name]
+		if entry == nil {
+			continue
+		}
+		sessions := cloneProtoSessions(entry.sessions)
+		coords = append(coords, &proto.CoordinatorSessions{
+			Name:     entry.name,
+			Path:     entry.path,
+			Sessions: sessions,
+			Error:    entry.err,
+		})
+	}
+	s.mu.Unlock()
+	return &proto.SessionsSnapshot{Coordinators: coords}
+}
+
+func cloneProtoSessions(sessions []*proto.Session) []*proto.Session {
+	if len(sessions) == 0 {
+		return nil
+	}
+	out := make([]*proto.Session, len(sessions))
+	copy(out, sessions)
+	return out
+}
+
+func handleWebSessionsStream(resolver webResolver) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+			CompressionMode: websocket.CompressionDisabled,
+		})
+		if err != nil {
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "")
+
+		ctx, cancel := context.WithCancel(r.Context())
+		defer cancel()
+
+		sender := &wsSender{conn: conn}
+
+		hello, err := readSessionsHello(ctx, conn)
+		if err != nil {
+			_ = sendWSError(ctx, sender, err)
+			return
+		}
+
+		coords, err := resolver.coordinators()
+		if err != nil {
+			_ = sendWSError(ctx, sender, err)
+			return
+		}
+
+		state := newSessionListState(coords)
+		updateCh := make(chan struct{}, 1)
+		signalUpdate := func() {
+			select {
+			case updateCh <- struct{}{}:
+			default:
+			}
+		}
+
+		for _, coord := range coords {
+			go watchCoordinatorSessions(ctx, coord, hello.GetExcludeExited(), state, signalUpdate)
+		}
+
+		if err := sender.sendProto(ctx, state.snapshot()); err != nil {
+			return
+		}
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-updateCh:
+				if err := sender.sendProto(ctx, state.snapshot()); err != nil {
+					return
+				}
+			}
+		}
+	}
+}
+
+func watchCoordinatorSessions(
+	ctx context.Context,
+	coord coordinatorRef,
+	excludeExited bool,
+	state *sessionListState,
+	signalUpdate func(),
+) {
+	backoff := time.Second
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		dialCtx, cancel := context.WithTimeout(ctx, rpcTimeout)
+		conn, err := dialClient(dialCtx, coord.Path, nil)
+		cancel()
+		if err != nil {
+			state.setError(coord.Name, err)
+			signalUpdate()
+			if waitOrDone(ctx, backoff) {
+				return
+			}
+			backoff = nextBackoff(backoff)
+			continue
+		}
+		client := proto.NewVTRClient(conn)
+		streamCtx, streamCancel := context.WithCancel(ctx)
+		stream, err := client.SubscribeSessions(streamCtx, &proto.SubscribeSessionsRequest{
+			ExcludeExited: excludeExited,
+		})
+		if err != nil {
+			streamCancel()
+			_ = conn.Close()
+			state.setError(coord.Name, err)
+			signalUpdate()
+			if waitOrDone(ctx, backoff) {
+				return
+			}
+			backoff = nextBackoff(backoff)
+			continue
+		}
+
+		state.setError(coord.Name, nil)
+		signalUpdate()
+		backoff = time.Second
+		for {
+			event, err := stream.Recv()
+			if err != nil {
+				streamCancel()
+				_ = conn.Close()
+				state.setError(coord.Name, err)
+				signalUpdate()
+				break
+			}
+			state.setSessions(coord.Name, event.GetSessions())
+			signalUpdate()
+		}
+	}
+}
+
+func nextBackoff(current time.Duration) time.Duration {
+	if current <= 0 {
+		return time.Second
+	}
+	next := current * 2
+	if next > 5*time.Second {
+		return 5 * time.Second
+	}
+	return next
+}
+
+func waitOrDone(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return ctx.Err() != nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return true
+	case <-timer.C:
+		return false
 	}
 }
 
@@ -668,6 +893,25 @@ func readHello(ctx context.Context, conn *websocket.Conn) (*proto.SubscribeReque
 	}
 	if !hello.IncludeScreenUpdates && !hello.IncludeRawOutput {
 		return nil, wsProtocolError{Code: codes.InvalidArgument, Message: "subscribe requires screen updates or raw output"}
+	}
+	return hello, nil
+}
+
+func readSessionsHello(ctx context.Context, conn *websocket.Conn) (*proto.SubscribeSessionsRequest, error) {
+	msgType, data, err := conn.Read(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if msgType != websocket.MessageBinary {
+		return nil, wsProtocolError{Code: codes.InvalidArgument, Message: "hello must be a protobuf binary frame"}
+	}
+	msg, err := unmarshalAny(data)
+	if err != nil {
+		return nil, err
+	}
+	hello, ok := msg.(*proto.SubscribeSessionsRequest)
+	if !ok {
+		return nil, wsProtocolError{Code: codes.InvalidArgument, Message: "expected SubscribeSessionsRequest hello"}
 	}
 	return hello, nil
 }

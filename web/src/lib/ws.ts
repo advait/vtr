@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { decodeAny, encodeAny, type SubscribeEvent } from "./proto";
+import type { CoordinatorInfo, SessionInfo } from "../components/CoordinatorTree";
+import { decodeAny, encodeAny, type Session, type SessionsSnapshot, type SubscribeEvent } from "./proto";
 
 export type StreamStatus = "idle" | "connecting" | "open" | "reconnecting" | "error" | "closed";
 
@@ -16,6 +17,45 @@ function defaultWsUrl() {
   const { protocol, host } = window.location;
   const wsProto = protocol === "https:" ? "wss:" : "ws:";
   return `${wsProto}//${host}/api/ws`;
+}
+
+function defaultSessionsWsUrl() {
+  const { protocol, host } = window.location;
+  const wsProto = protocol === "https:" ? "wss:" : "ws:";
+  return `${wsProto}//${host}/api/ws/sessions`;
+}
+
+function sessionStatusFromProto(status?: number): SessionInfo["status"] {
+  switch (status) {
+    case 1:
+      return "running";
+    case 2:
+      return "closing";
+    case 3:
+      return "exited";
+    default:
+      return "unknown";
+  }
+}
+
+function normalizeSession(session: Session): SessionInfo {
+  return {
+    name: session.name ?? "",
+    status: sessionStatusFromProto(session.status),
+    cols: session.cols ?? 0,
+    rows: session.rows ?? 0,
+    idle: session.idle ?? false,
+    exitCode: session.exit_code,
+  };
+}
+
+function snapshotToCoordinators(snapshot: SessionsSnapshot): CoordinatorInfo[] {
+  const coords = snapshot.coordinators ?? [];
+  return coords.map((coord) => ({
+    name: coord.name ?? "",
+    path: coord.path ?? "",
+    sessions: (coord.sessions ?? []).map(normalizeSession),
+  }));
 }
 
 export function useVtrStream(sessionName: string | null, options: StreamOptions) {
@@ -215,4 +255,113 @@ export function useVtrStream(sessionName: string | null, options: StreamOptions)
     sendBytes,
     resize,
   };
+}
+
+export function useVtrSessionsStream(options: { excludeExited?: boolean } = {}) {
+  const [state, setState] = useState<StreamState>({ status: "idle" });
+  const [coordinators, setCoordinators] = useState<CoordinatorInfo[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const wsRef = useRef<WebSocket | null>(null);
+  const reconnectRef = useRef<{ attempts: number; timer?: number }>({ attempts: 0 });
+  const closedByUser = useRef(false);
+
+  const close = useCallback(() => {
+    closedByUser.current = true;
+    if (wsRef.current) {
+      wsRef.current.close();
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    closedByUser.current = false;
+
+    const connect = () => {
+      if (cancelled) {
+        return;
+      }
+      const ws = new WebSocket(defaultSessionsWsUrl());
+      ws.binaryType = "arraybuffer";
+      wsRef.current = ws;
+      setState((prev) => ({
+        status: prev.status === "reconnecting" ? "reconnecting" : "connecting",
+      }));
+
+      ws.addEventListener("open", () => {
+        reconnectRef.current.attempts = 0;
+        if (cancelled) {
+          return;
+        }
+        const hello = encodeAny("vtr.SubscribeSessionsRequest", {
+          exclude_exited: options.excludeExited ?? false,
+        });
+        ws.send(hello);
+        setState({ status: "open" });
+      });
+
+      ws.addEventListener("message", (event) => {
+        if (cancelled) {
+          return;
+        }
+        const handleData = (buffer: ArrayBuffer) => {
+          const decoded = decodeAny(new Uint8Array(buffer));
+          if (decoded.typeName === "google.rpc.Status") {
+            const status = decoded.message as { code?: number; message?: string };
+            setState({ status: "error", error: status.message || "stream error" });
+            ws.close();
+            return;
+          }
+          if (decoded.typeName === "vtr.SessionsSnapshot") {
+            const msg = decoded.message as SessionsSnapshot;
+            setCoordinators(snapshotToCoordinators(msg));
+            setLoaded(true);
+          }
+        };
+
+        if (event.data instanceof ArrayBuffer) {
+          handleData(event.data);
+          return;
+        }
+        if (event.data instanceof Blob) {
+          event.data
+            .arrayBuffer()
+            .then(handleData)
+            .catch(() => {});
+        }
+      });
+
+      ws.addEventListener("close", () => {
+        if (cancelled || closedByUser.current) {
+          setState({ status: "closed" });
+          return;
+        }
+        const attempts = reconnectRef.current.attempts + 1;
+        reconnectRef.current.attempts = attempts;
+        const delay = Math.min(5000, 500 * attempts + attempts * 200);
+        setState({ status: "reconnecting" });
+        reconnectRef.current.timer = window.setTimeout(connect, delay);
+      });
+
+      ws.addEventListener("error", () => {
+        if (cancelled) {
+          return;
+        }
+        setState({ status: "error", error: "websocket error" });
+      });
+    };
+
+    connect();
+
+    return () => {
+      cancelled = true;
+      if (reconnectRef.current.timer) {
+        window.clearTimeout(reconnectRef.current.timer);
+      }
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+    };
+  }, [options.excludeExited]);
+
+  return { state, coordinators, loaded, close };
 }

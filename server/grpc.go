@@ -268,6 +268,43 @@ func (s *GRPCServer) List(_ context.Context, _ *proto.ListRequest) (*proto.ListR
 	return &proto.ListResponse{Sessions: out}, nil
 }
 
+func (s *GRPCServer) SubscribeSessions(req *proto.SubscribeSessionsRequest, stream proto.VTR_SubscribeSessionsServer) error {
+	excludeExited := false
+	if req != nil {
+		excludeExited = req.ExcludeExited
+	}
+	sendSnapshot := func() error {
+		sessions := s.coord.List()
+		out := make([]*proto.Session, 0, len(sessions))
+		for _, info := range sessions {
+			if excludeExited && info.State == SessionExited {
+				continue
+			}
+			infoCopy := info
+			out = append(out, toProtoSession(&infoCopy))
+		}
+		return stream.Send(&proto.SubscribeSessionsEvent{Sessions: out})
+	}
+
+	if err := sendSnapshot(); err != nil {
+		return err
+	}
+
+	ctx := stream.Context()
+	signal := s.coord.sessionsChanged()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-signal:
+			if err := sendSnapshot(); err != nil {
+				return err
+			}
+			signal = s.coord.sessionsChanged()
+		}
+	}
+}
+
 func (s *GRPCServer) Info(_ context.Context, req *proto.InfoRequest) (*proto.InfoResponse, error) {
 	if req == nil || req.Name == "" {
 		return nil, status.Error(codes.InvalidArgument, "session name is required")
