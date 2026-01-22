@@ -110,31 +110,9 @@ func runWeb(opts webOptions) error {
 	if err != nil {
 		return err
 	}
-
-	mux := http.NewServeMux()
-	wsHandler := handleWebsocket(resolver)
-	mux.HandleFunc("/api/ws", wsHandler)
-	mux.HandleFunc("/ws", wsHandler)
-	mux.HandleFunc("/api/sessions", handleWebSessions(resolver))
-	mux.HandleFunc("/api/sessions/action", handleWebSessionAction(resolver))
-	if opts.dev {
-		proxy, target, err := newViteProxy(opts.devServer)
-		if err != nil {
-			return err
-		}
-		fmt.Printf("vtr web dev proxying to %s\n", target.String())
-		mux.Handle("/", proxy)
-	} else {
-		dist, err := fs.Sub(webassets.DistFS, "dist")
-		if err != nil {
-			return err
-		}
-		mux.Handle("/", http.FileServer(http.FS(dist)))
-	}
-
-	srv := &http.Server{
-		Addr:    opts.addr,
-		Handler: mux,
+	srv, err := newWebServer(opts, resolver)
+	if err != nil {
+		return err
 	}
 
 	url := webURL(opts.addr)
@@ -144,6 +122,35 @@ func runWeb(opts webOptions) error {
 	}
 
 	return srv.ListenAndServe()
+}
+
+func newWebServer(opts webOptions, resolver webResolver) (*http.Server, error) {
+	mux := http.NewServeMux()
+	wsHandler := handleWebsocket(resolver)
+	mux.HandleFunc("/api/ws", wsHandler)
+	mux.HandleFunc("/ws", wsHandler)
+	mux.HandleFunc("/api/sessions", handleWebSessions(resolver))
+	mux.HandleFunc("/api/sessions/action", handleWebSessionAction(resolver))
+	if opts.dev {
+		proxy, target, err := newViteProxy(opts.devServer)
+		if err != nil {
+			return nil, err
+		}
+		fmt.Printf("vtr web dev proxying to %s\n", target.String())
+		mux.Handle("/", proxy)
+	} else {
+		dist, err := fs.Sub(webassets.DistFS, "dist")
+		if err != nil {
+			return nil, err
+		}
+		mux.Handle("/", http.FileServer(http.FS(dist)))
+	}
+
+	srv := &http.Server{
+		Addr:    opts.addr,
+		Handler: mux,
+	}
+	return srv, nil
 }
 
 const defaultViteDevServer = "http://127.0.0.1:5173"
