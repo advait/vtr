@@ -216,6 +216,7 @@ export function MultiViewDashboard({
   const [broadcastMode, setBroadcastMode] = useState<"text" | "key">("text");
   const [broadcastValue, setBroadcastValue] = useState("");
   const [thumbnailSize, setThumbnailSize] = useState<ThumbnailSize>("medium");
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const thumbnailConfig = useMemo<ThumbnailConfig>(() => {
     switch (thumbnailSize) {
       case "small":
@@ -357,94 +358,111 @@ export function MultiViewDashboard({
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-col gap-2 rounded-lg border border-tn-border bg-tn-panel p-3">
-        <div className="text-xs font-semibold uppercase tracking-wide text-tn-muted">
-          Multi-view filter
-        </div>
-        <Input
-          placeholder="Filter (e.g. status:exited coord:alpha api)"
-          value={filter}
-          onChange={(event) => setFilter(event.target.value)}
-        />
+      <div className="flex flex-col gap-2 rounded-lg border border-tn-border bg-tn-panel p-2">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="text-xs text-tn-text-dim">Thumbnail size</span>
-          <div className="flex items-center gap-1 rounded-md border border-tn-border bg-tn-panel-2 p-1">
-            <Button
-              type="button"
-              size="sm"
-              variant={thumbnailSize === "small" ? "default" : "ghost"}
-              className="h-7 px-3 text-[11px]"
-              onClick={() => setThumbnailSize("small")}
-            >
-              Small
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant={thumbnailSize === "medium" ? "default" : "ghost"}
-              className="h-7 px-3 text-[11px]"
-              onClick={() => setThumbnailSize("medium")}
-            >
-              Medium
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant={thumbnailSize === "large" ? "default" : "ghost"}
-              className="h-7 px-3 text-[11px]"
-              onClick={() => setThumbnailSize("large")}
-            >
-              Large
-            </Button>
-          </div>
-        </div>
-        <div className="text-xs text-tn-text-dim">
-          Use status:running, status:active, status:idle, status:exited or plain text for
-          coordinator/session.
-        </div>
-      </div>
-
-      <div className="flex flex-col gap-3 rounded-lg border border-tn-border bg-tn-panel p-3">
-        <div className="flex items-center justify-between gap-3">
-          <div className="text-xs font-semibold uppercase tracking-wide text-tn-muted">
-            Broadcast to selection
-          </div>
-          <div className="text-xs text-tn-text-dim">{selectedCount} selected</div>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center gap-1 rounded-md border border-tn-border bg-tn-panel-2 p-1">
-            <Button
-              type="button"
-              size="sm"
-              variant={broadcastMode === "text" ? "default" : "ghost"}
-              className="h-7 px-3 text-[11px]"
-              onClick={() => setBroadcastMode("text")}
-            >
-              Text
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant={broadcastMode === "key" ? "default" : "ghost"}
-              className="h-7 px-3 text-[11px]"
-              onClick={() => setBroadcastMode("key")}
-            >
-              Key
-            </Button>
-          </div>
-          <div className="flex flex-1 items-center gap-2">
+          <div className="flex min-w-[220px] flex-1 items-center gap-2">
             <Input
+              className="h-9"
+              placeholder="Filter (status:active coord:alpha)"
+              value={filter}
+              onChange={(event) => setFilter(event.target.value)}
+            />
+            {filter.trim() ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="h-9 px-2 text-[11px]"
+                onClick={() => setFilter("")}
+              >
+                Clear
+              </Button>
+            ) : null}
+          </div>
+          <div className="flex min-w-[260px] flex-1 items-center gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-9 px-2 text-[11px] uppercase tracking-wide"
+              onClick={() => setBroadcastMode((prev) => (prev === "text" ? "key" : "text"))}
+            >
+              {broadcastMode === "text" ? "Text" : "Key"}
+            </Button>
+            <Input
+              className="h-9 flex-1"
               placeholder={
                 broadcastMode === "key" ? "ctrl+c, alt+f, escape" : "type command to send"
               }
               value={broadcastValue}
               onChange={(event) => setBroadcastValue(event.target.value)}
             />
-            <Button type="button" size="sm" onClick={handleBroadcast} disabled={broadcastDisabled}>
+            <Button
+              type="button"
+              size="sm"
+              className="h-9"
+              onClick={handleBroadcast}
+              disabled={broadcastDisabled}
+            >
               Send
             </Button>
           </div>
+          <Badge className="text-[11px] uppercase tracking-wide">{selectedCount} selected</Badge>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="h-9 px-2 text-[11px]"
+            aria-expanded={showAdvanced}
+            aria-controls="multi-view-options"
+            onClick={() => setShowAdvanced((prev) => !prev)}
+          >
+            {showAdvanced ? "Hide" : "Options"}
+          </Button>
         </div>
+        {showAdvanced ? (
+          <div
+            id="multi-view-options"
+            className="flex flex-wrap items-center gap-3 rounded-md border border-tn-border bg-tn-panel-2 p-2"
+          >
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-tn-text-dim">Thumbnail size</span>
+              <div className="flex items-center gap-1 rounded-md border border-tn-border bg-tn-panel p-1">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={thumbnailSize === "small" ? "default" : "ghost"}
+                  className="h-7 px-3 text-[11px]"
+                  onClick={() => setThumbnailSize("small")}
+                >
+                  Small
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={thumbnailSize === "medium" ? "default" : "ghost"}
+                  className="h-7 px-3 text-[11px]"
+                  onClick={() => setThumbnailSize("medium")}
+                >
+                  Medium
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={thumbnailSize === "large" ? "default" : "ghost"}
+                  className="h-7 px-3 text-[11px]"
+                  onClick={() => setThumbnailSize("large")}
+                >
+                  Large
+                </Button>
+              </div>
+            </div>
+            <div className="text-xs text-tn-text-dim">
+              Filters: status:active, status:idle, status:running, status:exited, coord:alpha, or
+              plain text.
+            </div>
+          </div>
+        ) : null}
       </div>
 
       {filtered.length === 0 ? (
