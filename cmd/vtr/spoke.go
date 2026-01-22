@@ -211,7 +211,7 @@ func (t tokenAuth) GetRequestMetadata(ctx context.Context, _ ...string) (map[str
 }
 
 func (t tokenAuth) RequireTransportSecurity() bool {
-	return true
+	return false
 }
 
 func buildClientTLS(cfg *clientConfig) (credentials.TransportCredentials, error) {
