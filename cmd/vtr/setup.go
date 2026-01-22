@@ -39,9 +39,11 @@ func newSetupCmd() *cobra.Command {
 }
 
 func runSetup(_ setupOptions) error {
-	configDir := configDir()
-	if strings.TrimSpace(configDir) == "" {
-		return errors.New("config directory is unavailable")
+	printSetupBanner()
+
+	configDir, err := resolveSetupConfigDir()
+	if err != nil {
+		return err
 	}
 	configPath := filepath.Join(configDir, defaultConfigFileName)
 	if exists(configPath) {
@@ -56,7 +58,7 @@ func runSetup(_ setupOptions) error {
 	}
 
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
-		return err
+		return fmt.Errorf("unable to create config dir %s: %w", configDir, err)
 	}
 
 	socketPath := setupSocketDefault
@@ -120,7 +122,25 @@ func runSetup(_ setupOptions) error {
 	}
 
 	fmt.Fprintf(os.Stdout, "vtr setup: wrote %s\n", configPath)
+	if envOverride := strings.TrimSpace(os.Getenv("VTRPC_CONFIG_DIR")); envOverride != "" && envOverride != configDir {
+		fmt.Fprintf(os.Stdout, "vtr setup: note VTRPC_CONFIG_DIR=%s is set; this config is in %s\n", envOverride, configDir)
+	}
 	return nil
+}
+
+func printSetupBanner() {
+	banner := []string{
+		"░▒▓█▓▒░░▒▓█▓▒░▒▓████████▓▒░▒▓███████▓▒░░▒▓███████▓▒░ ░▒▓██████▓▒░  ",
+		"░▒▓█▓▒░░▒▓█▓▒░  ░▒▓█▓▒░   ░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░ ",
+		" ░▒▓█▓▒▒▓█▓▒░   ░▒▓█▓▒░   ░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░        ",
+		" ░▒▓█▓▒▒▓█▓▒░   ░▒▓█▓▒░   ░▒▓███████▓▒░░▒▓███████▓▒░░▒▓█▓▒░        ",
+		"  ░▒▓█▓▓█▓▒░    ░▒▓█▓▒░   ░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░      ░▒▓█▓▒░        ",
+		"  ░▒▓█▓▓█▓▒░    ░▒▓█▓▒░   ░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░      ░▒▓█▓▒░░▒▓█▓▒░ ",
+		"   ░▒▓██▓▒░     ░▒▓█▓▒░   ░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░       ░▒▓██████▓▒░  ",
+	}
+	fmt.Fprintln(os.Stdout, strings.Join(banner, "\n"))
+	fmt.Fprintln(os.Stdout, "Welcome to vtrpc setup.")
+	fmt.Fprintln(os.Stdout)
 }
 
 func buildSetupConfig(socketPath, configDir string) string {
@@ -257,27 +277,76 @@ func canWriteDir(dir string) bool {
 	return true
 }
 
+func resolveSetupConfigDir() (string, error) {
+	dir := configDir()
+	if strings.TrimSpace(dir) == "" {
+		return "", errors.New("config directory is unavailable (set VTRPC_CONFIG_DIR)")
+	}
+	if isWritableConfigDir(dir) {
+		return dir, nil
+	}
+	fallback := fallbackConfigDir()
+	if fallback == "" || !isWritableConfigDir(fallback) {
+		return "", fmt.Errorf("%s is not writable; set VTRPC_CONFIG_DIR to a writable location", dir)
+	}
+	confirm, err := promptConfirm(
+		fmt.Sprintf("%s is not writable; use %s instead? (set VTRPC_CONFIG_DIR to persist)", dir, fallback),
+		true,
+	)
+	if err != nil {
+		return "", err
+	}
+	if !confirm {
+		return "", fmt.Errorf("%s is not writable; set VTRPC_CONFIG_DIR to a writable location", dir)
+	}
+	return fallback, nil
+}
+
+func isWritableConfigDir(dir string) bool {
+	if strings.TrimSpace(dir) == "" {
+		return false
+	}
+	if exists(dir) {
+		return canWriteDir(dir)
+	}
+	parent := filepath.Dir(dir)
+	if parent == "" || parent == dir {
+		return false
+	}
+	return canWriteDir(parent)
+}
+
+func fallbackConfigDir() string {
+	home, err := os.UserHomeDir()
+	if err == nil && home != "" {
+		return filepath.Join(home, ".vtrpc")
+	}
+	return filepath.Join(os.TempDir(), "vtrpc")
+}
+
 func promptConfirm(prompt string, defaultYes bool) (bool, error) {
 	label := "y/N"
 	if defaultYes {
 		label = "Y/n"
 	}
-	fmt.Fprintf(os.Stdout, "%s [%s]: ", prompt, label)
 	reader := bufio.NewReader(os.Stdin)
-	input, err := reader.ReadString('\n')
-	if err != nil {
-		return false, err
-	}
-	trimmed := strings.TrimSpace(strings.ToLower(input))
-	if trimmed == "" {
-		return defaultYes, nil
-	}
-	switch trimmed {
-	case "y", "yes":
-		return true, nil
-	case "n", "no":
-		return false, nil
-	default:
-		return defaultYes, nil
+	for {
+		fmt.Fprintf(os.Stdout, "%s [%s]: ", prompt, label)
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			return false, err
+		}
+		trimmed := strings.TrimSpace(strings.ToLower(input))
+		if trimmed == "" {
+			return defaultYes, nil
+		}
+		switch trimmed {
+		case "y", "yes":
+			return true, nil
+		case "n", "no":
+			return false, nil
+		default:
+			fmt.Fprintln(os.Stdout, "Please answer y or n.")
+		}
 	}
 }
