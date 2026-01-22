@@ -169,7 +169,7 @@ function SessionThumbnail({
       >
         {selected ? <Check className="h-3 w-3" aria-hidden="true" /> : null}
       </button>
-      <div className="flex items-center justify-between border-b border-tn-border px-2 py-1">
+      <div className="flex items-center justify-between border-b border-tn-border pl-8 pr-2 py-1">
         <span className="truncate text-xs font-semibold text-tn-text">{session.name}</span>
         <Badge variant={status.variant}>{status.label}</Badge>
       </div>

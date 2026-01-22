@@ -31,6 +31,7 @@ const ATTR_INVERSE = 1 << 5;
 const ATTR_INVISIBLE = 1 << 6;
 const ATTR_STRIKE = 1 << 7;
 const ATTR_OVERLINE = 1 << 8;
+const BOX_DRAWING_RE = /[\u2500-\u259f]/u;
 
 const FONT_STACK = "JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, monospace";
 
@@ -67,6 +68,10 @@ function resolveThemeColors(node: HTMLElement | null): ThemeColors {
   const fg = styles.getPropertyValue("--tn-text").trim() || "#e5e5e5";
   const bg = styles.getPropertyValue("--tn-bg-alt").trim() || "#0f0f0f";
   return { fg, bg };
+}
+
+function isBoxDrawingChar(char: string) {
+  return BOX_DRAWING_RE.test(char);
 }
 
 function fontForCell(size: number, bold: boolean, italic: boolean) {
@@ -400,6 +405,7 @@ export function TerminalView({
         const isUnderline = (attrs & ATTR_UNDERLINE) !== 0;
         const isStrike = (attrs & ATTR_STRIKE) !== 0;
         const isOverline = (attrs & ATTR_OVERLINE) !== 0;
+        const isBoxDrawing = isBoxDrawingChar(char);
 
         let fg = cell.fg;
         let bg = cell.bg;
@@ -433,7 +439,7 @@ export function TerminalView({
         }
 
         if (!isInvisible && char !== " ") {
-          const font = fontForCell(fontSizePx, isBold, isItalic);
+          const font = fontForCell(fontSizePx, isBold || isBoxDrawing, isItalic);
           if (font !== lastFont) {
             ctx.font = font;
             lastFont = font;

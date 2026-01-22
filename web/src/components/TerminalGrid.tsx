@@ -10,6 +10,7 @@ const ATTR_INVERSE = 1 << 5;
 const ATTR_INVISIBLE = 1 << 6;
 const ATTR_STRIKE = 1 << 7;
 const ATTR_OVERLINE = 1 << 8;
+const BOX_DRAWING_RE = /[\u2500-\u259f]/u;
 
 export type TerminalGridProps = {
   rows: Cell[][];
@@ -56,6 +57,10 @@ function colorFromInt(value: number) {
   const unsigned = value >>> 0;
   const hex = unsigned.toString(16).padStart(6, "0");
   return `#${hex}`;
+}
+
+function isBoxDrawingChar(text: string) {
+  return BOX_DRAWING_RE.test(text);
 }
 
 function styleFromCell(cell: Cell, selected: boolean): React.CSSProperties {
@@ -117,9 +122,12 @@ function buildRuns(cells: Cell[], selectionRange: { start: number; end: number }
   while (col < cells.length) {
     const cell = cells[col];
     const selected = isSelected(col);
-    const style = styleFromCell(cell, selected);
-    const styleKey = `${style.color}-${style.backgroundColor}-${style.fontWeight}-${style.fontStyle}-${style.textDecoration}-${style.opacity}-${selected}`;
     const text = cell.char || " ";
+    const style = styleFromCell(cell, selected);
+    if (isBoxDrawingChar(text) && style.fontWeight == null) {
+      style.fontWeight = 600;
+    }
+    const styleKey = `${style.color}-${style.backgroundColor}-${style.fontWeight}-${style.fontStyle}-${style.textDecoration}-${style.opacity}-${selected}`;
 
     const width = cellWidth(text);
     if (width === 2 && col + 1 < cells.length) {
