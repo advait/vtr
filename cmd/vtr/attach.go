@@ -212,9 +212,9 @@ var (
 func newAttachCmd() *cobra.Command {
 	var socket string
 	cmd := &cobra.Command{
-		Use:   "attach <name>",
+		Use:   "attach [name]",
 		Short: "Attach to a session",
-		Args:  cobra.ExactArgs(1),
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, _, _, err := loadConfigAndOutput(false)
 			if err != nil {
@@ -224,9 +224,14 @@ func newAttachCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), resolveTimeout)
-			target, err := resolveSessionTarget(ctx, coordinatorsOrDefault(coords), socket, args[0])
-			cancel()
+			var target sessionTarget
+			if len(args) == 0 {
+				target, err = resolveFirstSessionTarget(context.Background(), coords, socket)
+			} else {
+				ctx, cancel := context.WithTimeout(context.Background(), resolveTimeout)
+				target, err = resolveSessionTarget(ctx, coordinatorsOrDefault(coords), socket, args[0])
+				cancel()
+			}
 			if err != nil {
 				return err
 			}
@@ -281,6 +286,62 @@ func newAttachCmd() *cobra.Command {
 	}
 	addSocketFlag(cmd, &socket)
 	return cmd
+}
+
+func resolveFirstSessionTarget(ctx context.Context, coords []coordinatorRef, socketFlag string) (sessionTarget, error) {
+	candidates := coords
+	if socketFlag != "" {
+		candidates = []coordinatorRef{{Name: coordinatorName(socketFlag), Path: socketFlag}}
+	} else {
+		candidates = coordinatorsOrDefault(coords)
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, resolveTimeout)
+		defer cancel()
+	}
+	var errs []string
+	hadSuccess := false
+	for _, coord := range candidates {
+		first := ""
+		err := withCoordinator(ctx, coord, func(client proto.VTRClient) error {
+			resp, err := client.List(ctx, &proto.ListRequest{})
+			if err != nil {
+				return err
+			}
+			names := make([]string, 0, len(resp.Sessions))
+			for _, session := range resp.Sessions {
+				if session == nil || session.Name == "" {
+					continue
+				}
+				names = append(names, session.Name)
+			}
+			if len(names) == 0 {
+				return nil
+			}
+			sort.Strings(names)
+			first = names[0]
+			return nil
+		})
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", coord.Name, err))
+			continue
+		}
+		hadSuccess = true
+		if first != "" {
+			return sessionTarget{Coordinator: coord, Session: first}, nil
+		}
+	}
+	if !hadSuccess && len(errs) > 0 {
+		return sessionTarget{}, fmt.Errorf("unable to list sessions: %s", strings.Join(errs, "; "))
+	}
+	if len(errs) > 0 && hadSuccess {
+		return sessionTarget{}, fmt.Errorf("no sessions found (errors: %s)", strings.Join(errs, "; "))
+	}
+	return sessionTarget{}, fmt.Errorf("no sessions found")
 }
 
 func ensureSessionExists(client proto.VTRClient, name string) error {
@@ -414,6 +475,9 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sessionList.SetSize(m.viewportWidth, m.viewportHeight)
 		}
 		if m.viewportWidth > 0 && m.viewportHeight > 0 {
+			if m.exited {
+				return m, nil
+			}
 			return m, resizeCmd(m.client, m.session, m.viewportWidth, m.viewportHeight)
 		}
 		return m, nil
@@ -462,23 +526,6 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseMsg:
 		return handleMouse(m, msg)
 	case tea.KeyMsg:
-		if m.exited {
-			if m.leaderActive {
-				m.leaderActive = false
-				if msg.String() == "esc" || msg.String() == "escape" {
-					return m, nil
-				}
-				return handleLeaderKey(m, msg)
-			}
-			switch msg.String() {
-			case "q", "enter":
-				return m, tea.Quit
-			case "ctrl+b":
-				m.leaderActive = true
-				return m, nil
-			}
-			return m, nil
-		}
 		if m.createActive {
 			return updateCreateModal(m, msg)
 		}
@@ -800,6 +847,14 @@ func handleLeaderKey(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
 	if len(key) == 1 {
 		key = strings.ToLower(key)
 	}
+	if m.exited {
+		switch key {
+		case "ctrl+b", "x":
+			m.statusMsg = "session exited"
+			m.statusUntil = time.Now().Add(2 * time.Second)
+			return m, nil
+		}
+	}
 	switch key {
 	case "ctrl+b":
 		return m, sendKeyCmd(m.client, m.session, "ctrl+b")
@@ -830,7 +885,7 @@ func handleMouse(m attachModel, msg tea.MouseMsg) (attachModel, tea.Cmd) {
 		m.hoverTab = ""
 		m.hoverNew = false
 	}
-	if m.exited || m.listActive || m.createActive {
+	if m.listActive || m.createActive {
 		if m.hoverTab != "" || m.hoverNew {
 			clearHover()
 		}
@@ -956,6 +1011,13 @@ func handleMouse(m attachModel, msg tea.MouseMsg) (attachModel, tea.Cmd) {
 	}
 }
 func handleInputKey(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
+	if m.exited {
+		if m.statusMsg == "" || time.Now().After(m.statusUntil) {
+			m.statusMsg = "session exited"
+			m.statusUntil = time.Now().Add(2 * time.Second)
+		}
+		return m, nil
+	}
 	key, data, ok := inputForKey(msg)
 	if !ok {
 		return m, nil
