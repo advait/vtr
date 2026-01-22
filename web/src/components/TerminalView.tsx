@@ -16,6 +16,7 @@ export type TerminalViewProps = {
   onSendText: (text: string) => void;
   onSendKey: (key: string) => void;
   onPaste: (text: string) => void;
+  minRows?: number;
 };
 
 type CellSize = { width: number; height: number };
@@ -106,6 +107,7 @@ export function TerminalView({
   focusKey,
   renderer = "dom",
   themeKey,
+  minRows = 0,
   onResize,
   onSendKey,
   onSendText,
@@ -117,6 +119,14 @@ export function TerminalView({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const baseMeasureRef = useRef<HTMLSpanElement | null>(null);
   const measureRef = useRef<HTMLSpanElement | null>(null);
+  const lastRectRef = useRef<{ width: number; height: number } | null>(null);
+  const lastGridRef = useRef<{ cols: number; rows: number } | null>(null);
+  const resizeStateRef = useRef<{
+    startY: number;
+    startHeight: number;
+    minHeight: number;
+    maxHeight: number;
+  } | null>(null);
   const [cellSize, setCellSize] = useState<CellSize>({ width: 8, height: 18 });
   const [baseCellSize, setBaseCellSize] = useState<CellSize>({ width: 8, height: 18 });
   const [selection, setSelection] = useState<Selection | null>(null);
@@ -124,6 +134,8 @@ export function TerminalView({
   const [containerSize, setContainerSize] = useState<{ width: number; height: number } | null>(
     null,
   );
+  const [manualHeight, setManualHeight] = useState<number | null>(null);
+  const [isResizing, setIsResizing] = useState(false);
   const selectingRef = useRef(false);
   const selectionStartRef = useRef<Selection | null>(null);
 
@@ -158,7 +170,19 @@ export function TerminalView({
   }, [autoFocus, focusKey, status]);
 
   const padding = 12;
+  const minRowsValue = Math.max(0, minRows);
+  const baseHeightForMin = baseCellSize.height || cellSize.height;
+  const minHeight =
+    minRowsValue > 0 && baseHeightForMin
+      ? Math.round(baseHeightForMin * minRowsValue + padding * 2)
+      : undefined;
   const rendererIsCanvas = renderer === "canvas";
+
+  useEffect(() => {
+    if (manualHeight !== null && minHeight && manualHeight < minHeight) {
+      setManualHeight(minHeight);
+    }
+  }, [manualHeight, minHeight]);
 
   useEffect(() => {
     if (!containerRef.current) {
@@ -170,16 +194,16 @@ export function TerminalView({
       if (!rect) {
         return;
       }
-      setContainerSize((prev) => {
-        if (
-          prev &&
-          Math.abs(prev.width - rect.width) < 0.5 &&
-          Math.abs(prev.height - rect.height) < 0.5
-        ) {
-          return prev;
-        }
-        return { width: rect.width, height: rect.height };
-      });
+      const prevRect = lastRectRef.current;
+      if (
+        prevRect &&
+        Math.abs(prevRect.width - rect.width) < 0.5 &&
+        Math.abs(prevRect.height - rect.height) < 0.5
+      ) {
+        return;
+      }
+      lastRectRef.current = { width: rect.width, height: rect.height };
+      setContainerSize({ width: rect.width, height: rect.height });
       const innerWidth = Math.max(0, rect.width - padding * 2);
       const innerHeight = Math.max(0, rect.height - padding * 2);
       const baseWidth = baseCellSize.width || cellSize.width;
@@ -189,7 +213,11 @@ export function TerminalView({
       }
       const cols = Math.max(1, Math.floor(innerWidth / baseWidth));
       const rows = Math.max(1, Math.floor(innerHeight / baseHeight));
-      onResize(cols, rows);
+      const lastGrid = lastGridRef.current;
+      if (!lastGrid || lastGrid.cols !== cols || lastGrid.rows !== rows) {
+        lastGridRef.current = { cols, rows };
+        onResize(cols, rows);
+      }
     });
     observer.observe(node);
     return () => observer.disconnect();
@@ -209,10 +237,13 @@ export function TerminalView({
       if (!baseWidth || !baseHeight || innerWidth < baseWidth || innerHeight < baseHeight) {
         return;
       }
-      onResize(
-        Math.max(1, Math.floor(innerWidth / baseWidth)),
-        Math.max(1, Math.floor(innerHeight / baseHeight)),
-      );
+      const cols = Math.max(1, Math.floor(innerWidth / baseWidth));
+      const rows = Math.max(1, Math.floor(innerHeight / baseHeight));
+      const lastGrid = lastGridRef.current;
+      if (!lastGrid || lastGrid.cols !== cols || lastGrid.rows !== rows) {
+        lastGridRef.current = { cols, rows };
+        onResize(cols, rows);
+      }
     };
     const frame = window.requestAnimationFrame(compute);
     const timer = window.setTimeout(compute, 120);
@@ -565,7 +596,10 @@ export function TerminalView({
   };
 
   return (
-    <div className="relative h-full min-h-[360px] md:min-h-[420px] w-full">
+    <div
+      className="relative h-full min-h-[360px] md:min-h-[420px] w-full"
+      style={manualHeight ? { height: manualHeight } : undefined}
+    >
       <span
         ref={baseMeasureRef}
         className="absolute -left-[9999px] -top-[9999px] font-mono"
@@ -582,6 +616,7 @@ export function TerminalView({
       </span>
       <div
         ref={containerRef}
+        style={minHeight ? { minHeight } : undefined}
         className={cn(
           "relative h-full min-h-[360px] md:min-h-[420px] w-full rounded-b-lg rounded-t-none border border-tn-border border-t-0 bg-tn-bg-alt focus-within:border-tn-accent",
           "shadow-panel",
@@ -639,6 +674,84 @@ export function TerminalView({
             )}
           </div>
         </div>
+      </div>
+      <div
+        role="separator"
+        aria-orientation="horizontal"
+        className={cn(
+          "absolute left-0 right-0 bottom-0 flex h-2 items-center justify-center",
+          "cursor-ns-resize touch-none",
+          isResizing ? "bg-tn-border/60" : "bg-transparent hover:bg-tn-border/40",
+        )}
+        onPointerDown={(event) => {
+          if (event.button !== 0) {
+            return;
+          }
+          const rect = containerRef.current?.getBoundingClientRect();
+          if (!rect) {
+            return;
+          }
+          const rowHeight = cellSize.height || baseCellSize.height || 1;
+          const baseMinHeight = minHeight ?? Math.round(rowHeight + padding * 2);
+          const maxHeight = Math.max(baseMinHeight, window.innerHeight - rect.top - 24);
+          resizeStateRef.current = {
+            startY: event.clientY,
+            startHeight: manualHeight ?? rect.height,
+            minHeight: baseMinHeight,
+            maxHeight,
+          };
+          event.currentTarget.setPointerCapture(event.pointerId);
+          document.body.style.cursor = "ns-resize";
+          document.body.style.userSelect = "none";
+          setIsResizing(true);
+        }}
+        onPointerMove={(event) => {
+          const state = resizeStateRef.current;
+          if (!state) {
+            return;
+          }
+          const rowHeight = cellSize.height || baseCellSize.height || 1;
+          const rawHeight = state.startHeight + (event.clientY - state.startY);
+          const maxRows = Math.max(
+            1,
+            Math.floor((state.maxHeight - padding * 2) / rowHeight),
+          );
+          const minRows = Math.max(
+            1,
+            minRowsValue > 0
+              ? minRowsValue
+              : Math.floor((state.minHeight - padding * 2) / rowHeight),
+          );
+          const snappedRows = clamp(
+            Math.round((rawHeight - padding * 2) / rowHeight),
+            minRows,
+            maxRows,
+          );
+          const snappedHeight = snappedRows * rowHeight + padding * 2;
+          setManualHeight(clamp(snappedHeight, state.minHeight, state.maxHeight));
+        }}
+        onPointerUp={(event) => {
+          if (!resizeStateRef.current) {
+            return;
+          }
+          resizeStateRef.current = null;
+          event.currentTarget.releasePointerCapture(event.pointerId);
+          document.body.style.cursor = "";
+          document.body.style.userSelect = "";
+          setIsResizing(false);
+        }}
+        onPointerCancel={(event) => {
+          if (!resizeStateRef.current) {
+            return;
+          }
+          resizeStateRef.current = null;
+          event.currentTarget.releasePointerCapture(event.pointerId);
+          document.body.style.cursor = "";
+          document.body.style.userSelect = "";
+          setIsResizing(false);
+        }}
+      >
+        <div className="h-0.5 w-12 rounded-full bg-tn-border/70" />
       </div>
     </div>
   );

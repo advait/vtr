@@ -849,6 +849,7 @@ export default function App() {
                     onPaste={onSendText}
                     autoFocus={isDesktop}
                     focusKey={selectedSession?.name}
+                    minRows={isDesktop ? 50 : undefined}
                     renderer={terminalRenderer}
                     themeKey={activeTheme.id}
                   />

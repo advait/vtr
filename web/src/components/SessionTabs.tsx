@@ -99,7 +99,7 @@ export function SessionTabs({
 
   return (
     <div className="flex items-center gap-2 rounded-t-lg border-2 border-b-0 border-tn-border bg-tn-panel px-2 pt-2">
-      <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto">
+      <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
         {sessions.length === 0 ? (
           <span className="px-3 text-xs text-tn-text-dim">No sessions yet.</span>
         ) : (
@@ -163,9 +163,9 @@ export function SessionTabs({
           <button
             type="button"
             className={cn(
-              "flex h-8 w-8 shrink-0 items-center justify-center rounded-md border text-sm",
-              "border-tn-border/60 bg-tn-panel text-tn-text",
-              "hover:border-tn-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tn-accent",
+              "flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-sm",
+              "bg-tn-panel text-tn-text",
+              "hover:bg-tn-panel-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tn-accent",
             )}
             onClick={() => onCreate()}
             aria-label="New session"
