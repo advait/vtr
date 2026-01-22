@@ -16,8 +16,13 @@ vtr (short for vtrpc) is a terminal multiplexer for the agent era. It supports:
 ## Quickstart
 
 ```bash
-# Figure out how to get a vtr binary
-# TODO
+# Build a vtr binary
+gh repo clone advait/vtr
+cd vtr
+mise trust
+mise install
+mise run build
+cp ./bin/vtr $HOME/.local/bin/vtr
 
 # Setup configuration and keys
 vtr setup
