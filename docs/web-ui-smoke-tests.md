@@ -6,8 +6,8 @@ without dedicated test tooling.
 
 ## Preconditions
 
-- `vtr` binary available (use `go run ./cmd/vtr` from repo root).
-- `web/dist` exists (run `cd web && bun install && bun run build` if needed).
+- `vtr` binary available (`mise run build`) or use `go run ./cmd/vtr`.
+- `web/dist` exists (`mise run web-build` or `cd web && bun install && bun run build`).
 
 ## Build and Run
 
@@ -18,31 +18,26 @@ bun run build
 
 cd ..
 go run ./cmd/vtr serve --socket /tmp/vtr.sock
-go run ./cmd/vtr web --socket /tmp/vtr.sock --listen 127.0.0.1:8080
+go run ./cmd/vtr web --listen 127.0.0.1:8080 --socket /tmp/vtr.sock
 ```
 
 ## Setup
 
-1. Start a coordinator:
+1. Start a coordinator and web UI:
 
 ```bash
 go run ./cmd/vtr serve --socket /tmp/vtr.sock
+go run ./cmd/vtr web --listen 127.0.0.1:8080 --socket /tmp/vtr.sock
 ```
 
-2. Start the web UI:
+2. Open `http://127.0.0.1:8080`.
+3. Create a session:
 
 ```bash
-go run ./cmd/vtr web --socket /tmp/vtr.sock --listen 127.0.0.1:8080
+go run ./cmd/vtr spawn --socket /tmp/vtr.sock --cmd "bash" web-smoke
 ```
 
-3. Open `http://127.0.0.1:8080`.
-4. Create a session:
-
-```bash
-go run ./cmd/vtr spawn web-smoke --socket /tmp/vtr.sock --cmd "bash"
-```
-
-5. Attach to `web-smoke` in the UI (tree or attach input).
+4. Attach to `web-smoke` in the UI (tree or attach input).
 
 ## Smoke Cases
 
@@ -111,6 +106,6 @@ Artifacts are stored in `docs/screenshots/`:
 
 ## Known Limitations (M7)
 
-- Web UI does not spawn/kill/remove sessions; it only attaches to existing ones.
+- Web UI only exposes basic session creation (name + coordinator) and close/remove/rename actions; use the CLI for custom command/cwd/size.
 - Scrollback streaming is not implemented (keyframes only).
 - Mouse input is not supported.

@@ -4,7 +4,7 @@
 
 ## Overview
 
-vtr is a terminal multiplexer designed for the agent era. Each container runs a coordinator that manages multiple named PTY sessions. Clients connect via gRPC over Unix sockets to query screen state, search scrollback, send input, and wait for output patterns.
+vtr is a terminal multiplexer designed for the agent era. Each container runs a coordinator that manages multiple named PTY sessions. Clients connect via gRPC over Unix sockets (local) or TCP when exposed externally to query screen state, search scrollback, send input, and wait for output patterns.
 
 **Core insight**: Agents don't need 60fps terminal streaming. They need consistent screen state on demand, pattern matching on output, and reliable input delivery.
 
@@ -12,13 +12,13 @@ vtr is a terminal multiplexer designed for the agent era. Each container runs a 
 
 - Implemented gRPC methods: Spawn, List, Info, Kill, Remove, GetScreen, Grep, SendText, SendKey, SendBytes, Resize, WaitFor, WaitForIdle, Subscribe.
 - DumpAsciinema remains defined in `proto/vtr.proto` but is not implemented yet (gRPC returns UNIMPLEMENTED).
-- CLI supports core client commands plus `grep`, `wait`, `idle`, `attach`, and `config resolve` (alongside `serve` and `version`).
+- CLI supports `serve`, `web`, `attach`, `version`, `config resolve`, and client commands (`ls`, `spawn`, `info`, `screen`, `send`, `key`, `raw`, `resize`, `kill`, `rm`, `grep`, `wait`, `idle`).
 - Attach TUI uses Subscribe streaming updates with leader key bindings for session actions.
 - Mouse support is not implemented yet; M8 adds mouse mode tracking, Subscribe events, and SendMouse RPC.
 - Multi-coordinator resolution supports `--socket` and `coordinator:session` with auto-disambiguation via per-coordinator lookup.
 - Grep uses scrollback dumps when available; falls back to screen/viewport dumps if history is unavailable.
 - WaitFor scans output emitted after the request starts using a rolling 1MB buffer.
-- M7/M7.1: `vtr web` serves embedded `web/dist` assets plus a WS bridge using protobuf `Any` frames (SubscribeRequest/SubscribeEvent); `/api/sessions` provides JSON listing, lifecycle APIs remain pending, and the web UI includes a settings menu with theme presets.
+- M7/M7.1: `vtr web` serves embedded `web/dist` assets plus a WS bridge using protobuf `Any` frames (SubscribeRequest/SubscribeEvent); `--dev` proxies the Vite dev server; HTTP JSON endpoints include `GET/POST /api/sessions` (list/spawn) and `POST /api/sessions/action` (send_key/signal/close/remove/rename); the web UI includes a settings menu with theme presets.
 
 ## Architecture
 
@@ -48,8 +48,8 @@ vtr is a terminal multiplexer designed for the agent era. Each container runs a 
         │                 │                 │
         ▼                 ▼                 ▼
    ┌─────────┐      ┌─────────┐      ┌─────────┐
-   │ vtr CLI │      │ vtr CLI │      │ Web UI  │
-   │ (agent) │      │ (human) │      │         │
+   │ vtr     │      │ vtr     │      │ Web UI  │
+   │ cli     │      │ attach  │      │         │
    └─────────┘      └─────────┘      └─────────┘
 ```
 
@@ -93,50 +93,43 @@ vtr is a terminal multiplexer designed for the agent era. Each container runs a 
 
 **States:**
 - **Running**: PTY process alive, accepting input
+- **Closing**: Close requested; PTY may still be running
 - **Exited**: PTY process terminated, scrollback readable, has exit code
 - **Removed**: Session deleted from coordinator
 
 **Key behaviors:**
 - Sessions persist until explicitly removed via `rm`
-- `rm` on a running session sends SIGTERM, waits 5s, sends SIGKILL, then removes
+- `close` sends SIGHUP to the session process group, marks status Closing, and schedules SIGKILL after `--kill-timeout` if still running
+- `rm` on a running session sends SIGTERM, waits `--kill-timeout` (default 5s), sends SIGKILL, then removes
 - Exit code preserved in Exited state
 
 ## Configuration
 
-### Client Config (M5)
+### Config (vtrpc.toml)
 
-Location: `~/.config/vtr/config.toml`
-
-```toml
-# Coordinator socket discovery
-[[coordinators]]
-path = "/var/run/vtr/*.sock"  # glob pattern
-
-[[coordinators]]
-path = "/home/advait/.vtr/project-alpha.sock"  # explicit path
-
-# Defaults
-[defaults]
-output_format = "human"  # or "json"
-# wait_for_idle_timeout = "5s"  # planned (idle default override)
-# grep_context_before = 3       # planned (grep default override)
-# grep_context_after = 3        # planned (grep default override)
-```
-
-M5 uses `coordinators.path` (glob or explicit sockets) and `defaults.output_format`.
-If no config file is present and `--socket` is not provided, the client defaults to `/var/run/vtr.sock`.
-
-### Server Config (planned)
-
-Passed via CLI flags. Optional config file for defaults (not yet implemented).
+Location: `$VTRPC_CONFIG_DIR/vtrpc.toml` (default: `~/.config/vtrpc/vtrpc.toml`).
 
 ```toml
-# ~/.config/vtr/server.toml (optional)
-socket_path = "/var/run/vtr.sock"
-scrollback_limit = 10000
-default_shell = "/bin/bash"
-idle_threshold = "5s"
+[hub]
+grpc_addr = "127.0.0.1:4621"
+grpc_socket = "/var/run/vtrpc.sock"
+web_addr = "127.0.0.1:4620"
+web_enabled = true
+
+[auth]
+mode = "both" # token, mtls, or both
+token_file = "~/.config/vtrpc/token"
+ca_file = "~/.config/vtrpc/ca.crt"
+cert_file = "~/.config/vtrpc/client.crt"
+key_file = "~/.config/vtrpc/client.key"
+
+[server]
+cert_file = "~/.config/vtrpc/server.crt"
+key_file = "~/.config/vtrpc/server.key"
 ```
+
+Use `vtr config resolve` to see the resolved coordinator sockets (honors `VTRPC_CONFIG_DIR`).
+The config file is optional; when absent, clients fall back to a default coordinator socket.
 
 ## CLI Interface
 
@@ -145,61 +138,61 @@ Single `vtr` binary serves as both client and server.
 ### Server Commands
 
 ```bash
-# Start coordinator (foreground)
-vtr serve [--socket /path/to.sock] [--shell /bin/bash] [--cols 80] [--rows 24] \
-  [--scrollback 10000] [--kill-timeout 5s] [--idle-threshold 5s]
+# Start coordinator
+vtr serve --socket /path/to.sock \
+  [--shell /bin/bash] [--cols 80] [--rows 24] [--scrollback 10000] \
+  [--kill-timeout 5s] [--idle-threshold 5s] [--log-level info]
 
-# Daemon mode + config file support (planned)
-# vtr serve --daemon [--socket /path/to.sock] [--pid-file /path/to.pid]
-# vtr serve --stop [--pid-file /path/to.pid]
-# vtr serve [--config /path/to/server.toml]
+# Serve web UI (embedded assets by default)
+vtr web --listen 127.0.0.1:8080 --socket /path/to.sock \
+  [--coordinator /path/to.sock] [--dev] [--dev-server http://127.0.0.1:5173]
 ```
 
 ### Session Management
 
 ```bash
-# List sessions across all configured coordinators
-vtr ls [--json]
+# List sessions
+vtr ls [--socket /path/to.sock] [--json]
 
 # Create new session
-vtr spawn <name> [--socket /path/to.sock] [--cmd "command"] [--cwd /path] [--cols 80] [--rows 24]
+vtr spawn <name> [--socket /path/to.sock] [--cmd "command"] [--cwd /path] [--cols 80] [--rows 24] [--json]
 
 # Remove session (kills if running)
-vtr rm <name> [--socket /path/to.sock]
+vtr rm <name> [--socket /path/to.sock] [--json]
 
 # Kill PTY process (session remains in Exited state)
-vtr kill <name> [--signal TERM|KILL|INT] [--socket /path/to.sock]
+vtr kill <name> [--signal TERM|KILL|INT] [--socket /path/to.sock] [--json]
 ```
 
 ### Screen Operations
 
 ```bash
 # Get current screen state
-vtr screen <name> [--json] [--socket /path/to.sock]
+vtr screen <name> [--socket /path/to.sock] [--json]
 
 # Search scrollback (ripgrep-style output; RE2 regex)
 vtr grep <name> <pattern> [-B lines] [-A lines] [-C lines] [--socket /path/to.sock] [--json]
 
 # Get session info (dimensions, status, exit code)
-vtr info <name> [--json] [--socket /path/to.sock]
+vtr info <name> [--socket /path/to.sock] [--json]
 ```
 
 ### Input Operations
 
 ```bash
 # Send text
-vtr send <name> <text> [--socket /path/to.sock]
+vtr send <name> <text> [--socket /path/to.sock] [--json]
 
 # Send special key
-vtr key <name> <key> [--socket /path/to.sock]
+vtr key <name> <key> [--socket /path/to.sock] [--json]
 # Keys: enter/return, tab, escape/esc, up, down, left, right, backspace, delete, home, end, pageup, pagedown
 # Modifiers: ctrl+c, ctrl+d, ctrl+z, alt+x, meta+x, etc. (single characters are sent verbatim)
 
 # Send raw bytes (hex-encoded)
-vtr raw <name> <hex> [--socket /path/to.sock]
+vtr raw <name> <hex> [--socket /path/to.sock] [--json]
 
 # Resize terminal
-vtr resize <name> <cols> <rows> [--socket /path/to.sock]
+vtr resize <name> <cols> <rows> [--socket /path/to.sock] [--json]
 ```
 
 ### Blocking Operations
@@ -216,7 +209,17 @@ vtr idle <name> [--idle 5s] [--timeout 30s] [--socket /path/to.sock] [--json]
 
 ```bash
 # Attach to session (interactive TUI)
-vtr attach <name> [--socket /path/to.sock]
+vtr attach [name] [--socket /path/to.sock]
+```
+
+### Utility Commands
+
+```bash
+# Print version
+vtr version
+
+# Show resolved coordinator sockets
+vtr config resolve [--json]
 ```
 
 TUI features (M6):
@@ -254,36 +257,36 @@ Goal: Mobile-first browser UI for live terminal sessions over Tailscale.
 Browser (mobile/desktop)
   |  HTTPS (static assets) + WS (stream/input)
   v
-Web UI server (Go HTTP)
+vtr web (HTTP + WS bridge)
   |  gRPC clients (one per coordinator)
   v
 Coordinators (vtr serve)
 ```
 
-The Web UI runs as a dedicated `vtr web` command. It serves static assets and
-bridges `Subscribe` streaming + input over WebSocket using protobuf frames.
-M7 includes a minimal JSON listing endpoint (`/api/sessions`); session lifecycle
-and input still flow over the WebSocket protobuf protocol.
+The Web UI runs inside `vtr web`.
+It serves static assets and bridges `Subscribe` streaming + input over WebSocket using protobuf frames.
+Use `--dev` to proxy the Vite dev server instead of serving embedded assets.
+HTTP JSON endpoints include `GET/POST /api/sessions` (list/spawn) and
+`POST /api/sessions/action` (send_key/signal/close/remove/rename); streaming and
+input (`Subscribe`, `SendText`, `SendKey`, `SendBytes`, `Resize`) still flow over the WebSocket protobuf protocol.
 
 ### Command and configuration
 
-- `vtr web` reads `~/.config/vtr/config.toml` and resolves `coordinators.path`
-  globs to build the coordinator tree.
-- CLI overrides: `--socket /path` for a single coordinator or `--coordinator`
-  (repeatable path/glob) to replace config discovery.
+- `vtr web` reads `$VTRPC_CONFIG_DIR/vtrpc.toml` (default: `~/.config/vtrpc/vtrpc.toml`).
 - `--listen` controls the HTTP bind address (default: `127.0.0.1:8080`).
-- Dev mode (HMR): run `cd web && bun install && bun run dev`, then
-  `vtr web --dev` to proxy the UI through Vite. Override the dev server with
-  `--dev-server` (or `VTR_WEB_DEV_SERVER`); `VTR_WEB_DEV=1` enables dev mode.
+- `--socket` targets a single coordinator socket.
+- `--coordinator` adds coordinator sockets (repeatable; supports globs).
+- `--dev` proxies the Vite dev server URL (`--dev-server`, default `http://127.0.0.1:5173`).
 
 ### HTTP API (M7)
 
-Minimal HTTP JSON API for session listing:
+HTTP JSON API for session listing and lifecycle:
 
-- `GET /api/sessions` returns `{"coordinators":[{"name","path","sessions":[{"name","status","cols","rows","exit_code"}]}]}`.
+- `GET /api/sessions` returns `{"coordinators":[{"name","path","sessions":[{"name","status","cols","rows","idle","exit_code"}],"error"}]}`.
+- `POST /api/sessions` accepts `{"name","coordinator","command","working_dir","cols","rows"}` and returns `{"coordinator","session":{...}}`.
+- `POST /api/sessions/action` accepts `{"name","action","key","signal","new_name"}` where `action` is `send_key`, `signal`, `close`, `remove`, or `rename`.
 
-Session lifecycle (spawn/kill/remove) and input flow over the WebSocket protobuf
-protocol; additional HTTP endpoints can be added later if needed.
+Streaming and input (`Subscribe`, `SendText`, `SendKey`, `SendBytes`, `Resize`) flow over the WebSocket protobuf protocol.
 
 ### Frontend stack (decision)
 
@@ -590,6 +593,7 @@ Compression:
 Tailnet-only flow (no Funnel in M7):
 
 ```bash
+vtr serve --socket /var/run/vtr.sock
 vtr web --listen 127.0.0.1:8080 --socket /var/run/vtr.sock
 tailscale serve https / http://127.0.0.1:8080
 ```
@@ -597,8 +601,8 @@ Exact flags can vary; verify with `tailscale serve --help`.
 
 ### Authentication (M7 simplified)
 
-No additional auth in M7. Rely on Tailscale Serve tailnet access. Funnel is
-explicitly out of scope for this milestone.
+Web UI is unauthenticated by default. gRPC over TCP requires TLS + token when
+binding to non-loopback addresses; local Unix sockets rely on filesystem permissions.
 
 ### Notes from modern web terminal patterns
 
@@ -629,23 +633,8 @@ explicitly out of scope for this milestone.
 
 ### Config Management
 
-Only `config resolve` is implemented in M5; the remaining subcommands are planned post-M5.
-
-```bash
-# List configured coordinators
-vtr config ls  # planned post-M5
-
-# Add coordinator
-vtr config add <path-or-glob>  # planned post-M5
-
-# Remove coordinator
-vtr config rm <path-or-glob>  # planned post-M5
-
-# Show resolved socket paths
-vtr config resolve
-```
-
-`config resolve` honors `--json` and `defaults.output_format`.
+Client defaults live in `vtrpc.toml` (optional). Use `vtr config resolve` to
+inspect resolved coordinator sockets and override with `--socket` when needed.
 
 ### Session Addressing
 
@@ -661,37 +650,14 @@ vtr screen codex --socket /var/run/project-a.sock
 vtr screen project-a:codex
 ```
 
-Coordinator names derived from socket filename (without .sock extension).
-If two sockets share the same basename, names collide; use `--socket` to disambiguate.
-
-M5 CLI uses `--socket` to target a single coordinator and auto-resolves session names across configured coordinators.
+Coordinator names derived from the spoke name (or socket filename without `.sock`).
+If two coordinators share the same name, use `--socket` to disambiguate.
 
 ### Output Formats
 
-**Human (default):**
-```
-$ vtr ls
-COORDINATOR    SESSION    STATUS    COLSxROWS    AGE
-project-a      codex      running   120x40       2h
-project-a      shell      exited    80x24        5m
-project-b      claude     running   100x30       1h
+Most client commands support `--json` for structured output; default output is human-readable.
 
-$ vtr screen codex
-Screen: codex (120x40)
-$ echo hello
-hello
-$ █
-
-$ vtr grep codex "error" -C 2
-scrollback:142: warning: something happened
-scrollback:143: error: connection refused
-scrollback:144: retrying in 5s
---
-scrollback:289: error: timeout exceeded
-scrollback:290: giving up
-```
-
-**JSON (`--json`):**
+Example:
 ```json
 {
   "sessions": [
@@ -709,12 +675,12 @@ scrollback:290: giving up
 
 ## gRPC API
 
-Transport: Unix domain socket
-Auth: POSIX filesystem permissions
+Transport: Unix domain socket (local) or TCP when exposed externally
+Auth: POSIX filesystem permissions for Unix sockets; TLS + token for non-loopback TCP
 
 ### Service Definition
 
-**Status (post-M6):** Spawn, List, Info, Kill, Remove, GetScreen, Grep, SendText, SendKey, SendBytes, Resize, WaitFor, WaitForIdle, and Subscribe are implemented. SendMouse and mouse mode events are planned for M8. DumpAsciinema is defined but not implemented yet.
+**Status (post-M6):** Spawn, List, Info, Kill, Close, Remove, Rename, GetScreen, Grep, SendText, SendKey, SendBytes, Resize, WaitFor, WaitForIdle, and Subscribe are implemented. SendMouse and mouse mode events are planned for M8. DumpAsciinema is defined but not implemented yet.
 
 ```protobuf
 syntax = "proto3";
@@ -726,7 +692,9 @@ service VTR {
   rpc List(ListRequest) returns (ListResponse);
   rpc Info(InfoRequest) returns (InfoResponse);
   rpc Kill(KillRequest) returns (KillResponse);
+  rpc Close(CloseRequest) returns (CloseResponse);
   rpc Remove(RemoveRequest) returns (RemoveResponse);
+  rpc Rename(RenameRequest) returns (RenameResponse);
   
   // Screen operations
   rpc GetScreen(GetScreenRequest) returns (GetScreenResponse);
@@ -768,7 +736,8 @@ message Session {
 enum SessionStatus {
   SESSION_STATUS_UNSPECIFIED = 0;
   SESSION_STATUS_RUNNING = 1;
-  SESSION_STATUS_EXITED = 2;
+  SESSION_STATUS_CLOSING = 2;
+  SESSION_STATUS_EXITED = 3;
 }
 
 message SpawnRequest {
@@ -1120,10 +1089,10 @@ When PTY produces output faster than VT engine processes:
 Unix socket permissions control access:
 ```bash
 # Restrict to owner
-chmod 600 /var/run/vtr.sock
+chmod 600 /var/run/vtrpc.sock
 
 # Allow group
-chmod 660 /var/run/vtr.sock
+chmod 660 /var/run/vtrpc.sock
 ```
 
 ### Container Isolation
@@ -1272,7 +1241,7 @@ run = "rm -rf bin/ && rm -f proto/*.pb.go"
 2. Bun + Vite dev tooling and HMR workflow
 3. Custom grid renderer using `ScreenUpdate` frames (no ANSI parsing; deltas optional)
 4. WebSocket -> gRPC bridge in `vtr web`
-5. Multi-coordinator tree view from `~/.config/vtr/config.toml`
+5. Multi-coordinator tree view from `~/.config/vtrpc/vtrpc.toml`
 6. Tailnet-only Tailscale Serve integration
 7. E2E tests covering ANSI -> coordinator -> web -> render pipeline
 
