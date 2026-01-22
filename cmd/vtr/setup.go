@@ -46,6 +46,8 @@ func runSetup(_ setupOptions) error {
 	if err != nil {
 		return err
 	}
+	printSetupPlan(configDir)
+
 	configPath := filepath.Join(configDir, defaultConfigFileName)
 	if exists(configPath) {
 		confirm, err := promptConfirm(fmt.Sprintf("%s exists; overwrite?", configPath), false)
@@ -149,6 +151,14 @@ func printSetupBanner() {
 		fmt.Fprintln(os.Stdout, strings.Join(banner, "\n"))
 	}
 	fmt.Fprintln(os.Stdout, "Welcome to vtrpc setup.")
+	fmt.Fprintln(os.Stdout)
+}
+
+func printSetupPlan(configDir string) {
+	fmt.Fprintln(os.Stdout, "This will bootstrap vtrpc on this machine:")
+	fmt.Fprintf(os.Stdout, "- Create config in %s (override with VTRPC_CONFIG_DIR)\n", configDir)
+	fmt.Fprintln(os.Stdout, "- Generate a local CA, server/client certs, and an auth token")
+	fmt.Fprintln(os.Stdout, "- Write vtrpc.toml, ca.crt, server.crt, server.key, client.crt, client.key, token")
 	fmt.Fprintln(os.Stdout)
 }
 
