@@ -1,5 +1,5 @@
 import type React from "react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Cell, ScreenState, Selection } from "../lib/terminal";
 import { cellWidth, emptyCell } from "../lib/terminal";
 import { cn } from "../lib/utils";
@@ -43,7 +43,9 @@ function measureCell(span: HTMLSpanElement | null): CellSize {
     return { width: 8, height: 18 };
   }
   const rect = span.getBoundingClientRect();
-  return { width: rect.width || 8, height: rect.height || 18 };
+  const count = Number(span.dataset.measureCount || "1");
+  const width = count > 0 ? rect.width / count : rect.width;
+  return { width: width || 8, height: rect.height || 18 };
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -123,6 +125,8 @@ export function TerminalView({
   const measureRef = useRef<HTMLSpanElement | null>(null);
   const lastRectRef = useRef<{ width: number; height: number } | null>(null);
   const lastGridRef = useRef<{ cols: number; rows: number } | null>(null);
+  const resizeTimerRef = useRef<number | null>(null);
+  const pendingResizeRef = useRef<{ cols: number; rows: number } | null>(null);
   const resizeStateRef = useRef<{
     startY: number;
     startHeight: number;
@@ -140,6 +144,16 @@ export function TerminalView({
   const [isResizing, setIsResizing] = useState(false);
   const selectingRef = useRef(false);
   const selectionStartRef = useRef<Selection | null>(null);
+  const debugEnabled = useMemo(() => {
+    if (typeof window === "undefined") {
+      return false;
+    }
+    const params = new URLSearchParams(window.location.search);
+    if (params.has("terminalDebug")) {
+      return true;
+    }
+    return window.localStorage.getItem("terminalDebug") === "1";
+  }, []);
 
   useLayoutEffect(() => {
     setBaseCellSize(measureCell(baseMeasureRef.current));
@@ -178,13 +192,53 @@ export function TerminalView({
     minRowsValue > 0 && baseHeightForMin
       ? Math.round(baseHeightForMin * minRowsValue + padding * 2)
       : undefined;
+  const resizeHandleValue = Math.round(manualHeight ?? containerSize?.height ?? 0);
   const rendererIsCanvas = renderer === "canvas";
+  const queueResize = useCallback(
+    (cols: number, rows: number) => {
+      if (cols < 1 || rows < 1) {
+        return;
+      }
+      const lastGrid = lastGridRef.current;
+      if (lastGrid && lastGrid.cols === cols && lastGrid.rows === rows) {
+        return;
+      }
+      pendingResizeRef.current = { cols, rows };
+      if (resizeTimerRef.current !== null) {
+        return;
+      }
+      resizeTimerRef.current = window.setTimeout(() => {
+        resizeTimerRef.current = null;
+        const next = pendingResizeRef.current;
+        pendingResizeRef.current = null;
+        if (!next) {
+          return;
+        }
+        const last = lastGridRef.current;
+        if (last && last.cols === next.cols && last.rows === next.rows) {
+          return;
+        }
+        lastGridRef.current = { cols: next.cols, rows: next.rows };
+        onResize(next.cols, next.rows);
+      }, 120);
+    },
+    [onResize],
+  );
 
   useEffect(() => {
     if (manualHeight !== null && minHeight && manualHeight < minHeight) {
       setManualHeight(minHeight);
     }
   }, [manualHeight, minHeight]);
+
+  useEffect(() => {
+    return () => {
+      if (resizeTimerRef.current !== null) {
+        window.clearTimeout(resizeTimerRef.current);
+        resizeTimerRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!containerRef.current) {
@@ -208,30 +262,26 @@ export function TerminalView({
       setContainerSize({ width: rect.width, height: rect.height });
       const innerWidth = Math.max(0, rect.width - padding * 2);
       const innerHeight = Math.max(0, rect.height - padding * 2);
-      const baseWidth = baseCellSize.width || cellSize.width;
-      const baseHeight = baseCellSize.height || cellSize.height;
+      const baseWidth = cellSize.width || baseCellSize.width;
+      const baseHeight = cellSize.height || baseCellSize.height;
       if (!baseWidth || !baseHeight || innerWidth < baseWidth || innerHeight < baseHeight) {
         return;
       }
       const cols = Math.max(1, Math.floor(innerWidth / baseWidth));
       const rows = Math.max(1, Math.floor(innerHeight / baseHeight));
-      const lastGrid = lastGridRef.current;
-      if (!lastGrid || lastGrid.cols !== cols || lastGrid.rows !== rows) {
-        lastGridRef.current = { cols, rows };
-        onResize(cols, rows);
-      }
+      queueResize(cols, rows);
     });
     observer.observe(node);
     return () => observer.disconnect();
-  }, [baseCellSize.height, baseCellSize.width, cellSize.height, cellSize.width, onResize]);
+  }, [baseCellSize.height, baseCellSize.width, cellSize.height, cellSize.width, queueResize]);
 
   useEffect(() => {
     if (!containerRef.current) {
       return;
     }
     const node = containerRef.current;
-    const baseWidth = baseCellSize.width || cellSize.width;
-    const baseHeight = baseCellSize.height || cellSize.height;
+    const baseWidth = cellSize.width || baseCellSize.width;
+    const baseHeight = cellSize.height || baseCellSize.height;
     const compute = () => {
       const rect = node.getBoundingClientRect();
       const innerWidth = Math.max(0, rect.width - padding * 2);
@@ -241,11 +291,7 @@ export function TerminalView({
       }
       const cols = Math.max(1, Math.floor(innerWidth / baseWidth));
       const rows = Math.max(1, Math.floor(innerHeight / baseHeight));
-      const lastGrid = lastGridRef.current;
-      if (!lastGrid || lastGrid.cols !== cols || lastGrid.rows !== rows) {
-        lastGridRef.current = { cols, rows };
-        onResize(cols, rows);
-      }
+      queueResize(cols, rows);
     };
     const frame = window.requestAnimationFrame(compute);
     const timer = window.setTimeout(compute, 120);
@@ -253,7 +299,7 @@ export function TerminalView({
       window.cancelAnimationFrame(frame);
       window.clearTimeout(timer);
     };
-  }, [baseCellSize.height, baseCellSize.width, cellSize.height, cellSize.width, onResize]);
+  }, [baseCellSize.height, baseCellSize.width, cellSize.height, cellSize.width, queueResize]);
 
   useEffect(() => {
     if (
@@ -273,12 +319,12 @@ export function TerminalView({
     }
     const scaleX = innerWidth / (screen.cols * baseCellSize.width);
     const scaleY = innerHeight / (screen.rows * baseCellSize.height);
-    const nextFontSize = baseFontSize * Math.min(scaleX, scaleY);
-    if (!Number.isFinite(nextFontSize) || nextFontSize <= 0) {
+    const targetFontSize = baseFontSize * Math.min(scaleX, scaleY);
+    if (!Number.isFinite(targetFontSize) || targetFontSize <= 0) {
       return;
     }
-    const rounded = Math.round(nextFontSize * 10) / 10;
-    if (Math.abs(rounded - fontSize) > 0.05) {
+    const rounded = Math.floor((targetFontSize - 0.02) * 100) / 100;
+    if (Math.abs(rounded - fontSize) > 0.02) {
       setFontSize(rounded);
     }
   }, [baseCellSize.height, baseCellSize.width, containerSize, fontSize, screen]);
@@ -461,6 +507,37 @@ export function TerminalView({
     }
   }, [cellSize.height, cellSize.width, screen]);
 
+  const debugMetrics = useMemo(() => {
+    if (!debugEnabled || !screen || !containerSize) {
+      return null;
+    }
+    const innerWidth = Math.max(0, containerSize.width - padding * 2);
+    const innerHeight = Math.max(0, containerSize.height - padding * 2);
+    const gridWidth = screen.cols * cellSize.width;
+    const gridHeight = screen.rows * cellSize.height;
+    const calcCols = cellSize.width > 0 ? Math.max(1, Math.floor(innerWidth / cellSize.width)) : 0;
+    const calcRows =
+      cellSize.height > 0 ? Math.max(1, Math.floor(innerHeight / cellSize.height)) : 0;
+    const format = (value: number) => Math.round(value * 100) / 100;
+    return {
+      containerWidth: format(containerSize.width),
+      containerHeight: format(containerSize.height),
+      innerWidth: format(innerWidth),
+      innerHeight: format(innerHeight),
+      gridWidth: format(gridWidth),
+      gridHeight: format(gridHeight),
+      cellWidth: format(cellSize.width),
+      cellHeight: format(cellSize.height),
+      fontSize: format(fontSize),
+      calcCols,
+      calcRows,
+      cols: screen.cols,
+      rows: screen.rows,
+      overflowX: format(gridWidth - innerWidth),
+      overflowY: format(gridHeight - innerHeight),
+    };
+  }, [cellSize.height, cellSize.width, containerSize, debugEnabled, fontSize, screen]);
+
   const handleMouseDown = (event: React.MouseEvent<HTMLDivElement>) => {
     if (!screen || !containerRef.current) {
       return;
@@ -606,15 +683,17 @@ export function TerminalView({
         ref={baseMeasureRef}
         className="absolute -left-[9999px] -top-[9999px] font-mono"
         style={{ fontSize: `${baseFontSize}px` }}
+        data-measure-count="16"
       >
-        M
+        MMMMMMMMMMMMMMMM
       </span>
       <span
         ref={measureRef}
         className="absolute -left-[9999px] -top-[9999px] font-mono"
         style={{ fontSize: `${fontSize}px` }}
+        data-measure-count="16"
       >
-        M
+        MMMMMMMMMMMMMMMM
       </span>
       <div
         ref={containerRef}
@@ -626,12 +705,16 @@ export function TerminalView({
       >
         <div
           className="absolute inset-0 overflow-hidden"
-          style={{
-            padding: `${padding}px`,
-            lineHeight: `${cellSize.height}px`,
-            fontFamily: "JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, monospace",
-            fontSize: `${fontSize}px`,
-          }}
+          style={
+            {
+              padding: `${padding}px`,
+              lineHeight: `${cellSize.height}px`,
+              fontFamily: "JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, monospace",
+              fontSize: `${fontSize}px`,
+              "--terminal-font-size": `${fontSize}px`,
+              "--cell-h": `${cellSize.height}px`,
+            } as React.CSSProperties
+          }
         >
           <div
             className="relative h-full w-full terminal-surface focus:outline-none focus-visible:outline-none"
@@ -666,6 +749,20 @@ export function TerminalView({
             {screen && !rendererIsCanvas && (
               <TerminalGrid rows={screen.rowsData} selection={selection} />
             )}
+            {debugMetrics && (
+              <div className="terminal-overlay flex justify-end">
+                <div className="m-2 rounded bg-black/70 px-2 py-1 font-mono text-[11px] text-white">
+                  <div>{`container: ${debugMetrics.containerWidth} × ${debugMetrics.containerHeight}`}</div>
+                  <div>{`inner: ${debugMetrics.innerWidth} × ${debugMetrics.innerHeight}`}</div>
+                  <div>{`grid: ${debugMetrics.gridWidth} × ${debugMetrics.gridHeight}`}</div>
+                  <div>{`cell: ${debugMetrics.cellWidth} × ${debugMetrics.cellHeight}`}</div>
+                  <div>{`font: ${debugMetrics.fontSize}px`}</div>
+                  <div>{`cols/rows: ${debugMetrics.cols} × ${debugMetrics.rows}`}</div>
+                  <div>{`fit: ${debugMetrics.calcCols} × ${debugMetrics.calcRows}`}</div>
+                  <div>{`overflow: ${debugMetrics.overflowX} / ${debugMetrics.overflowY}`}</div>
+                </div>
+              </div>
+            )}
             {screen?.cursorVisible && cursorStyle && (
               <div
                 className="terminal-cursor"
@@ -682,6 +779,8 @@ export function TerminalView({
       <div
         role="separator"
         aria-orientation="horizontal"
+        aria-valuenow={resizeHandleValue}
+        tabIndex={0}
         className={cn(
           "absolute left-0 right-0 bottom-0 flex h-2 items-center justify-center",
           "cursor-ns-resize touch-none",
@@ -716,10 +815,7 @@ export function TerminalView({
           }
           const rowHeight = cellSize.height || baseCellSize.height || 1;
           const rawHeight = state.startHeight + (event.clientY - state.startY);
-          const maxRows = Math.max(
-            1,
-            Math.floor((state.maxHeight - padding * 2) / rowHeight),
-          );
+          const maxRows = Math.max(1, Math.floor((state.maxHeight - padding * 2) / rowHeight));
           const minRows = Math.max(
             1,
             minRowsValue > 0

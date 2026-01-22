@@ -166,11 +166,13 @@ dir = "./web"
 
 [tasks."web:dev"]
 depends = ["proto"]
-run = "go run ./cmd/vtr web --dev --socket /tmp/vtr.sock"
+run = "sh -c 'mkdir -p .logs && go run ./cmd/vtr web --dev --socket /tmp/vtr.sock 2>&1 | tee .logs/vtr-web.log'"
+env = { VTR_LOG_RESIZE = "1" }
 
 [tasks."serve:dev"]
 depends = ["proto"]
-run = "go run ./cmd/vtr serve --socket /tmp/vtr.sock"
+run = "sh -c 'mkdir -p .logs && go run ./cmd/vtr serve --socket /tmp/vtr.sock 2>&1 | tee .logs/vtr-serve.log'"
+env = { VTR_LOG_RESIZE = "1" }
 
 [tasks.dev]
 depends = [

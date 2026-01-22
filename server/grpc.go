@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"image/color"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	proto "github.com/advait/vtrpc/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -27,6 +29,7 @@ const (
 )
 
 var keyframeInterval = 5 * time.Second
+var logResize = strings.TrimSpace(os.Getenv("VTR_LOG_RESIZE")) != ""
 
 // GRPCServer implements the vtr gRPC service.
 type GRPCServer struct {
@@ -303,7 +306,7 @@ func (s *GRPCServer) SendBytes(_ context.Context, req *proto.SendBytesRequest) (
 	return &proto.SendBytesResponse{}, nil
 }
 
-func (s *GRPCServer) Resize(_ context.Context, req *proto.ResizeRequest) (*proto.ResizeResponse, error) {
+func (s *GRPCServer) Resize(ctx context.Context, req *proto.ResizeRequest) (*proto.ResizeResponse, error) {
 	if req == nil || req.Name == "" {
 		return nil, status.Error(codes.InvalidArgument, "session name is required")
 	}
@@ -314,6 +317,19 @@ func (s *GRPCServer) Resize(_ context.Context, req *proto.ResizeRequest) (*proto
 	rows, err := requiredUint16(req.Rows)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if logResize {
+		peerAddr := "unknown"
+		if p, ok := peer.FromContext(ctx); ok && p != nil && p.Addr != nil {
+			peerAddr = p.Addr.String()
+		}
+		prevCols := 0
+		prevRows := 0
+		if info, infoErr := s.coord.Info(req.Name); infoErr == nil && info != nil {
+			prevCols = int(info.Cols)
+			prevRows = int(info.Rows)
+		}
+		log.Printf("resize grpc name=%s cols=%d rows=%d prev=%dx%d peer=%s", req.Name, cols, rows, prevCols, prevRows, peerAddr)
 	}
 	if err := s.coord.Resize(req.Name, cols, rows); err != nil {
 		return nil, mapCoordinatorErr(err)

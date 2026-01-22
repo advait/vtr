@@ -15,9 +15,10 @@ import { TerminalView } from "./components/TerminalView";
 import { Badge } from "./components/ui/Badge";
 import { Button } from "./components/ui/Button";
 import { createSession, fetchSessions, sendSessionAction } from "./lib/api";
+import { loadPreferences, type TerminalRenderer, updatePreferences } from "./lib/preferences";
 import type { SubscribeEvent } from "./lib/proto";
 import { applyScreenUpdate, type ScreenState } from "./lib/terminal";
-import { applyTheme, getTheme, loadThemeId, storeThemeId, themes } from "./lib/theme";
+import { applyTheme, getTheme, sortedThemes } from "./lib/theme";
 import { useVtrStream } from "./lib/ws";
 
 const statusLabels: Record<
@@ -33,10 +34,7 @@ const statusLabels: Record<
 };
 
 const sessionHashKey = "session";
-const showClosedSessionsKey = "showClosedSessions";
-const terminalRendererKey = "terminalRenderer";
-
-type TerminalRenderer = "dom" | "canvas";
+const initialPreferences = loadPreferences();
 
 function readSessionHash() {
   if (typeof window === "undefined") {
@@ -71,26 +69,6 @@ function writeSessionHash(session: string | null) {
   window.history.replaceState(null, "", url.toString());
 }
 
-function readShowClosedSetting() {
-  if (typeof window === "undefined") {
-    return false;
-  }
-  try {
-    return window.localStorage.getItem(showClosedSessionsKey) === "true";
-  } catch {
-    return false;
-  }
-}
-
-function writeShowClosedSetting(value: boolean) {
-  if (typeof window === "undefined") {
-    return;
-  }
-  try {
-    window.localStorage.setItem(showClosedSessionsKey, value ? "true" : "false");
-  } catch {}
-}
-
 function normalizeRenderer(value: string | null): TerminalRenderer | null {
   if (!value) {
     return null;
@@ -102,30 +80,16 @@ function normalizeRenderer(value: string | null): TerminalRenderer | null {
   return null;
 }
 
-function readRendererSetting(): TerminalRenderer {
+function readRendererSetting(fallback: TerminalRenderer): TerminalRenderer {
   if (typeof window === "undefined") {
-    return "dom";
+    return fallback;
   }
   const params = new URLSearchParams(window.location.search);
   const fromQuery = normalizeRenderer(params.get("renderer"));
   if (fromQuery) {
     return fromQuery;
   }
-  try {
-    const stored = normalizeRenderer(window.localStorage.getItem(terminalRendererKey));
-    return stored ?? "dom";
-  } catch {
-    return "dom";
-  }
-}
-
-function writeRendererSetting(value: TerminalRenderer) {
-  if (typeof window === "undefined") {
-    return;
-  }
-  try {
-    window.localStorage.setItem(terminalRendererKey, value);
-  } catch {}
+  return fallback;
 }
 
 function findSession(
@@ -162,12 +126,15 @@ export default function App() {
   const [ctrlArmed, setCtrlArmed] = useState(false);
   const [hashSession, setHashSession] = useState(() => readSessionHash());
   const [sessionsLoaded, setSessionsLoaded] = useState(false);
-  const [themeId, setThemeId] = useState(() => getTheme(loadThemeId()).id);
+  const [themeId, setThemeId] = useState(() => getTheme(initialPreferences.themeId).id);
   const [terminalRenderer, setTerminalRenderer] = useState<TerminalRenderer>(() =>
-    readRendererSetting(),
+    readRendererSetting(initialPreferences.terminalRenderer),
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [showClosedSessions, setShowClosedSessions] = useState(() => readShowClosedSetting());
+  const [showClosedSessions, setShowClosedSessions] = useState(
+    () => initialPreferences.showClosedSessions,
+  );
+  const [autoResize, setAutoResize] = useState(() => initialPreferences.autoResize ?? false);
   const [createBusy, setCreateBusy] = useState(false);
   const [contextMenu, setContextMenu] = useState<{
     x: number;
@@ -266,7 +233,6 @@ export default function App() {
 
   useEffect(() => {
     applyTheme(activeTheme);
-    storeThemeId(activeTheme.id);
   }, [activeTheme]);
 
   const applySessions = useCallback((data: CoordinatorInfo[]) => {
@@ -344,10 +310,6 @@ export default function App() {
       writeSessionHash(selectedSession.name);
     }
   }, [selectedSession]);
-
-  useEffect(() => {
-    writeShowClosedSetting(showClosedSessions);
-  }, [showClosedSessions]);
 
   useEffect(() => {
     if (!contextMenu) {
@@ -461,6 +423,9 @@ export default function App() {
 
   const onResize = useCallback(
     (cols: number, rows: number) => {
+      if (!autoResize) {
+        return;
+      }
       if (cols < 2 || rows < 2) {
         return;
       }
@@ -474,16 +439,16 @@ export default function App() {
       }
       resize(cols, rows);
     },
-    [activeSession, resize],
+    [activeSession, autoResize, resize],
   );
 
   useEffect(() => {
-    if (!activeSession || state.status !== "open") {
+    if (!autoResize || !activeSession || state.status !== "open") {
       return;
     }
     const size = lastSize.current ?? { cols: 120, rows: 40 };
     resize(size.cols, size.rows);
-  }, [activeSession, resize, state.status]);
+  }, [activeSession, autoResize, resize, state.status]);
 
   const onSendKey = useCallback(
     (key: string) => {
@@ -767,10 +732,14 @@ export default function App() {
                     <select
                       className="h-9 w-full rounded-md border border-tn-border bg-tn-panel-2 px-3 text-sm text-tn-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tn-accent"
                       value={activeTheme.id}
-                      onChange={(event) => setThemeId(event.target.value)}
+                      onChange={(event) => {
+                        const next = event.target.value;
+                        setThemeId(next);
+                        updatePreferences({ themeId: next });
+                      }}
                       aria-label="Select theme"
                     >
-                      {themes.map((theme) => (
+                      {sortedThemes.map((theme) => (
                         <option key={theme.id} value={theme.id}>
                           {theme.label}
                         </option>
@@ -787,7 +756,7 @@ export default function App() {
                       onChange={(event) => {
                         const next = normalizeRenderer(event.target.value) ?? "dom";
                         setTerminalRenderer(next);
-                        writeRendererSetting(next);
+                        updatePreferences({ terminalRenderer: next });
                       }}
                       aria-label="Select terminal renderer"
                     >
@@ -800,6 +769,27 @@ export default function App() {
                   </div>
                   <div className="mt-4 flex flex-col gap-2">
                     <span className="text-xs font-semibold uppercase tracking-wide text-tn-muted">
+                      Resizing
+                    </span>
+                    <label className="flex items-center justify-between gap-3 text-sm text-tn-text">
+                      <span>Auto-resize terminal</span>
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 accent-tn-accent"
+                        checked={autoResize}
+                        onChange={(event) => {
+                          const next = event.target.checked;
+                          setAutoResize(next);
+                          updatePreferences({ autoResize: next });
+                        }}
+                      />
+                    </label>
+                    <span className="text-[11px] text-tn-text-dim">
+                      When off, the session keeps its current size.
+                    </span>
+                  </div>
+                  <div className="mt-4 flex flex-col gap-2">
+                    <span className="text-xs font-semibold uppercase tracking-wide text-tn-muted">
                       Sessions
                     </span>
                     <label className="flex items-center justify-between gap-3 text-sm text-tn-text">
@@ -808,7 +798,11 @@ export default function App() {
                         type="checkbox"
                         className="h-4 w-4 accent-tn-accent"
                         checked={showClosedSessions}
-                        onChange={(event) => setShowClosedSessions(event.target.checked)}
+                        onChange={(event) => {
+                          const next = event.target.checked;
+                          setShowClosedSessions(next);
+                          updatePreferences({ showClosedSessions: next });
+                        }}
                       />
                     </label>
                   </div>
@@ -822,7 +816,7 @@ export default function App() {
       <main className="flex min-h-[calc(100vh-72px)] flex-col gap-4 px-4 pt-4 pb-[calc(1rem+env(safe-area-inset-bottom))]">
         <section className="flex min-h-[420px] flex-1 flex-col gap-3">
           {viewMode === "single" ? (
-            <div className="flex min-h-0 flex-1 flex-col gap-3 lg:pr-4">
+            <div className="flex min-h-0 flex-1 flex-col gap-3">
               <div className="flex min-h-0 flex-1 flex-col">
                 <SessionTabs
                   sessions={tabSessions}
@@ -909,7 +903,6 @@ export default function App() {
                   <input
                     className="mt-2 h-8 w-full rounded-md border border-tn-border bg-tn-panel-2 px-2 text-sm text-tn-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tn-accent"
                     id="rename-session-input"
-                    autoFocus
                     value={renameDraft}
                     onChange={(event) => {
                       setRenameDraft(event.target.value);
