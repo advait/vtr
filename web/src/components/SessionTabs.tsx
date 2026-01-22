@@ -112,7 +112,7 @@ export function SessionTabs({
         ) : (
           grouped.map((group) => (
             <div key={group.coordinator} className="flex shrink-0 items-center gap-2">
-              <span className="rounded-full border border-tn-border/60 px-2 py-1 text-[10px] uppercase tracking-wide text-tn-text-dim">
+              <span className="rounded-full px-2 py-1 text-[10px] uppercase tracking-wide text-tn-text-dim">
                 {group.coordinator}
               </span>
               {group.tabs.map(({ key, session }) => {
