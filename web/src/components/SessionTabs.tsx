@@ -98,7 +98,7 @@ export function SessionTabs({
   };
 
   return (
-    <div className="flex items-center gap-2 rounded-t-lg border border-b-0 border-tn-border bg-tn-panel px-2 pt-2 pb-1">
+    <div className="flex items-center gap-2 rounded-t-lg border-2 border-b-0 border-tn-border bg-tn-panel px-2 pt-2">
       <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto">
         {sessions.length === 0 ? (
           <span className="px-3 text-xs text-tn-text-dim">No sessions yet.</span>
