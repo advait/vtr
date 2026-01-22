@@ -165,21 +165,15 @@ depends = ["proto"]
 run = "bun run dev"
 dir = "./web"
 
-[tasks."web:dev"]
+[tasks."hub:dev"]
 depends = ["proto"]
-run = "sh -c 'mkdir -p .logs && go run ./cmd/vtr web --dev --socket /tmp/vtr.sock 2>&1 | tee .logs/vtr-web.log'"
-env = { VTR_LOG_RESIZE = "1" }
-
-[tasks."serve:dev"]
-depends = ["proto"]
-run = "sh -c 'mkdir -p .logs && go run ./cmd/vtr serve --socket /tmp/vtr.sock 2>&1 | tee .logs/vtr-serve.log'"
-env = { VTR_LOG_RESIZE = "1" }
+run = "sh -c 'mkdir -p .logs && go run ./cmd/vtr hub --socket /tmp/vtrpc.sock --grpc-addr 127.0.0.1:4621 --web-addr 127.0.0.1:8080 2>&1 | tee .logs/vtr-hub.log'"
+env = { VTR_LOG_RESIZE = "1", VTR_WEB_DEV = "1" }
 
 [tasks.dev]
 depends = [
   "web-vite:dev",
-  "web:dev",
-  "serve:dev"
+  "hub:dev"
 ]
 
 [tasks.all]

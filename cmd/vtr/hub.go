@@ -162,7 +162,12 @@ func runHub(opts hubOptions) error {
 
 	if webEnabled {
 		resolver := webResolver{coords: []coordinatorRef{{Name: coordinatorName(socketPath), Path: socketPath}}}
-		webOpts := webOptions{addr: webAddr, socket: socketPath}
+		webOpts := webOptions{
+			addr:      webAddr,
+			socket:    socketPath,
+			dev:       envBool("VTR_WEB_DEV", false),
+			devServer: envString("VTR_WEB_DEV_SERVER", defaultViteDevServer),
+		}
 		srv, err := newWebServer(webOpts, resolver)
 		if err != nil {
 			return err
