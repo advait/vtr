@@ -44,6 +44,7 @@ go run ./cmd/vtr web --listen 127.0.0.1:8080 --socket /tmp/vtr.sock
 - `docs/spec.md` for architecture, CLI, and protocol details.
 - `docs/streaming.md` for screen streaming behavior and resync rules.
 - `docs/web-ui-smoke-tests.md` for the web UI workflow.
+- `docs/releasing.md` for versioning and release steps.
 
 ## Status
 

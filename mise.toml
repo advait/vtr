@@ -80,9 +80,10 @@ outputs = ["web/dist/index.html"]
 
 [tasks.build]
 depends = ["proto", "shim", "web-build"]
-run = "go build -o bin/vtr ./cmd/vtr"
+run = "sh -c 'set -euo pipefail; VERSION=$(git describe --tags --exact-match --match \"v*\" 2>/dev/null | sed \"s/^v//\" || cat VERSION); go build -o bin/vtr -ldflags \"-X main.Version=${VERSION}\" ./cmd/vtr'"
 env = { CGO_ENABLED = "1", CC = "clang", CXX = "clang++" }
 sources = [
+  "VERSION",
   "go.mod",
   "go.sum",
   "cmd/**/*.go",
