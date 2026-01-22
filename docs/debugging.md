@@ -7,19 +7,16 @@ are added.
 ## Dev setup + logs
 
 `mise run dev` starts:
-- `vtr serve` (coordinator, gRPC)
-- `vtr web` (websocket bridge + dev proxy)
+- `vtr hub` (coordinator + web UI + WS bridge)
 - `vite` dev server
 
 The dev tasks tee logs into `.logs/`:
-- `.logs/vtr-serve.log`
-- `.logs/vtr-web.log`
+- `.logs/vtr-hub.log`
 
 Useful commands:
 ```bash
-tail -f .logs/vtr-serve.log
-tail -f .logs/vtr-web.log
-rg -n "resize" .logs/vtr-*.log
+tail -f .logs/vtr-hub.log
+rg -n "resize" .logs/vtr-hub.log
 ```
 
 ## Resize logs (VTR_LOG_RESIZE)
@@ -71,7 +68,7 @@ fetch("/api/sessions").then(r => r.json())
 
 From the shell:
 ```bash
-curl http://localhost:8080/api/sessions
+curl http://localhost:4620/api/sessions
 ```
 
 Confirm the session is running and the size matches your expectations.

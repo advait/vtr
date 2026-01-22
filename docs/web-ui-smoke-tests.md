@@ -6,8 +6,8 @@ without dedicated test tooling.
 
 ## Preconditions
 
-- `vtr` binary available (`mise run build`) or use `go run ./cmd/vtr`.
-- `web/dist` exists (`mise run web-build` or `cd web && bun install && bun run build`).
+- `vtr` binary available (use `go run ./cmd/vtr` from repo root).
+- `web/dist` exists (run `cd web && bun install && bun run build` if needed).
 
 ## Build and Run
 
@@ -17,24 +17,22 @@ bun install
 bun run build
 
 cd ..
-go run ./cmd/vtr serve --socket /tmp/vtr.sock
-go run ./cmd/vtr web --listen 127.0.0.1:8080 --socket /tmp/vtr.sock
+go run ./cmd/vtr hub --socket /tmp/vtrpc.sock --grpc-addr 127.0.0.1:4621 --web-addr 127.0.0.1:4620
 ```
 
 ## Setup
 
-1. Start a coordinator and web UI:
+1. Start a hub (coordinator + web UI):
 
 ```bash
-go run ./cmd/vtr serve --socket /tmp/vtr.sock
-go run ./cmd/vtr web --listen 127.0.0.1:8080 --socket /tmp/vtr.sock
+go run ./cmd/vtr hub --socket /tmp/vtrpc.sock --grpc-addr 127.0.0.1:4621 --web-addr 127.0.0.1:4620
 ```
 
-2. Open `http://127.0.0.1:8080`.
+2. Open `http://127.0.0.1:4620`.
 3. Create a session:
 
 ```bash
-go run ./cmd/vtr spawn --socket /tmp/vtr.sock --cmd "bash" web-smoke
+go run ./cmd/vtr agent spawn web-smoke --hub /tmp/vtrpc.sock --cmd "bash"
 ```
 
 4. Attach to `web-smoke` in the UI (tree or attach input).
@@ -55,7 +53,7 @@ breaks and cursor placement.
 
 ### 2) ANSI color + attribute checks
 
-Run the following in the session (web input bar or via `vtr send`):
+Run the following in the session (web input bar or via `vtr agent send`):
 
 ```bash
 printf '\x1b[31mRED\x1b[0m normal\n'

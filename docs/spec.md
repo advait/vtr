@@ -12,13 +12,13 @@ vtr is a terminal multiplexer designed for the agent era. Each container runs a 
 
 - Implemented gRPC methods: Spawn, List, Info, Kill, Close, Remove, Rename, GetScreen, Grep, SendText, SendKey, SendBytes, Resize, WaitFor, WaitForIdle, Subscribe.
 - DumpAsciinema remains defined in `proto/vtr.proto` but is not implemented yet (gRPC returns UNIMPLEMENTED).
-- CLI supports `serve`, `web`, `attach`, `version`, `config resolve`, and client commands (`ls`, `spawn`, `info`, `screen`, `send`, `key`, `raw`, `resize`, `kill`, `rm`, `grep`, `wait`, `idle`).
+- CLI supports `hub`, `spoke`, `tui`, `agent`, and `setup` (JSON-only agent output).
 - Attach TUI uses Subscribe streaming updates with leader key bindings for session actions.
 - Mouse support is not implemented yet; M8 adds mouse mode tracking, Subscribe events, and SendMouse RPC.
 - Multi-coordinator resolution supports `--socket` and `coordinator:session` with auto-disambiguation via per-coordinator lookup.
 - Grep uses scrollback dumps when available; falls back to screen/viewport dumps if history is unavailable.
 - WaitFor scans output emitted after the request starts using a rolling 1MB buffer.
-- M7/M7.1: `vtr web` serves embedded `web/dist` assets plus a WS bridge using protobuf `Any` frames (SubscribeRequest/SubscribeEvent); `--dev` proxies the Vite dev server; HTTP JSON endpoints include `GET/POST /api/sessions` (list/spawn) and `POST /api/sessions/action` (send_key/signal/close/remove/rename); the web UI includes a settings menu with theme presets.
+- M7/M7.1: `vtr hub` serves embedded `web/dist` assets plus a WS bridge using protobuf `Any` frames (SubscribeRequest/SubscribeEvent); HTTP JSON endpoints include `GET/POST /api/sessions` (list/spawn) and `POST /api/sessions/action` (send_key/signal/close/remove/rename); the web UI includes a settings menu with theme presets.
 
 ## Architecture
 
@@ -26,7 +26,7 @@ vtr is a terminal multiplexer designed for the agent era. Each container runs a 
 ┌─────────────────────────────────────────────────────────────┐
 │                    Container A                               │
 │  ┌─────────────────────────────────────────────────────┐   │
-│  │              vtr serve (coordinator)                 │   │
+│  │              vtr spoke (coordinator)                 │   │
 │  │  ┌─────────┐  ┌─────────┐  ┌─────────┐             │   │
 │  │  │ Session │  │ Session │  │ Session │             │   │
 │  │  │ "codex" │  │ "shell" │  │ "build" │             │   │
@@ -41,15 +41,15 @@ vtr is a terminal multiplexer designed for the agent era. Each container runs a 
 │  │              gRPC Server                            │   │
 │  └──────────────────────────────────────────────────────┘   │
 │                         │                                    │
-│              /var/run/vtr.sock (Unix socket)                │
+│              /var/run/vtrpc.sock (Unix socket)              │
 └─────────────────────────┬───────────────────────────────────┘
                           │ (volume mounted to host)
         ┌─────────────────┼─────────────────┐
         │                 │                 │
         ▼                 ▼                 ▼
    ┌─────────┐      ┌─────────┐      ┌─────────┐
-   │ vtr     │      │ vtr     │      │ Web UI  │
-   │ cli     │      │ attach  │      │         │
+   │ vtr     │      │ vtr tui │      │ Web UI  │
+   │ agent   │      │         │      │         │
    └─────────┘      └─────────┘      └─────────┘
 ```
 
@@ -128,8 +128,8 @@ cert_file = "~/.config/vtrpc/server.crt"
 key_file = "~/.config/vtrpc/server.key"
 ```
 
-Use `vtr config resolve` to see the resolved coordinator sockets (honors `VTRPC_CONFIG_DIR`).
-The config file is optional; when absent, clients fall back to a default coordinator socket.
+`vtr setup` writes a local-hub config and generates auth material (0600 for keys/tokens).
+If `/var/run/vtrpc.sock` is not writable, setup offers `/tmp/vtrpc.sock` and updates the config.
 
 ## CLI Interface
 
@@ -138,88 +138,79 @@ Single `vtr` binary serves as both client and server.
 ### Server Commands
 
 ```bash
-# Start coordinator
-vtr serve --socket /path/to.sock \
-  [--shell /bin/bash] [--cols 80] [--rows 24] [--scrollback 10000] \
-  [--kill-timeout 5s] [--idle-threshold 5s] [--log-level info]
+# Start hub coordinator (web UI enabled by default)
+vtr hub [--socket /path/to.sock] [--grpc-addr 127.0.0.1:4621] [--web-addr 127.0.0.1:4620] [--no-web] \
+  [--shell /bin/bash] [--cols 80] [--rows 24] [--scrollback 10000] [--kill-timeout 5s] [--idle-threshold 5s]
 
-# Serve web UI (embedded assets by default)
-vtr web --listen 127.0.0.1:8080 --socket /path/to.sock \
-  [--coordinator /path/to.sock] [--dev] [--dev-server http://127.0.0.1:5173]
+# Start spoke coordinator and register with hub
+vtr spoke --hub host:4621 [--socket /path/to.sock] [--name spoke-a]
+
+# One-time local setup (config + auth material)
+vtr setup
 ```
 
 ### Session Management
 
 ```bash
 # List sessions
-vtr ls [--socket /path/to.sock] [--json]
+vtr agent ls [--hub <addr|socket>]
 
 # Create new session
-vtr spawn <name> [--socket /path/to.sock] [--cmd "command"] [--cwd /path] [--cols 80] [--rows 24] [--json]
+vtr agent spawn <name> [--hub <addr|socket>] [--cmd "command"] [--cwd /path] [--cols 80] [--rows 24]
 
 # Remove session (kills if running)
-vtr rm <name> [--socket /path/to.sock] [--json]
+vtr agent rm <name> [--hub <addr|socket>]
 
 # Kill PTY process (session remains in Exited state)
-vtr kill <name> [--signal TERM|KILL|INT] [--socket /path/to.sock] [--json]
+vtr agent kill <name> [--signal TERM|KILL|INT] [--hub <addr|socket>]
 ```
 
 ### Screen Operations
 
 ```bash
 # Get current screen state
-vtr screen <name> [--socket /path/to.sock] [--json]
+vtr agent screen <name> [--hub <addr|socket>]
 
 # Search scrollback (ripgrep-style output; RE2 regex)
-vtr grep <name> <pattern> [-B lines] [-A lines] [-C lines] [--socket /path/to.sock] [--json]
+vtr agent grep <name> <pattern> [-B lines] [-A lines] [-C lines] [--hub <addr|socket>]
 
 # Get session info (dimensions, status, exit code)
-vtr info <name> [--socket /path/to.sock] [--json]
+vtr agent info <name> [--hub <addr|socket>]
 ```
 
 ### Input Operations
 
 ```bash
 # Send text
-vtr send <name> <text> [--socket /path/to.sock] [--json]
+vtr agent send <name> <text> [--hub <addr|socket>]
 
 # Send special key
-vtr key <name> <key> [--socket /path/to.sock] [--json]
+vtr agent key <name> <key> [--hub <addr|socket>]
 # Keys: enter/return, tab, escape/esc, up, down, left, right, backspace, delete, home, end, pageup, pagedown
 # Modifiers: ctrl+c, ctrl+d, ctrl+z, alt+x, meta+x, etc. (single characters are sent verbatim)
 
 # Send raw bytes (hex-encoded)
-vtr raw <name> <hex> [--socket /path/to.sock] [--json]
+vtr agent raw <name> <hex> [--hub <addr|socket>]
 
 # Resize terminal
-vtr resize <name> <cols> <rows> [--socket /path/to.sock] [--json]
+vtr agent resize <name> <cols> <rows> [--hub <addr|socket>]
 ```
 
 ### Blocking Operations
 
 ```bash
 # Wait for pattern in output (future output only, RE2 regex)
-vtr wait <name> <pattern> [--timeout 30s] [--socket /path/to.sock] [--json]
+vtr agent wait <name> <pattern> [--timeout 30s] [--hub <addr|socket>]
 
 # Wait for idle (no output for idle duration)
-vtr idle <name> [--idle 5s] [--timeout 30s] [--socket /path/to.sock] [--json]
+vtr agent idle <name> [--idle 5s] [--timeout 30s] [--hub <addr|socket>]
 ```
 
 ### Interactive Mode
 
 ```bash
 # Attach to session (interactive TUI)
-vtr attach [name] [--socket /path/to.sock]
-```
-
-### Utility Commands
-
-```bash
-# Print version
-vtr version
-
-# Show resolved coordinator sockets
-vtr config resolve [--json]
+vtr tui <name> [--hub <addr|socket>]
 ```
 
 TUI features (M6):
@@ -257,26 +248,23 @@ Goal: Mobile-first browser UI for live terminal sessions over Tailscale.
 Browser (mobile/desktop)
   |  HTTPS (static assets) + WS (stream/input)
   v
-vtr web (HTTP + WS bridge)
-  |  gRPC clients (one per coordinator)
+Hub (vtr hub: web UI + WS + gRPC)
+  |  gRPC clients (one per spoke)
   v
-Coordinators (vtr serve)
+Spokes (vtr spoke)
 ```
 
-The Web UI runs inside `vtr web`.
+The Web UI runs inside `vtr hub` (enabled by default; use `--no-web` to disable).
 It serves static assets and bridges `Subscribe` streaming + input over WebSocket using protobuf frames.
-Use `--dev` to proxy the Vite dev server instead of serving embedded assets.
 HTTP JSON endpoints include `GET/POST /api/sessions` (list/spawn) and
 `POST /api/sessions/action` (send_key/signal/close/remove/rename); streaming and
 input (`Subscribe`, `SendText`, `SendKey`, `SendBytes`, `Resize`) still flow over the WebSocket protobuf protocol.
 
 ### Command and configuration
 
-- `vtr web` reads `$VTRPC_CONFIG_DIR/vtrpc.toml` (default: `~/.config/vtrpc/vtrpc.toml`).
-- `--listen` controls the HTTP bind address (default: `127.0.0.1:8080`).
-- `--socket` targets a single coordinator socket.
-- `--coordinator` adds coordinator sockets (repeatable; supports globs).
-- `--dev` proxies the Vite dev server URL (`--dev-server`, default `http://127.0.0.1:5173`).
+- `vtr hub` reads `$VTRPC_CONFIG_DIR/vtrpc.toml` (default: `~/.config/vtrpc/vtrpc.toml`).
+- `--web-addr` controls the HTTP bind address (default: `127.0.0.1:4620`).
+- `--no-web` disables the web UI while keeping the hub coordinator running.
 
 ### HTTP API (M7)
 
@@ -593,9 +581,8 @@ Compression:
 Tailnet-only flow (no Funnel in M7):
 
 ```bash
-vtr serve --socket /var/run/vtr.sock
-vtr web --listen 127.0.0.1:8080 --socket /var/run/vtr.sock
-tailscale serve https / http://127.0.0.1:8080
+vtr hub --web-addr 127.0.0.1:4620 --grpc-addr 127.0.0.1:4621 --socket /var/run/vtrpc.sock
+tailscale serve https / http://127.0.0.1:4620
 ```
 Exact flags can vary; verify with `tailscale serve --help`.
 
@@ -633,8 +620,8 @@ binding to non-loopback addresses; local Unix sockets rely on filesystem permiss
 
 ### Config Management
 
-Client defaults live in `vtrpc.toml` (optional). Use `vtr config resolve` to
-inspect resolved coordinator sockets and override with `--socket` when needed.
+`vtr setup` creates a local hub config and auth material. Advanced hub/spoke
+configuration is done by editing `vtrpc.toml` directly.
 
 ### Session Addressing
 
@@ -642,20 +629,20 @@ When multiple coordinators are configured:
 
 1. **Unambiguous**: Session name unique across all coordinators → use name directly
 2. **Ambiguous**: Session name exists on multiple coordinators → error with suggestion
-3. **Explicit**: Use `--socket` flag or `coordinator:session` syntax
+3. **Explicit**: Use `--hub` flag or `spoke:session` syntax
 
 ```bash
 # These are equivalent
-vtr screen codex --socket /var/run/project-a.sock
-vtr screen project-a:codex
+vtr agent screen codex --hub /var/run/project-a.sock
+vtr agent screen project-a:codex
 ```
 
 Coordinator names derived from the spoke name (or socket filename without `.sock`).
-If two coordinators share the same name, use `--socket` to disambiguate.
+If two spokes share the same name, use `--hub` to disambiguate.
 
 ### Output Formats
 
-Most client commands support `--json` for structured output; default output is human-readable.
+`vtr agent` always outputs JSON. Use `vtr tui` or the web UI for human-facing interaction.
 
 Example:
 ```json
@@ -675,7 +662,7 @@ Example:
 
 ## gRPC API
 
-Transport: Unix domain socket (local) or TCP when exposed externally
+Transport: Unix domain socket (local) or TCP (hub/spoke)
 Auth: POSIX filesystem permissions for Unix sockets; TLS + token for non-loopback TCP
 
 ### Service Definition

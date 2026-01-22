@@ -4,10 +4,10 @@ Status: straw-man proposal for coordinator federation.
 
 ## Summary
 Introduce a hub coordinator that aggregates multiple spoke coordinators over a
-Tailscale transport. The hub serves the web UI and a local gRPC/UDS endpoint
-for clients, while spokes remain the source of truth for PTY state. The hub
-proxies session list and I/O calls to the appropriate spoke and can optionally
-proxy streaming Subscribe events.
+Tailscale transport. The hub serves the web UI and exposes gRPC (local UDS plus
+optional TCP with TLS+token) for clients, while spokes remain the source of
+truth for PTY state. The hub proxies session list and I/O calls to the
+appropriate spoke and can optionally proxy streaming Subscribe events.
 
 ## Goals
 - Central entrypoint for web UI and CLI across many coordinators.
@@ -19,7 +19,7 @@ proxy streaming Subscribe events.
 ## Non-goals
 - Global scheduling or moving sessions across coordinators.
 - Federated PTY state replication.
-- Multi-tenant auth beyond what Tailscale ACLs provide.
+- Multi-tenant auth beyond TLS+token or tailnet ACLs.
 
 ## Terminology
 - Hub: Aggregating coordinator that serves web UI and federated gRPC.
@@ -36,11 +36,11 @@ proxy streaming Subscribe events.
 ### Hub coordinator
 - Dials each spoke over the tailnet and maintains a live view of sessions.
 - Serves a federated gRPC endpoint (optional local UDS) for clients.
-- Runs `vtr web` to host the web UI and WS bridge.
+- Runs `vtr hub` to host the web UI and WS bridge.
 - Tracks per-spoke health and handles partial availability.
 
 ### Clients
-- CLI/TUI can connect to the hub UDS instead of multiple local sockets.
+- CLI/TUI can connect to the hub UDS (or TCP) instead of multiple local sockets.
 - Web UI connects to the hub HTTP/WS endpoints.
 - Session addressing uses `spoke:session` to route to the correct coordinator.
 
@@ -51,7 +51,8 @@ Straw-man transport options:
 2. Embed tsnet in the hub and/or spoke to avoid shelling to `tailscale serve`,
    while still keeping ports bound to localhost.
 
-The hub relies on Tailscale ACLs/tags for authentication and reachability.
+The hub relies on TLS+token for non-loopback gRPC, or tailnet ACLs/tags when
+served through Tailscale.
 
 ## Federation behavior
 ### Spoke discovery
@@ -79,6 +80,7 @@ The hub relies on Tailscale ACLs/tags for authentication and reachability.
 - Web UI displays spoke health and last-seen timestamps.
 
 ## Configuration sketch
+`vtrpc.toml` (draft):
 ```
 [federation]
 mode = "hub" # or "spoke"
