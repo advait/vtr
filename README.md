@@ -10,6 +10,9 @@ vtr (short for vtrpc) is a terminal multiplexer for the agent era. It supports:
 - Ability to run multiple coordinators (terminal engines) on different machines, VMs, and docker
   containers and control them all centrally from any client
 
+> ⚠️ **Alpha software** - vtr is under active development and not yet ready for production
+> workloads. APIs may change, and there will be bugs. Use at your own risk.
+
 ## Quickstart
 
 ```bash
@@ -128,13 +131,15 @@ The web UI at `http://hub.internal:4620` shows a tree view of all coordinators a
 
 ## Roadmap
 
-| Status     | Milestone | Features                                                                |
-| ---------- | --------- | ----------------------------------------------------------------------- |
-| ✅ Done    | M3-M5     | Core server, gRPC API, PTY management, `WaitFor`, `WaitForIdle`, `Grep` |
-| ✅ Done    | M6        | TUI with Bubbletea, Subscribe streaming, leader key bindings            |
-| ✅ Done    | M7        | Web UI (React + shadcn/ui), WebSocket bridge, multi-coordinator tree    |
-| 🚧 Next    | M8        | Mouse support (track mode, `SendMouse` RPC)                             |
-| 📋 Planned | P2        | Session recording (`DumpAsciinema` RPC), playback in web UI             |
+| Status     | Features                                                                |
+| ---------- | ----------------------------------------------------------------------- |
+| ✅ Done    | Core server, gRPC API, PTY management, `WaitFor`, `WaitForIdle`, `Grep` |
+| ✅ Done    | TUI with Bubbletea, Subscribe streaming, leader key bindings            |
+| ✅ Done    | Web UI (React + shadcn/ui), WebSocket bridge, multi-coordinator tree    |
+| 🚧 Next    | Mouse support (track mode, `SendMouse` RPC)                             |
+| 📋 Planned | Multi-platform builds (currently Linux only)                            |
+| 📋 Planned | First-class Tailscale Serve integration for hub                         |
+| 📋 Planned | Session recording (`DumpAsciinema` RPC), playback in web UI             |
 
 ## Comparison vs other terminal multiplexers
 
