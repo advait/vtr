@@ -156,6 +156,7 @@ export default function App() {
   const pendingUpdates = useRef<SubscribeEvent[]>([]);
   const rafRef = useRef<number | null>(null);
   const lastSize = useRef<{ cols: number; rows: number } | null>(null);
+  const autoSelectedRef = useRef(false);
   const settingsRef = useRef<HTMLDivElement | null>(null);
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
   const activeTheme = useMemo(() => getTheme(themeId), [themeId]);
@@ -272,6 +273,40 @@ export default function App() {
     }
     setSelectedSession(match);
     setActiveSession(match.status === "exited" ? null : match.name);
+  }, [hashSession, selectedSession, sessionsLoaded, visibleCoordinators]);
+
+  useEffect(() => {
+    if (!sessionsLoaded || hashSession || selectedSession || autoSelectedRef.current) {
+      return;
+    }
+    let fallback: { key: string; session: SessionInfo } | null = null;
+    for (const coord of visibleCoordinators) {
+      for (const session of coord.sessions) {
+        const sessionKey = `${coord.name}:${session.name}`;
+        if (session.status !== "exited") {
+          setSelectedSession({
+            name: sessionKey,
+            status: session.status,
+            exitCode: session.exitCode,
+          });
+          setActiveSession(sessionKey);
+          autoSelectedRef.current = true;
+          return;
+        }
+        if (!fallback) {
+          fallback = { key: sessionKey, session };
+        }
+      }
+    }
+    if (fallback) {
+      setSelectedSession({
+        name: fallback.key,
+        status: fallback.session.status,
+        exitCode: fallback.session.exitCode,
+      });
+      setActiveSession(fallback.session.status === "exited" ? null : fallback.key);
+      autoSelectedRef.current = true;
+    }
   }, [hashSession, selectedSession, sessionsLoaded, visibleCoordinators]);
 
   useEffect(() => {
