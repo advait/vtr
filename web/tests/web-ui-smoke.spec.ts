@@ -16,6 +16,7 @@ const tmpDir = process.env.TMPDIR ?? "/tmp";
 const socketPath = path.join(tmpDir, `vtr-playwright-${process.pid}.sock`);
 const vtrBinary = path.join(tmpDir, `vtr-playwright-${process.pid}`);
 const port = 18080 + (process.pid % 1000);
+const grpcPort = 17080 + (process.pid % 1000);
 const baseURL = `http://127.0.0.1:${port}`;
 const sessionName = "web-smoke";
 const bootTimeoutMs = Number.parseInt(process.env.E2E_BOOT_TIMEOUT_MS ?? "10000", 10);
@@ -24,8 +25,7 @@ const skipWebBuild = process.env.E2E_SKIP_WEB_BUILD === "1";
 
 type ManagedProcess = ReturnType<typeof spawn>;
 
-let serveProc: ManagedProcess | null = null;
-let webProc: ManagedProcess | null = null;
+let hubProc: ManagedProcess | null = null;
 
 async function runCommand(cmd: string, args: string[], cwd: string) {
   await execFileAsync(cmd, args, { cwd, env: process.env, maxBuffer: 1024 * 1024 });
@@ -85,17 +85,17 @@ async function stopProcess(proc: ManagedProcess | null) {
 async function sendCommand(command: string) {
   await runCommand(
     vtrBinary,
-    ["resize", "--socket", socketPath, sessionName, "120", "40"],
+    ["agent", "resize", "--hub", socketPath, sessionName, "120", "40"],
     repoRoot,
   );
-  await runCommand(vtrBinary, ["send", "--socket", socketPath, sessionName, command], repoRoot);
-  await runCommand(vtrBinary, ["key", "--socket", socketPath, sessionName, "enter"], repoRoot);
+  await runCommand(vtrBinary, ["agent", "send", "--hub", socketPath, sessionName, command], repoRoot);
+  await runCommand(vtrBinary, ["agent", "key", "--hub", socketPath, sessionName, "enter"], repoRoot);
 }
 
 async function waitForOutput(pattern: string) {
   await runCommand(
     vtrBinary,
-    ["wait", "--socket", socketPath, "--timeout", `${outputTimeoutMs}ms`, sessionName, pattern],
+    ["agent", "wait", "--hub", socketPath, "--timeout", `${outputTimeoutMs}ms`, sessionName, pattern],
     repoRoot,
   );
 }
@@ -109,19 +109,27 @@ test.beforeAll(async () => {
     await runCommand("bun", ["run", "build"], path.join(repoRoot, "web"));
   }
   await runCommand("go", ["build", "-o", vtrBinary, "./cmd/vtr"], repoRoot);
-  serveProc = startProcess(vtrBinary, ["serve", "--socket", socketPath], repoRoot);
-  await waitForFile(socketPath, bootTimeoutMs);
-  webProc = startProcess(
+  hubProc = startProcess(
     vtrBinary,
-    ["web", "--socket", socketPath, "--listen", `127.0.0.1:${port}`],
+    [
+      "hub",
+      "--socket",
+      socketPath,
+      "--grpc-addr",
+      `127.0.0.1:${grpcPort}`,
+      "--web-addr",
+      `127.0.0.1:${port}`,
+    ],
     repoRoot,
   );
+  await waitForFile(socketPath, bootTimeoutMs);
   await waitForHttp(baseURL, bootTimeoutMs);
   await runCommand(
     vtrBinary,
     [
+      "agent",
       "spawn",
-      "--socket",
+      "--hub",
       socketPath,
       "--cols",
       "120",
@@ -136,8 +144,7 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
-  await stopProcess(webProc);
-  await stopProcess(serveProc);
+  await stopProcess(hubProc);
   if (existsSync(socketPath)) {
     await fsPromises.unlink(socketPath);
   }
@@ -146,20 +153,15 @@ test.afterAll(async () => {
   }
 });
 
-test("streams ANSI output, attributes, and reconnects", async ({ page }) => {
+test("streams ANSI output, attributes, and recovers after offline", async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 720 });
   await page.goto(baseURL);
 
-  await page.getByPlaceholder("Filter coordinators or sessions").fill(sessionName);
-  await page
-    .locator("aside")
-    .getByRole("button", { name: new RegExp(sessionName) })
-    .first()
-    .click();
+  await page.getByRole("button", { name: new RegExp(sessionName) }).first().click();
   await expect(page.locator("header").getByText("live", { exact: true })).toBeVisible();
   await runCommand(
     vtrBinary,
-    ["resize", "--socket", socketPath, sessionName, "120", "40"],
+    ["agent", "resize", "--hub", socketPath, sessionName, "120", "40"],
     repoRoot,
   );
 
@@ -207,13 +209,9 @@ test("streams ANSI output, attributes, and reconnects", async ({ page }) => {
   const italicStyle = await italicRun.evaluate((node) => getComputedStyle(node).fontStyle);
   expect(italicStyle).toBe("italic");
 
-  await stopProcess(webProc);
-  await expect(page.locator("header").getByText("reconnecting", { exact: true })).toBeVisible();
-  webProc = startProcess(
-    vtrBinary,
-    ["web", "--socket", socketPath, "--listen", `127.0.0.1:${port}`],
-    repoRoot,
-  );
+  await page.context().setOffline(true);
+  await page.waitForTimeout(1000);
+  await page.context().setOffline(false);
   await waitForHttp(baseURL, 20_000);
   await expect(page.locator("header").getByText("live", { exact: true })).toBeVisible();
 
