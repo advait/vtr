@@ -836,20 +836,21 @@ export default function App() {
                   isFocused={terminalFocused}
                 />
                 <div className="flex-1 min-h-[360px] md:min-h-[420px]">
-                  <TerminalView
-                    screen={screen}
-                    status={displayStatus}
-                    onResize={onResize}
-                    onSendKey={onSendKey}
-                    onSendText={onSendText}
-                    onPaste={onSendText}
-                    autoFocus={isDesktop}
-                    focusKey={selectedSession?.name}
-                    minRows={isDesktop ? 50 : undefined}
-                    onFocusChange={setTerminalFocused}
-                    renderer={terminalRenderer}
-                    themeKey={activeTheme.id}
-                  />
+                <TerminalView
+                  screen={screen}
+                  status={displayStatus}
+                  onResize={onResize}
+                  onSendKey={onSendKey}
+                  onSendText={onSendText}
+                  onPaste={onSendText}
+                  autoFocus={isDesktop}
+                  focusKey={selectedSession?.name}
+                  autoResize={autoResize}
+                  minRows={isDesktop ? 50 : undefined}
+                  onFocusChange={setTerminalFocused}
+                  renderer={terminalRenderer}
+                  themeKey={activeTheme.id}
+                />
                 </div>
               </div>
               {!isDesktop && (

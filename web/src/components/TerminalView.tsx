@@ -12,6 +12,7 @@ export type TerminalViewProps = {
   focusKey?: string | null;
   renderer?: "dom" | "canvas";
   themeKey?: string;
+  autoResize?: boolean;
   onResize: (cols: number, rows: number) => void;
   onSendText: (text: string) => void;
   onSendKey: (key: string) => void;
@@ -110,6 +111,7 @@ export function TerminalView({
   focusKey,
   renderer = "dom",
   themeKey,
+  autoResize = false,
   minRows = 0,
   onResize,
   onSendKey,
@@ -302,6 +304,9 @@ export function TerminalView({
   }, [baseCellSize.height, baseCellSize.width, cellSize.height, cellSize.width, queueResize]);
 
   useEffect(() => {
+    if (autoResize) {
+      return;
+    }
     if (
       !screen ||
       !containerSize ||
@@ -327,7 +332,7 @@ export function TerminalView({
     if (Math.abs(rounded - fontSize) > 0.02) {
       setFontSize(rounded);
     }
-  }, [baseCellSize.height, baseCellSize.width, containerSize, fontSize, screen]);
+  }, [autoResize, baseCellSize.height, baseCellSize.width, containerSize, fontSize, screen]);
 
   useEffect(() => {
     if (!rendererIsCanvas) {
