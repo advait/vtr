@@ -898,17 +898,7 @@ export default function App() {
               Session actions
             </div>
             <div className="flex flex-col py-1 text-sm">
-              <button
-                type="button"
-                className="px-3 py-2 text-left text-tn-text transition-colors hover:bg-tn-panel-2"
-                onClick={() => {
-                  setRenameOpen(true);
-                  setRenameError(null);
-                }}
-              >
-                Rename session
-              </button>
-              {renameOpen && (
+              {renameOpen ? (
                 <div className="px-3 py-2 text-xs text-tn-text">
                   <label
                     htmlFor="rename-session-input"
@@ -919,6 +909,7 @@ export default function App() {
                   <input
                     className="mt-2 h-8 w-full rounded-md border border-tn-border bg-tn-panel-2 px-2 text-sm text-tn-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tn-accent"
                     id="rename-session-input"
+                    autoFocus
                     value={renameDraft}
                     onChange={(event) => {
                       setRenameDraft(event.target.value);
@@ -959,6 +950,17 @@ export default function App() {
                     </button>
                   </div>
                 </div>
+              ) : (
+                <button
+                  type="button"
+                  className="px-3 py-2 text-left text-tn-text transition-colors hover:bg-tn-panel-2"
+                  onClick={() => {
+                    setRenameOpen(true);
+                    setRenameError(null);
+                  }}
+                >
+                  Rename session
+                </button>
               )}
               <div className="my-1 h-px bg-tn-border" />
               <button

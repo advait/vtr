@@ -85,6 +85,8 @@ func NewCoordinator(opts CoordinatorOptions) *Coordinator {
 	if opts.DefaultShell == "" {
 		if shell := os.Getenv("SHELL"); shell != "" {
 			opts.DefaultShell = shell
+		} else if _, err := os.Stat("/bin/bash"); err == nil {
+			opts.DefaultShell = "/bin/bash"
 		} else {
 			opts.DefaultShell = "/bin/sh"
 		}
