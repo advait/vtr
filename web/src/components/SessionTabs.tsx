@@ -126,7 +126,7 @@ export function SessionTabs({
                     title={key}
                     className={cn(
                       "group flex shrink-0 items-center gap-2 rounded-t-md rounded-b-none border border-b-0 px-3 py-2 text-xs transition-colors",
-                      "cursor-pointer border-tn-border/60 bg-tn-panel text-tn-text",
+                      "cursor-pointer border-tn-border bg-tn-panel text-tn-text",
                       "hover:border-tn-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tn-accent",
                       isActive && "border-tn-accent bg-tn-panel-2",
                       session.status === "exited" && "text-tn-muted",
