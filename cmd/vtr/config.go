@@ -10,8 +10,33 @@ import (
 )
 
 type clientConfig struct {
+	Hub    hubConfig    `toml:"hub"`
+	Auth   authConfig   `toml:"auth"`
+	Server serverConfig `toml:"server"`
+
+	// Legacy client config fields (pre-vtrpc.toml).
 	Coordinators []coordinatorConfig `toml:"coordinators"`
 	Defaults     defaultsConfig      `toml:"defaults"`
+}
+
+type hubConfig struct {
+	GrpcAddr    string `toml:"grpc_addr"`
+	GrpcSocket  string `toml:"grpc_socket"`
+	WebAddr     string `toml:"web_addr"`
+	WebEnabled  *bool  `toml:"web_enabled"`
+}
+
+type authConfig struct {
+	Mode      string `toml:"mode"`
+	TokenFile string `toml:"token_file"`
+	CaFile    string `toml:"ca_file"`
+	CertFile  string `toml:"cert_file"`
+	KeyFile   string `toml:"key_file"`
+}
+
+type serverConfig struct {
+	CertFile string `toml:"cert_file"`
+	KeyFile  string `toml:"key_file"`
 }
 
 type coordinatorConfig struct {
@@ -22,12 +47,32 @@ type defaultsConfig struct {
 	OutputFormat string `toml:"output_format"`
 }
 
-func defaultConfigPath() string {
+const (
+	defaultConfigDirName  = "vtrpc"
+	defaultConfigFileName = "vtrpc.toml"
+
+	defaultHubGrpcAddr   = "127.0.0.1:4621"
+	defaultHubGrpcSocket = "/var/run/vtrpc.sock"
+	defaultHubWebAddr    = "127.0.0.1:4620"
+)
+
+func configDir() string {
+	if override := strings.TrimSpace(os.Getenv("VTRPC_CONFIG_DIR")); override != "" {
+		return expandPath(override)
+	}
 	dir, err := os.UserConfigDir()
 	if err != nil || dir == "" {
 		return ""
 	}
-	return filepath.Join(dir, "vtr", "config.toml")
+	return filepath.Join(dir, defaultConfigDirName)
+}
+
+func defaultConfigPath() string {
+	dir := configDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, defaultConfigFileName)
 }
 
 func loadConfig(path string) (*clientConfig, error) {
@@ -47,12 +92,91 @@ func loadConfig(path string) (*clientConfig, error) {
 	return cfg, nil
 }
 
+func resolveConfigPaths(cfg *clientConfig, dir string) *clientConfig {
+	if cfg == nil {
+		cfg = &clientConfig{}
+	}
+	out := *cfg
+	out.Hub = resolveHubConfig(out.Hub)
+	out.Auth = resolveAuthConfig(out.Auth, dir)
+	out.Server = resolveServerConfig(out.Server, dir)
+	return &out
+}
+
+func resolveHubConfig(cfg hubConfig) hubConfig {
+	if strings.TrimSpace(cfg.GrpcAddr) == "" {
+		cfg.GrpcAddr = defaultHubGrpcAddr
+	}
+	if strings.TrimSpace(cfg.GrpcSocket) == "" {
+		cfg.GrpcSocket = defaultHubGrpcSocket
+	}
+	if strings.TrimSpace(cfg.WebAddr) == "" {
+		cfg.WebAddr = defaultHubWebAddr
+	}
+	if cfg.WebEnabled == nil {
+		value := true
+		cfg.WebEnabled = &value
+	}
+	cfg.GrpcSocket = expandPath(cfg.GrpcSocket)
+	return cfg
+}
+
+func resolveAuthConfig(cfg authConfig, dir string) authConfig {
+	cfg.TokenFile = resolvePath(cfg.TokenFile, dir, "token")
+	cfg.CaFile = resolvePath(cfg.CaFile, dir, "ca.crt")
+	cfg.CertFile = resolvePath(cfg.CertFile, dir, "client.crt")
+	cfg.KeyFile = resolvePath(cfg.KeyFile, dir, "client.key")
+	return cfg
+}
+
+func resolveServerConfig(cfg serverConfig, dir string) serverConfig {
+	cfg.CertFile = resolvePath(cfg.CertFile, dir, "server.crt")
+	cfg.KeyFile = resolvePath(cfg.KeyFile, dir, "server.key")
+	return cfg
+}
+
+func resolvePath(value, dir, filename string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		if dir == "" {
+			return ""
+		}
+		return filepath.Join(dir, filename)
+	}
+	return expandPath(trimmed)
+}
+
+func expandPath(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return ""
+	}
+	if trimmed == "~" || strings.HasPrefix(trimmed, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil || home == "" {
+			return value
+		}
+		if trimmed == "~" {
+			return home
+		}
+		return filepath.Join(home, trimmed[2:])
+	}
+	return value
+}
+
 func resolveCoordinatorPaths(cfg *clientConfig) ([]string, error) {
 	if cfg == nil {
 		return nil, nil
 	}
 	var out []string
 	seen := make(map[string]struct{})
+	if len(cfg.Coordinators) == 0 && strings.TrimSpace(cfg.Hub.GrpcSocket) != "" {
+		path := expandPath(cfg.Hub.GrpcSocket)
+		if path != "" {
+			seen[path] = struct{}{}
+			out = append(out, path)
+		}
+	}
 	for _, entry := range cfg.Coordinators {
 		path := strings.TrimSpace(entry.Path)
 		if path == "" {

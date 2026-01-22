@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	defaultSocketPath = "/var/run/vtr.sock"
+	defaultSocketPath = "/var/run/vtrpc.sock"
 	resolveTimeout    = 5 * time.Second
 )
 
@@ -29,12 +29,13 @@ type sessionTarget struct {
 }
 
 func loadConfigWithPath() (*clientConfig, string, error) {
+	dir := configDir()
 	configPath := defaultConfigPath()
 	cfg, err := loadConfig(configPath)
 	if err != nil {
 		return nil, "", err
 	}
-	return cfg, configPath, nil
+	return resolveConfigPaths(cfg, dir), configPath, nil
 }
 
 func resolveCoordinatorRefs(cfg *clientConfig) ([]coordinatorRef, error) {
