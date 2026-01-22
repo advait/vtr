@@ -25,6 +25,7 @@ type SessionTabsProps = {
     session: SessionInfo,
   ) => void;
   onCreate?: () => void;
+  isFocused?: boolean;
 };
 
 function statusDot(session: SessionInfo) {
@@ -45,6 +46,7 @@ export function SessionTabs({
   onContextMenu,
   onContextMenuAt,
   onCreate,
+  isFocused = false,
 }: SessionTabsProps) {
   const grouped = useMemo(() => {
     const next: Array<{ coordinator: string; tabs: SessionTab[] }> = [];
@@ -98,7 +100,12 @@ export function SessionTabs({
   };
 
   return (
-    <div className="flex items-center gap-2 rounded-t-lg border-2 border-b-0 border-tn-border bg-tn-panel px-2 pt-2">
+    <div
+      className={cn(
+        "flex items-center gap-2 rounded-t-lg border border-b-0 bg-tn-panel px-2 pt-2",
+        isFocused ? "border-tn-accent" : "border-tn-border",
+      )}
+    >
       <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
         {sessions.length === 0 ? (
           <span className="px-3 text-xs text-tn-text-dim">No sessions yet.</span>

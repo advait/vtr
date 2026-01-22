@@ -17,6 +17,7 @@ export type TerminalViewProps = {
   onSendKey: (key: string) => void;
   onPaste: (text: string) => void;
   minRows?: number;
+  onFocusChange?: (focused: boolean) => void;
 };
 
 type CellSize = { width: number; height: number };
@@ -112,6 +113,7 @@ export function TerminalView({
   onSendKey,
   onSendText,
   onPaste,
+  onFocusChange,
 }: TerminalViewProps) {
   const baseFontSize = 14;
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -637,6 +639,8 @@ export function TerminalView({
             role="textbox"
             aria-label="terminal"
             ref={terminalRef}
+            onFocus={() => onFocusChange?.(true)}
+            onBlur={() => onFocusChange?.(false)}
             onMouseDown={handleMouseDown}
             onDragStart={(event) => event.preventDefault()}
             onMouseMove={handleMouseMove}

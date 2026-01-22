@@ -185,6 +185,7 @@ export default function App() {
     }
     return window.matchMedia("(min-width: 1024px)").matches;
   });
+  const [terminalFocused, setTerminalFocused] = useState(false);
   const pendingUpdates = useRef<SubscribeEvent[]>([]);
   const rafRef = useRef<number | null>(null);
   const lastSize = useRef<{ cols: number; rows: number } | null>(null);
@@ -838,6 +839,7 @@ export default function App() {
                   onContextMenu={openContextMenu}
                   onContextMenuAt={openContextMenuAt}
                   onCreate={handleCreateSession}
+                  isFocused={terminalFocused}
                 />
                 <div className="flex-1 min-h-[360px] md:min-h-[420px]">
                   <TerminalView
@@ -850,6 +852,7 @@ export default function App() {
                     autoFocus={isDesktop}
                     focusKey={selectedSession?.name}
                     minRows={isDesktop ? 50 : undefined}
+                    onFocusChange={setTerminalFocused}
                     renderer={terminalRenderer}
                     themeKey={activeTheme.id}
                   />
