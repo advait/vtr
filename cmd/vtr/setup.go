@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"net"
 	"os"
@@ -140,10 +141,9 @@ func printSetupBanner() {
 	}
 	fmt.Fprintln(os.Stdout)
 	if supportsColor() {
-		colors := []string{"31", "33", "32", "36", "34", "35", "31"}
-		for i, line := range banner {
-			color := colors[i%len(colors)]
-			fmt.Fprintf(os.Stdout, "\x1b[%sm%s\x1b[0m\n", color, line)
+		useTrueColor := supportsTrueColor()
+		for row, line := range banner {
+			fmt.Fprintln(os.Stdout, colorizeLine(line, row, useTrueColor))
 		}
 	} else {
 		fmt.Fprintln(os.Stdout, strings.Join(banner, "\n"))
@@ -153,7 +153,7 @@ func printSetupBanner() {
 }
 
 func supportsColor() bool {
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("NO_COLOR")), "1") {
+	if strings.TrimSpace(os.Getenv("NO_COLOR")) != "" {
 		return false
 	}
 	term := strings.TrimSpace(os.Getenv("TERM"))
@@ -165,6 +165,76 @@ func supportsColor() bool {
 		return false
 	}
 	return (info.Mode() & os.ModeCharDevice) != 0
+}
+
+func supportsTrueColor() bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv("COLORTERM")))
+	return strings.Contains(value, "truecolor") || strings.Contains(value, "24bit")
+}
+
+func colorizeLine(line string, row int, trueColor bool) string {
+	var out strings.Builder
+	col := 0
+	for _, ch := range line {
+		if ch == ' ' {
+			out.WriteRune(ch)
+			col++
+			continue
+		}
+		hue := math.Mod(float64(row)*18+float64(col)*6, 360)
+		red, green, blue := hslToRGB(hue, 0.85, 0.55)
+		if trueColor {
+			fmt.Fprintf(&out, "\x1b[38;2;%d;%d;%dm%c", red, green, blue, ch)
+		} else {
+			fmt.Fprintf(&out, "\x1b[38;5;%dm%c", rgbTo256(red, green, blue), ch)
+		}
+		col++
+	}
+	out.WriteString("\x1b[0m")
+	return out.String()
+}
+
+func hslToRGB(h, s, l float64) (int, int, int) {
+	h = math.Mod(h, 360)
+	c := (1 - math.Abs(2*l-1)) * s
+	x := c * (1 - math.Abs(math.Mod(h/60, 2)-1))
+	m := l - c/2
+	var r1, g1, b1 float64
+	switch {
+	case h < 60:
+		r1, g1, b1 = c, x, 0
+	case h < 120:
+		r1, g1, b1 = x, c, 0
+	case h < 180:
+		r1, g1, b1 = 0, c, x
+	case h < 240:
+		r1, g1, b1 = 0, x, c
+	case h < 300:
+		r1, g1, b1 = x, 0, c
+	default:
+		r1, g1, b1 = c, 0, x
+	}
+	return clamp8((r1 + m) * 255), clamp8((g1 + m) * 255), clamp8((b1 + m) * 255)
+}
+
+func clamp8(value float64) int {
+	if value <= 0 {
+		return 0
+	}
+	if value >= 255 {
+		return 255
+	}
+	return int(math.Round(value))
+}
+
+func rgbTo256(r, g, b int) int {
+	toLevel := func(v int) int {
+		return int(math.Round(float64(v) / 255 * 5))
+	}
+	ri := toLevel(r)
+	gi := toLevel(g)
+	bi := toLevel(b)
+	return 16 + (36 * ri) + (6 * gi) + bi
 }
 
 func buildSetupConfig(socketPath, configDir string) string {
