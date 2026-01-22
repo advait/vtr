@@ -1,6 +1,6 @@
-![vtr hero](docs/assets/hero-vtr.svg)
-
 # vtr
+
+![vtr hero](docs/assets/hero-vtr.png)
 
 vtr (short for vtrpc) is a terminal multiplexer for the agent era. It supports:
 
@@ -95,12 +95,12 @@ vtr agent send my-session-name $'Controlling codex through CLI!\n'
 Huge shoutout to [VibeTunnel](https://github.com/vibetunnel/vibetunnel) for inspiring the
 architecture and design of vtr. vtr diverges in several key ways:
 
-| Aspect                  | VibeTunnel                                   | vtr                                        |
-| ----------------------- | -------------------------------------------- | ------------------------------------------ |
-| **Multi-machine**       | Single machine + tunnels (ngrok/Tailscale)   | Hub/spoke federation built-in              |
-| **Screen state**        | Client parses ANSI (ghostty-web)             | Server-parsed, structured grid via gRPC    |
-| **Blocking operations** | None - poll yourself                         | `WaitFor` (regex), `WaitForIdle` (silence) |
-| **Scrollback search**   | Not available                                | `Grep` RPC with regex                      |
-| **API**                 | REST + WebSocket                             | gRPC with typed protobuf                   |
-| **Recording**           | Built-in asciinema                           | Planned (DumpAsciinema RPC)                |
-| **Git integration**     | Follow mode (track worktree branches)        | None                                       |
+| Aspect                  | VibeTunnel                                 | vtr                                        |
+| ----------------------- | ------------------------------------------ | ------------------------------------------ |
+| **Multi-machine**       | Single machine + tunnels (ngrok/Tailscale) | Hub/spoke federation built-in              |
+| **Screen state**        | Client parses ANSI (ghostty-web)           | Server-parsed, structured grid via gRPC    |
+| **Blocking operations** | None - poll yourself                       | `WaitFor` (regex), `WaitForIdle` (silence) |
+| **Scrollback search**   | Not available                              | `Grep` RPC with regex                      |
+| **API**                 | REST + WebSocket                           | gRPC with typed protobuf                   |
+| **Recording**           | Built-in asciinema                         | Planned (DumpAsciinema RPC)                |
+| **Git integration**     | Follow mode (track worktree branches)      | None                                       |
