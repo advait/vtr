@@ -27,6 +27,7 @@ type attachModel struct {
 	client       proto.VTRClient
 	coordinator  coordinatorRef
 	coords       []coordinatorRef
+	cfg          *clientConfig
 	session      string
 	stream       proto.VTR_SubscribeClient
 	streamCancel context.CancelFunc
@@ -210,41 +211,35 @@ var (
 				Padding(1, 2)
 )
 
-func newAttachCmd() *cobra.Command {
-	var socket string
+func newTuiCmd() *cobra.Command {
+	var hub string
 	cmd := &cobra.Command{
-		Use:   "attach [name]",
-		Short: "Attach to a session",
+		Use:   "tui [name]",
+		Short: "Attach to a session (TUI)",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, _, _, err := loadConfigAndOutput(false)
+			cfg, _, err := loadConfigWithPath()
 			if err != nil {
 				return err
 			}
-			coords, err := resolveCoordinatorRefs(cfg)
+			targetCoord, err := resolveHubTarget(cfg, hub)
 			if err != nil {
 				return err
 			}
-			var target sessionTarget
+			target := sessionTarget{Coordinator: targetCoord}
 			if len(args) == 0 {
-				target, err = resolveFirstSessionTarget(context.Background(), coords, socket)
+				target, err = resolveFirstSessionTarget(context.Background(), targetCoord, cfg)
+				if err != nil {
+					return err
+				}
 			} else {
-				ctx, cancel := context.WithTimeout(context.Background(), resolveTimeout)
-				target, err = resolveSessionTarget(ctx, coordinatorsOrDefault(coords), socket, args[0])
-				cancel()
-			}
-			if err != nil {
-				return err
+				target.Session = args[0]
 			}
 
-			coords = coordinatorsOrDefault(coords)
-			coords = ensureCoordinator(coords, target.Coordinator)
-			coordIdx := coordinatorIndex(coords, target.Coordinator)
-			if coordIdx < 0 {
-				coordIdx = 0
-			}
+			coords := []coordinatorRef{targetCoord}
+			coordIdx := 0
 
-			conn, err := dialClient(context.Background(), target.Coordinator.Path)
+			conn, err := dialClient(context.Background(), targetCoord.Path, cfg)
 			if err != nil {
 				return err
 			}
@@ -257,8 +252,9 @@ func newAttachCmd() *cobra.Command {
 			model := attachModel{
 				conn:             conn,
 				client:           client,
-				coordinator:      target.Coordinator,
+				coordinator:      targetCoord,
 				coords:           coords,
+				cfg:              cfg,
 				session:          target.Session,
 				streamID:         1,
 				sessionList:      newSessionListModel(nil, 0, 0),
@@ -285,17 +281,11 @@ func newAttachCmd() *cobra.Command {
 			return nil
 		},
 	}
-	addSocketFlag(cmd, &socket)
+	addHubFlag(cmd, &hub)
 	return cmd
 }
 
-func resolveFirstSessionTarget(ctx context.Context, coords []coordinatorRef, socketFlag string) (sessionTarget, error) {
-	candidates := coords
-	if socketFlag != "" {
-		candidates = []coordinatorRef{{Name: coordinatorName(socketFlag), Path: socketFlag}}
-	} else {
-		candidates = coordinatorsOrDefault(coords)
-	}
+func resolveFirstSessionTarget(ctx context.Context, coord coordinatorRef, cfg *clientConfig) (sessionTarget, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -306,35 +296,33 @@ func resolveFirstSessionTarget(ctx context.Context, coords []coordinatorRef, soc
 	}
 	var errs []string
 	hadSuccess := false
-	for _, coord := range candidates {
-		first := ""
-		err := withCoordinator(ctx, coord, func(client proto.VTRClient) error {
-			resp, err := client.List(ctx, &proto.ListRequest{})
-			if err != nil {
-				return err
-			}
-			names := make([]string, 0, len(resp.Sessions))
-			for _, session := range resp.Sessions {
-				if session == nil || session.Name == "" {
-					continue
-				}
-				names = append(names, session.Name)
-			}
-			if len(names) == 0 {
-				return nil
-			}
-			sort.Strings(names)
-			first = names[0]
-			return nil
-		})
+	first := ""
+	err := withCoordinator(ctx, coord, cfg, func(client proto.VTRClient) error {
+		resp, err := client.List(ctx, &proto.ListRequest{})
 		if err != nil {
-			errs = append(errs, fmt.Sprintf("%s: %v", coord.Name, err))
-			continue
+			return err
 		}
+		names := make([]string, 0, len(resp.Sessions))
+		for _, session := range resp.Sessions {
+			if session == nil || session.Name == "" {
+				continue
+			}
+			names = append(names, session.Name)
+		}
+		if len(names) == 0 {
+			return nil
+		}
+		sort.Strings(names)
+		first = names[0]
+		return nil
+	})
+	if err != nil {
+		errs = append(errs, fmt.Sprintf("%s: %v", coord.Name, err))
+	} else {
 		hadSuccess = true
-		if first != "" {
-			return sessionTarget{Coordinator: coord, Session: first}, nil
-		}
+	}
+	if first != "" {
+		return sessionTarget{Coordinator: coord, Session: first}, nil
 	}
 	if !hadSuccess && len(errs) > 0 {
 		return sessionTarget{}, fmt.Errorf("unable to list sessions: %s", strings.Join(errs, "; "))
@@ -828,9 +816,9 @@ func spawnAutoSessionCmd(client proto.VTRClient, base string) tea.Cmd {
 	}
 }
 
-func spawnSessionCmd(coord coordinatorRef, name string) tea.Cmd {
+func spawnSessionCmd(coord coordinatorRef, cfg *clientConfig, name string) tea.Cmd {
 	return func() tea.Msg {
-		conn, err := dialClient(context.Background(), coord.Path)
+		conn, err := dialClient(context.Background(), coord.Path, cfg)
 		if err != nil {
 			return spawnSessionMsg{err: err, coord: coord}
 		}
@@ -1169,7 +1157,7 @@ func updateCreateModal(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
 		if coord.Path == m.coordinator.Path {
 			return m, spawnCurrentCmd(m.client, name)
 		}
-		return m, spawnSessionCmd(coord, name)
+		return m, spawnSessionCmd(coord, m.cfg, name)
 	case "j", "down":
 		if !m.createFocusInput && len(m.coords) > 0 {
 			m.createCoordIdx = (m.createCoordIdx + 1) % len(m.coords)

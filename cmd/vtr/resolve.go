@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"sort"
 	"strings"
 	"time"
@@ -36,6 +37,38 @@ func loadConfigWithPath() (*clientConfig, string, error) {
 		return nil, "", err
 	}
 	return resolveConfigPaths(cfg, dir), configPath, nil
+}
+
+func resolveHubTarget(cfg *clientConfig, hubFlag string) (coordinatorRef, error) {
+	value := strings.TrimSpace(hubFlag)
+	if value == "" && cfg != nil {
+		if strings.TrimSpace(cfg.Hub.GrpcSocket) != "" {
+			value = cfg.Hub.GrpcSocket
+		} else if strings.TrimSpace(cfg.Hub.GrpcAddr) != "" {
+			value = cfg.Hub.GrpcAddr
+		}
+	}
+	if value == "" {
+		return coordinatorRef{}, errors.New("hub address is required")
+	}
+	value = expandPath(value)
+	name := hubName(value)
+	return coordinatorRef{Name: name, Path: value}, nil
+}
+
+func hubName(value string) string {
+	if isUnixTarget(value) {
+		return coordinatorName(value)
+	}
+	host, _, err := net.SplitHostPort(value)
+	if err != nil {
+		return value
+	}
+	host = strings.Trim(host, "[]")
+	if host == "" {
+		return value
+	}
+	return host
 }
 
 func resolveCoordinatorRefs(cfg *clientConfig) ([]coordinatorRef, error) {
@@ -178,7 +211,7 @@ func findSessionAcrossCoordinators(ctx context.Context, coords []coordinatorRef,
 	var matches []coordinatorRef
 	var errs []string
 	for _, coord := range coords {
-		err := withCoordinator(ctx, coord, func(client proto.VTRClient) error {
+		err := withCoordinator(ctx, coord, nil, func(client proto.VTRClient) error {
 			resp, err := client.Info(ctx, &proto.InfoRequest{Name: name})
 			if err != nil {
 				return err

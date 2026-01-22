@@ -35,4 +35,3 @@ func TestInputForKeyControlBytes(t *testing.T) {
 		})
 	}
 }
-

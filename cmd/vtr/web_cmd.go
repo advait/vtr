@@ -273,7 +273,7 @@ func handleWebsocket(resolver webResolver) http.HandlerFunc {
 			return
 		}
 
-		grpcConn, err := dialClient(ctx, target.Coordinator.Path)
+		grpcConn, err := dialClient(ctx, target.Coordinator.Path, nil)
 		if err != nil {
 			_ = sendWSError(ctx, sender, err)
 			return
@@ -381,7 +381,7 @@ func handleWebSessionsList(w http.ResponseWriter, r *http.Request, resolver webR
 	for _, coord := range coords {
 		entry := webCoordinator{Name: coord.Name, Path: coord.Path}
 		ctx, cancel := context.WithTimeout(r.Context(), rpcTimeout)
-		conn, err := dialClient(ctx, coord.Path)
+		conn, err := dialClient(ctx, coord.Path, nil)
 		cancel()
 		if err != nil {
 			entry.Error = err.Error()
@@ -434,7 +434,7 @@ func handleWebSessionCreate(w http.ResponseWriter, r *http.Request, resolver web
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), rpcTimeout)
-	conn, err := dialClient(ctx, coord.Path)
+	conn, err := dialClient(ctx, coord.Path, nil)
 	cancel()
 	if err != nil {
 		writeWebError(w, err)
@@ -494,7 +494,7 @@ func handleWebSessionAction(resolver webResolver) http.HandlerFunc {
 		}
 
 		ctx, cancel := context.WithTimeout(r.Context(), rpcTimeout)
-		conn, err := dialClient(ctx, target.Coordinator.Path)
+		conn, err := dialClient(ctx, target.Coordinator.Path, nil)
 		cancel()
 		if err != nil {
 			writeWebError(w, err)

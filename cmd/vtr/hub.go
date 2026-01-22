@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -199,69 +197,4 @@ func runHub(opts hubOptions) error {
 	return firstErr
 }
 
-func parseAuthMode(value string) (bool, bool, error) {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "":
-		return false, false, nil
-	case "token":
-		return true, false, nil
-	case "mtls":
-		return false, true, nil
-	case "both":
-		return true, true, nil
-	default:
-		return false, false, fmt.Errorf("unknown auth mode %q", value)
-	}
-}
-
-func readToken(path string) (string, error) {
-	trimmed := strings.TrimSpace(path)
-	if trimmed == "" {
-		return "", errors.New("auth token file is required")
-	}
-	data, err := os.ReadFile(trimmed)
-	if err != nil {
-		return "", err
-	}
-	token := strings.TrimSpace(string(data))
-	if token == "" {
-		return "", errors.New("auth token is empty")
-	}
-	return token, nil
-}
-
-func buildServerTLSConfig(cfg serverConfig, auth authConfig, requireClientCert bool) (*tls.Config, error) {
-	certFile := strings.TrimSpace(cfg.CertFile)
-	keyFile := strings.TrimSpace(cfg.KeyFile)
-	if certFile == "" || keyFile == "" {
-		if requireClientCert {
-			return nil, errors.New("server cert_file and key_file are required for mTLS")
-		}
-		return nil, nil
-	}
-	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-	if err != nil {
-		return nil, err
-	}
-	tlsConfig := &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		MinVersion:   tls.VersionTLS12,
-	}
-	if requireClientCert {
-		caFile := strings.TrimSpace(auth.CaFile)
-		if caFile == "" {
-			return nil, errors.New("auth ca_file is required for mTLS")
-		}
-		caData, err := os.ReadFile(caFile)
-		if err != nil {
-			return nil, err
-		}
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(caData) {
-			return nil, errors.New("failed to parse CA certificate")
-		}
-		tlsConfig.ClientCAs = pool
-		tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
-	}
-	return tlsConfig, nil
-}
+// auth helpers in auth.go
