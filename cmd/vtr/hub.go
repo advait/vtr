@@ -14,11 +14,14 @@ import (
 
 	"github.com/advait/vtrpc/server"
 	"github.com/spf13/cobra"
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 )
 
 type hubOptions struct {
 	socket        string
 	grpcAddr      string
+	unifiedAddr   string
 	webAddr       string
 	noWeb         bool
 	shell         string
@@ -42,6 +45,7 @@ func newHubCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&opts.socket, "socket", "", "path to Unix socket (default from vtrpc.toml)")
 	cmd.Flags().StringVar(&opts.grpcAddr, "grpc-addr", "", "TCP gRPC address (default from vtrpc.toml)")
+	cmd.Flags().StringVar(&opts.unifiedAddr, "unified-addr", "", "single listener for gRPC + web (default from vtrpc.toml)")
 	cmd.Flags().StringVar(&opts.webAddr, "web-addr", "", "web UI address (default from vtrpc.toml)")
 	cmd.Flags().BoolVar(&opts.noWeb, "no-web", false, "disable the web UI")
 	cmd.Flags().StringVar(&opts.shell, "shell", "", "default shell path")
@@ -78,6 +82,10 @@ func runHub(opts hubOptions) error {
 	grpcAddr := opts.grpcAddr
 	if strings.TrimSpace(grpcAddr) == "" {
 		grpcAddr = cfg.Hub.GrpcAddr
+	}
+	unifiedAddr := opts.unifiedAddr
+	if strings.TrimSpace(unifiedAddr) == "" {
+		unifiedAddr = cfg.Hub.UnifiedAddr
 	}
 	webAddr := opts.webAddr
 	if strings.TrimSpace(webAddr) == "" {
@@ -136,6 +144,7 @@ func runHub(opts hubOptions) error {
 	logger.Info("hub starting",
 		"socket", socketPath,
 		"grpc_addr", grpcAddr,
+		"unified_addr", unifiedAddr,
 		"web_addr", webAddr,
 		"web_enabled", webEnabled,
 		"log_level", strings.ToLower(opts.logLevel),
@@ -154,25 +163,37 @@ func runHub(opts hubOptions) error {
 		return server.ServeUnix(ctx, coord, socketPath)
 	})
 
-	if strings.TrimSpace(grpcAddr) != "" {
-		start(func() error {
-			return server.ServeTCP(ctx, coord, grpcAddr, tlsConfig, token)
-		})
-	}
-
-	if webEnabled {
+	if strings.TrimSpace(unifiedAddr) != "" {
+		if !isLoopbackHost(unifiedAddr) && tlsConfig == nil {
+			return errors.New("unified-addr requires TLS when binding to a non-loopback address")
+		}
 		resolver := webResolver{coords: []coordinatorRef{{Name: coordinatorName(socketPath), Path: socketPath}}}
-		webOpts := webOptions{
-			addr:      webAddr,
-			socket:    socketPath,
-			dev:       envBool("VTR_WEB_DEV", false),
-			devServer: envString("VTR_WEB_DEV_SERVER", defaultViteDevServer),
+		webHandler := http.NotFoundHandler()
+		if webEnabled {
+			webOpts := webOptions{
+				addr:      unifiedAddr,
+				socket:    socketPath,
+				dev:       envBool("VTR_WEB_DEV", false),
+				devServer: envString("VTR_WEB_DEV_SERVER", defaultViteDevServer),
+			}
+			handler, err := newWebHandler(webOpts, resolver)
+			if err != nil {
+				return err
+			}
+			webHandler = handler
 		}
-		srv, err := newWebServer(webOpts, resolver)
-		if err != nil {
-			return err
+		grpcServer := server.NewGRPCServerWithToken(coord, token)
+		handler := grpcOrHTTPHandler(grpcServer, webHandler)
+		srv := &http.Server{
+			Addr: unifiedAddr,
 		}
-		logger.Info("web UI listening", "addr", webAddr)
+		if tlsConfig == nil {
+			srv.Handler = h2c.NewHandler(handler, &http2.Server{})
+		} else {
+			srv.TLSConfig = tlsConfig
+			srv.Handler = handler
+		}
+		logger.Info("unified listener", "addr", unifiedAddr, "web_enabled", webEnabled, "tls", tlsConfig != nil)
 		go func() {
 			<-ctx.Done()
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -180,12 +201,53 @@ func runHub(opts hubOptions) error {
 			_ = srv.Shutdown(shutdownCtx)
 		}()
 		start(func() error {
+			if tlsConfig != nil {
+				err := srv.ListenAndServeTLS("", "")
+				if errors.Is(err, http.ErrServerClosed) {
+					return nil
+				}
+				return err
+			}
 			err := srv.ListenAndServe()
 			if errors.Is(err, http.ErrServerClosed) {
 				return nil
 			}
 			return err
 		})
+	} else {
+		if strings.TrimSpace(grpcAddr) != "" {
+			start(func() error {
+				return server.ServeTCP(ctx, coord, grpcAddr, tlsConfig, token)
+			})
+		}
+
+		if webEnabled {
+			resolver := webResolver{coords: []coordinatorRef{{Name: coordinatorName(socketPath), Path: socketPath}}}
+			webOpts := webOptions{
+				addr:      webAddr,
+				socket:    socketPath,
+				dev:       envBool("VTR_WEB_DEV", false),
+				devServer: envString("VTR_WEB_DEV_SERVER", defaultViteDevServer),
+			}
+			srv, err := newWebServer(webOpts, resolver)
+			if err != nil {
+				return err
+			}
+			logger.Info("web UI listening", "addr", webAddr)
+			go func() {
+				<-ctx.Done()
+				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_ = srv.Shutdown(shutdownCtx)
+			}()
+			start(func() error {
+				err := srv.ListenAndServe()
+				if errors.Is(err, http.ErrServerClosed) {
+					return nil
+				}
+				return err
+			})
+		}
 	}
 
 	var firstErr error

@@ -125,7 +125,7 @@ func runWeb(opts webOptions) error {
 	return srv.ListenAndServe()
 }
 
-func newWebServer(opts webOptions, resolver webResolver) (*http.Server, error) {
+func newWebHandler(opts webOptions, resolver webResolver) (http.Handler, error) {
 	mux := http.NewServeMux()
 	wsHandler := handleWebsocket(resolver)
 	mux.HandleFunc("/api/ws", wsHandler)
@@ -149,10 +149,17 @@ func newWebServer(opts webOptions, resolver webResolver) (*http.Server, error) {
 		}
 		mux.Handle("/", http.FileServer(http.FS(dist)))
 	}
+	return mux, nil
+}
 
+func newWebServer(opts webOptions, resolver webResolver) (*http.Server, error) {
+	handler, err := newWebHandler(opts, resolver)
+	if err != nil {
+		return nil, err
+	}
 	srv := &http.Server{
 		Addr:    opts.addr,
-		Handler: mux,
+		Handler: handler,
 	}
 	return srv, nil
 }
@@ -543,6 +550,7 @@ type webSession struct {
 	Rows     int32  `json:"rows"`
 	Idle     bool   `json:"idle"`
 	ExitCode int32  `json:"exit_code,omitempty"`
+	Order    uint32 `json:"order"`
 }
 
 type webCoordinator struct {
@@ -806,6 +814,7 @@ func webSessionFromProto(session *proto.Session) webSession {
 		Rows:     session.GetRows(),
 		Idle:     session.GetIdle(),
 		ExitCode: session.GetExitCode(),
+		Order:    session.GetOrder(),
 	}
 }
 

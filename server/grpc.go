@@ -69,6 +69,17 @@ func NewGRPCServer(coord *Coordinator) *GRPCServer {
 	}
 }
 
+// NewGRPCServerWithToken constructs a gRPC server with token interceptors attached.
+func NewGRPCServerWithToken(coord *Coordinator, token string) *grpc.Server {
+	opts := []grpc.ServerOption{
+		grpc.UnaryInterceptor(tokenUnaryInterceptor(token)),
+		grpc.StreamInterceptor(tokenStreamInterceptor(token)),
+	}
+	grpcServer := grpc.NewServer(opts...)
+	proto.RegisterVTRServer(grpcServer, NewGRPCServer(coord))
+	return grpcServer
+}
+
 // ListenUnix creates a Unix socket listener, removing any stale socket file.
 func ListenUnix(socketPath string) (net.Listener, error) {
 	if strings.TrimSpace(socketPath) == "" {
@@ -979,6 +990,7 @@ func toProtoSession(info *SessionInfo) *proto.Session {
 		ExitCode:  int32(info.ExitCode),
 		CreatedAt: timestamppb.New(info.CreatedAt),
 		Idle:      info.Idle,
+		Order:     info.Order,
 	}
 	if info.State != SessionExited {
 		session.ExitCode = 0

@@ -20,10 +20,11 @@ type clientConfig struct {
 }
 
 type hubConfig struct {
-	GrpcAddr   string `toml:"grpc_addr"`
-	GrpcSocket string `toml:"grpc_socket"`
-	WebAddr    string `toml:"web_addr"`
-	WebEnabled *bool  `toml:"web_enabled"`
+	GrpcAddr    string `toml:"grpc_addr"`
+	GrpcSocket  string `toml:"grpc_socket"`
+	WebAddr     string `toml:"web_addr"`
+	UnifiedAddr string `toml:"unified_addr"`
+	WebEnabled  *bool  `toml:"web_enabled"`
 }
 
 type authConfig struct {
