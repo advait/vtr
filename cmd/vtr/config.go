@@ -114,6 +114,13 @@ func resolveHubConfig(cfg hubConfig) hubConfig {
 	if strings.TrimSpace(cfg.WebAddr) == "" {
 		cfg.WebAddr = defaultHubWebAddr
 	}
+	if strings.TrimSpace(cfg.UnifiedAddr) == "" {
+		if strings.TrimSpace(cfg.WebAddr) != "" {
+			cfg.UnifiedAddr = cfg.WebAddr
+		} else if strings.TrimSpace(cfg.GrpcAddr) != "" {
+			cfg.UnifiedAddr = cfg.GrpcAddr
+		}
+	}
 	if cfg.WebEnabled == nil {
 		value := true
 		cfg.WebEnabled = &value

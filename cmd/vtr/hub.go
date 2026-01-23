@@ -20,9 +20,7 @@ import (
 
 type hubOptions struct {
 	socket        string
-	grpcAddr      string
 	unifiedAddr   string
-	webAddr       string
 	noWeb         bool
 	shell         string
 	cols          int
@@ -44,9 +42,7 @@ func newHubCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&opts.socket, "socket", "", "path to Unix socket (default from vtrpc.toml)")
-	cmd.Flags().StringVar(&opts.grpcAddr, "grpc-addr", "", "TCP gRPC address (default from vtrpc.toml)")
 	cmd.Flags().StringVar(&opts.unifiedAddr, "unified-addr", "", "single listener for gRPC + web (default from vtrpc.toml)")
-	cmd.Flags().StringVar(&opts.webAddr, "web-addr", "", "web UI address (default from vtrpc.toml)")
 	cmd.Flags().BoolVar(&opts.noWeb, "no-web", false, "disable the web UI")
 	cmd.Flags().StringVar(&opts.shell, "shell", "", "default shell path")
 	cmd.Flags().IntVar(&opts.cols, "cols", 80, "default columns")
@@ -79,17 +75,9 @@ func runHub(opts hubOptions) error {
 	if strings.TrimSpace(socketPath) == "" {
 		socketPath = cfg.Hub.GrpcSocket
 	}
-	grpcAddr := opts.grpcAddr
-	if strings.TrimSpace(grpcAddr) == "" {
-		grpcAddr = cfg.Hub.GrpcAddr
-	}
 	unifiedAddr := opts.unifiedAddr
 	if strings.TrimSpace(unifiedAddr) == "" {
 		unifiedAddr = cfg.Hub.UnifiedAddr
-	}
-	webAddr := opts.webAddr
-	if strings.TrimSpace(webAddr) == "" {
-		webAddr = cfg.Hub.WebAddr
 	}
 	webEnabled := true
 	if cfg.Hub.WebEnabled != nil {
@@ -143,9 +131,7 @@ func runHub(opts hubOptions) error {
 
 	logger.Info("hub starting",
 		"socket", socketPath,
-		"grpc_addr", grpcAddr,
 		"unified_addr", unifiedAddr,
-		"web_addr", webAddr,
 		"web_enabled", webEnabled,
 		"log_level", strings.ToLower(opts.logLevel),
 	)
@@ -214,40 +200,8 @@ func runHub(opts hubOptions) error {
 			}
 			return err
 		})
-	} else {
-		if strings.TrimSpace(grpcAddr) != "" {
-			start(func() error {
-				return server.ServeTCP(ctx, coord, grpcAddr, tlsConfig, token)
-			})
-		}
-
-		if webEnabled {
-			resolver := webResolver{coords: []coordinatorRef{{Name: coordinatorName(socketPath), Path: socketPath}}}
-			webOpts := webOptions{
-				addr:      webAddr,
-				socket:    socketPath,
-				dev:       envBool("VTR_WEB_DEV", false),
-				devServer: envString("VTR_WEB_DEV_SERVER", defaultViteDevServer),
-			}
-			srv, err := newWebServer(webOpts, resolver)
-			if err != nil {
-				return err
-			}
-			logger.Info("web UI listening", "addr", webAddr)
-			go func() {
-				<-ctx.Done()
-				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				_ = srv.Shutdown(shutdownCtx)
-			}()
-			start(func() error {
-				err := srv.ListenAndServe()
-				if errors.Is(err, http.ErrServerClosed) {
-					return nil
-				}
-				return err
-			})
-		}
+	} else if webEnabled {
+		return errors.New("web UI requires unified-addr")
 	}
 
 	var firstErr error

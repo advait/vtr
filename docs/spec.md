@@ -111,9 +111,8 @@ Location: `$VTRPC_CONFIG_DIR/vtrpc.toml` (default: `~/.config/vtrpc/vtrpc.toml`)
 
 ```toml
 [hub]
-grpc_addr = "127.0.0.1:4621"
 grpc_socket = "/var/run/vtrpc.sock"
-web_addr = "127.0.0.1:4620"
+unified_addr = "127.0.0.1:4620"
 web_enabled = true
 
 [auth]
@@ -139,7 +138,7 @@ Single `vtr` binary serves as both client and server.
 
 ```bash
 # Start hub coordinator (web UI enabled by default)
-vtr hub [--socket /path/to.sock] [--grpc-addr 127.0.0.1:4621] [--web-addr 127.0.0.1:4620] [--no-web] \
+vtr hub [--socket /path/to.sock] [--unified-addr 127.0.0.1:4620] [--no-web] \
   [--shell /bin/bash] [--cols 80] [--rows 24] [--scrollback 10000] [--kill-timeout 5s] [--idle-threshold 5s]
 
 # Start spoke coordinator and register with hub
@@ -264,7 +263,7 @@ HTTP JSON endpoints include `POST /api/sessions` (spawn) and `POST /api/sessions
 ### Command and configuration
 
 - `vtr hub` reads `$VTRPC_CONFIG_DIR/vtrpc.toml` (default: `~/.config/vtrpc/vtrpc.toml`).
-- `--web-addr` controls the HTTP bind address (default: `127.0.0.1:4620`).
+- `--unified-addr` controls the single gRPC+web bind address (default: `127.0.0.1:4620`).
 - `--no-web` disables the web UI while keeping the hub coordinator running.
 
 ### HTTP API (M7)
@@ -589,7 +588,7 @@ Compression:
 Tailnet-only flow (no Funnel in M7):
 
 ```bash
-vtr hub --web-addr 127.0.0.1:4620 --grpc-addr 127.0.0.1:4621 --socket /var/run/vtrpc.sock
+vtr hub --unified-addr 127.0.0.1:4620 --socket /var/run/vtrpc.sock
 tailscale serve https / http://127.0.0.1:4620
 ```
 Exact flags can vary; verify with `tailscale serve --help`.

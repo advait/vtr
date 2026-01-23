@@ -44,6 +44,8 @@ func resolveHubTarget(cfg *clientConfig, hubFlag string) (coordinatorRef, error)
 	if value == "" && cfg != nil {
 		if strings.TrimSpace(cfg.Hub.GrpcSocket) != "" {
 			value = cfg.Hub.GrpcSocket
+		} else if strings.TrimSpace(cfg.Hub.UnifiedAddr) != "" {
+			value = cfg.Hub.UnifiedAddr
 		} else if strings.TrimSpace(cfg.Hub.GrpcAddr) != "" {
 			value = cfg.Hub.GrpcAddr
 		}

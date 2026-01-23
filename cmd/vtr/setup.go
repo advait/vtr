@@ -256,9 +256,8 @@ func rgbTo256(r, g, b int) int {
 func buildSetupConfig(socketPath, configDir string) string {
 	lines := []string{
 		"[hub]",
-		fmt.Sprintf("grpc_addr = %q", defaultHubGrpcAddr),
 		fmt.Sprintf("grpc_socket = %q", socketPath),
-		fmt.Sprintf("web_addr = %q", defaultHubWebAddr),
+		fmt.Sprintf("unified_addr = %q", defaultHubWebAddr),
 		"web_enabled = true",
 		"",
 		"[auth]",

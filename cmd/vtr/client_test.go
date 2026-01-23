@@ -24,9 +24,8 @@ func setupCLIConfig(t *testing.T, socketPath string) {
 	t.Setenv("VTRPC_CONFIG_DIR", configDir)
 	config := strings.Join([]string{
 		"[hub]",
-		fmt.Sprintf("grpc_addr = %q", "127.0.0.1:4621"),
 		fmt.Sprintf("grpc_socket = %q", socketPath),
-		fmt.Sprintf("web_addr = %q", "127.0.0.1:4620"),
+		fmt.Sprintf("unified_addr = %q", "127.0.0.1:4620"),
 		"web_enabled = true",
 		"",
 	}, "\n")
