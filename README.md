@@ -145,7 +145,7 @@ The web UI at `http://hub.internal:4620` shows a tree view of all coordinators a
 | ✅ Done    | TUI with Bubbletea, Subscribe streaming, leader key bindings            |
 | ✅ Done    | Web UI (React + shadcn/ui), WebSocket bridge, multi-coordinator tree    |
 | 🚧 Next    | Mouse support (track mode, `SendMouse` RPC)                             |
-| 📋 Planned | Multi-platform builds (currently Linux only)                            |
+| ✅ Done    | Multi-platform builds (macOS + Linux via `build-multi`)                  |
 | 📋 Planned | First-class Tailscale Serve integration for hub                         |
 | 📋 Planned | Session recording (`DumpAsciinema` RPC), playback in web UI             |
 

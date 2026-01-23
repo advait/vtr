@@ -20,7 +20,7 @@ stripped when embedding into the binary, so `vtr version` prints `0.0.1`.
 1. Update `VERSION`.
 2. Commit the change.
 3. Create an annotated tag for the release.
-4. Build the binary.
+4. Build the release artifacts.
 
 Example:
 
@@ -30,15 +30,19 @@ git add VERSION
 git commit -m "release: v0.0.1"
 git tag -a v0.0.1 -m "v0.0.1"
 
-mise run build
+mise run build-multi
 ```
 
-The release binary is written to `bin/vtr` and includes embedded web assets
-from `web/dist`.
+`mise run build-multi` writes versioned binaries to `dist/` and emits
+`.sha256` checksums. Run it on both Linux and macOS (or via a CI matrix) to
+get full platform coverage. The binaries include embedded web assets from
+`web/dist`.
 
 ## Notes
 
-- `mise run build` already runs the web build before `go build`, so the
-  resulting binary is a single executable with packaged web UI assets.
+- `mise run build` still produces a host-only `bin/vtr` for quick local
+  development builds.
+- `mise run build-multi` relies on `mise run proto` and `mise run web-build`
+  to prepare generated assets before building.
 - If you build from an untagged commit, `vtr version` will report the value in
   `VERSION`.

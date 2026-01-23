@@ -22,6 +22,8 @@ If you keep Ghostty elsewhere, set `GHOSTTY_ROOT` to point at the checkout:
 - `shim-sanitize` builds a debug shim variant with frame pointers (stamp output).
 - `web-build` builds `web/dist` via Bun/Vite.
 - `build` depends on `proto` + `shim` + `web-build` and produces `bin/vtr`.
+- `build-multi` builds versioned binaries into `dist/` for the host OS
+  (both amd64 + arm64) and emits `.sha256` checksums.
 - `test` depends on `proto` + `shim` and runs all Go tests.
 - `shim-llvm-ir` and `shim-llvm-asan` produce ASan-ready shim artifacts.
 - `test-web-e2e` runs Playwright E2E checks for the web UI.
@@ -66,6 +68,7 @@ When adding a task in `mise.toml`:
 
 - `mise run all`
 - `mise run build`
+- `mise run build-multi`
 - `mise run test`
 - `mise run proto`
 - `mise run shim`
@@ -73,3 +76,12 @@ When adding a task in `mise.toml`:
 - `mise run test-race-cgo`
 - `mise run test-sanitize-cgo`
 - `mise run test-web-e2e`
+
+## Multi-platform builds
+
+`mise run build-multi` produces `dist/vtr-<version>-<os>-<arch>` plus
+`dist/vtr-<version>-<os>-<arch>.sha256`. It targets the current host OS
+and both amd64/arm64 archs. For full macOS + Linux coverage, run the task
+on both platforms (or use a CI matrix).
+Set `VTR_BUILD_TARGETS="linux/amd64 linux/arm64"` (space-separated) to
+override the default target list.

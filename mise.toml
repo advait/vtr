@@ -96,6 +96,29 @@ sources = [
 ]
 outputs = ["bin/vtr"]
 
+[tasks.build-multi]
+depends = ["proto", "web-build"]
+run = "bash scripts/build-multi.sh"
+sources = [
+  "VERSION",
+  "go.mod",
+  "go.sum",
+  "cmd/**/*.go",
+  "server/**/*.go",
+  "web/**/*.go",
+  "go-ghostty/**/*.go",
+  "proto/*.go",
+  "go-ghostty/shim/build.zig",
+  "go-ghostty/shim/build.zig.zon",
+  "go-ghostty/shim/oniguruma_stub.zig",
+  "go-ghostty/shim/vtr_ghostty_vt.h",
+  "go-ghostty/shim/vtr_ghostty_vt_shim.zig",
+  "go-ghostty/ghostty/**",
+  "scripts/build-multi.sh",
+  "web/dist/index.html",
+]
+outputs = ["dist/.mise-build-multi.stamp"]
+
 [tasks.test]
 depends = ["proto", "shim"]
 run = "go test ./... && mkdir -p bin && touch bin/.mise-test.stamp"
