@@ -38,6 +38,46 @@
   unicode-range: U+2500-259F;
 }
 
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url("./assets/fonts/jetbrains-mono-nerd/JetBrainsMonoNerdFont-Regular.ttf")
+    format("truetype");
+  unicode-range: U+E000-F8FF;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: italic;
+  font-display: swap;
+  font-weight: 400;
+  src: url("./assets/fonts/jetbrains-mono-nerd/JetBrainsMonoNerdFont-Italic.ttf")
+    format("truetype");
+  unicode-range: U+E000-F8FF;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 600;
+  src: url("./assets/fonts/jetbrains-mono-nerd/JetBrainsMonoNerdFont-Bold.ttf")
+    format("truetype");
+  unicode-range: U+E000-F8FF;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: italic;
+  font-display: swap;
+  font-weight: 600;
+  src: url("./assets/fonts/jetbrains-mono-nerd/JetBrainsMonoNerdFont-BoldItalic.ttf")
+    format("truetype");
+  unicode-range: U+E000-F8FF;
+}
+
 :root {
   --terminal-font-size: 14px;
   color-scheme: dark;
