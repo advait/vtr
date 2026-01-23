@@ -168,8 +168,8 @@ vtr agent kill <name> [--signal TERM|KILL|INT] [--hub <addr|socket>]
 ### Screen Operations
 
 ```bash
-# Get current screen state
-vtr agent screen <name> [--hub <addr|socket>]
+# Get current screen state (plain text by default)
+vtr agent screen <name> [--hub <addr|socket>] [--json] [--ansi]
 
 # Search scrollback (ripgrep-style output; RE2 regex)
 vtr agent grep <name> <pattern> [-B lines] [-A lines] [-C lines] [--hub <addr|socket>]
@@ -650,7 +650,8 @@ If two spokes share the same name, use `--hub` to disambiguate.
 
 ### Output Formats
 
-`vtr agent` always outputs JSON. Use `vtr tui` or the web UI for human-facing interaction.
+`vtr agent` outputs JSON for most commands, but `vtr agent screen` defaults to plain text for agent-friendly output.
+Use `--json` to get structured screen data, or `--ansi` to include ANSI color/attribute codes in the text stream.
 
 Example:
 ```json

@@ -231,7 +231,7 @@ func waitForCLIScreenContains(t *testing.T, socketPath, name, want string, timeo
 	var lastOutput string
 	var lastErr error
 	for time.Now().Before(deadline) {
-		out, err := runCLICommand(t, "agent", "screen", "--hub", socketPath, name)
+		out, err := runCLICommand(t, "agent", "screen", "--json", "--hub", socketPath, name)
 		if err == nil {
 			var resp jsonScreenEnvelope
 			if err := json.Unmarshal([]byte(out), &resp); err != nil {

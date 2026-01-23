@@ -89,7 +89,7 @@ vtr agent send my-session-name $'Controlling codex through CLI!\n'
 
 ## Agent Examples
 
-The `vtr agent` CLI outputs JSON, making it easy to script terminal automation:
+The `vtr agent` CLI defaults to plain-text screen output, with JSON available for scripting:
 
 ```bash
 # Spawn a session and wait for the shell prompt
@@ -103,8 +103,11 @@ vtr agent idle build --timeout 120s
 # Search scrollback for results
 vtr agent grep build 'FAIL|PASS' -A 3
 
-# Get the current screen state as structured JSON
-vtr agent screen build | jq '.rows[].cells[].char' -j
+# Get the current screen as structured JSON
+vtr agent screen --json build | jq '.rows[].cells[].char' -j
+
+# Get the current screen as plain text (default)
+vtr agent screen build
 ```
 
 Blocking operations like `wait` and `idle` are what make vtr agent-friendly - no polling loops

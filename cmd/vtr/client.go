@@ -158,11 +158,16 @@ func newInfoCmd() *cobra.Command {
 
 func newScreenCmd() *cobra.Command {
 	var hub string
+	var jsonOut bool
+	var ansi bool
 	cmd := &cobra.Command{
 		Use:   "screen <name>",
 		Short: "Fetch the current screen",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if jsonOut && ansi {
+				return fmt.Errorf("--json and --ansi are mutually exclusive")
+			}
 			cfg, _, err := loadConfigWithPath()
 			if err != nil {
 				return err
@@ -178,11 +183,27 @@ func newScreenCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				return writeJSON(cmd.OutOrStdout(), jsonScreenEnvelope{Screen: screenToJSON(resp)})
+				if jsonOut {
+					return writeJSON(cmd.OutOrStdout(), jsonScreenEnvelope{Screen: screenToJSON(resp)})
+				}
+				text := screenToText(resp, ansi)
+				if text == "" {
+					return nil
+				}
+				if _, err := io.WriteString(cmd.OutOrStdout(), text); err != nil {
+					return err
+				}
+				if !strings.HasSuffix(text, "\n") {
+					_, err = io.WriteString(cmd.OutOrStdout(), "\n")
+					return err
+				}
+				return nil
 			})
 		},
 	}
 	addHubFlag(cmd, &hub)
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output structured JSON")
+	cmd.Flags().BoolVar(&ansi, "ansi", false, "Include ANSI colors/attributes in text output")
 	return cmd
 }
 

@@ -218,18 +218,47 @@ func printScreenHuman(w io.Writer, resp *proto.GetScreenResponse) {
 		fmt.Fprintln(w, "(no screen)")
 		return
 	}
-	fmt.Fprintf(w, "Screen: %s (%dx%d)\n", resp.Name, resp.Cols, resp.Rows)
-	for _, row := range resp.ScreenRows {
+	fmt.Fprintln(w, screenToText(resp, false))
+}
+
+func screenToText(resp *proto.GetScreenResponse, includeANSI bool) string {
+	if resp == nil {
+		return ""
+	}
+	width := int(resp.Cols)
+	if width <= 0 {
+		for _, row := range resp.ScreenRows {
+			if row != nil && len(row.Cells) > width {
+				width = len(row.Cells)
+			}
+		}
+	}
+	lines := make([]string, len(resp.ScreenRows))
+	for i, row := range resp.ScreenRows {
+		if includeANSI {
+			lines[i] = renderRow(row, width, i, -1, -1, false)
+			continue
+		}
+		if width <= 0 {
+			lines[i] = ""
+			continue
+		}
 		var b strings.Builder
-		for _, cell := range row.Cells {
+		b.Grow(width)
+		for col := 0; col < width; col++ {
+			cell := (*proto.ScreenCell)(nil)
+			if row != nil && col < len(row.Cells) {
+				cell = row.Cells[col]
+			}
 			if cell == nil || cell.Char == "" {
 				b.WriteByte(' ')
 				continue
 			}
 			b.WriteString(cell.Char)
 		}
-		fmt.Fprintln(w, b.String())
+		lines[i] = strings.TrimRight(b.String(), " ")
 	}
+	return strings.Join(lines, "\n")
 }
 
 func screenToJSON(resp *proto.GetScreenResponse) jsonScreen {
