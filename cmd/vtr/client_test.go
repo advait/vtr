@@ -25,7 +25,7 @@ func setupCLIConfig(t *testing.T, socketPath string) {
 	config := strings.Join([]string{
 		"[hub]",
 		fmt.Sprintf("grpc_socket = %q", socketPath),
-		fmt.Sprintf("unified_addr = %q", "127.0.0.1:4620"),
+		fmt.Sprintf("addr = %q", "127.0.0.1:4620"),
 		"web_enabled = true",
 		"",
 	}, "\n")

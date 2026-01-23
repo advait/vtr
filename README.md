@@ -119,7 +119,7 @@ Run coordinators on multiple machines and control them all from a single client:
 
 ```bash
 # On the hub machine (central control + web UI)
-vtr hub --unified-addr 0.0.0.0:4620
+vtr hub --addr 0.0.0.0:4620
 
 # On container/VM A
 vtr spoke --hub hub.internal:4621 --name container-a

@@ -257,7 +257,7 @@ func buildSetupConfig(socketPath, configDir string) string {
 	lines := []string{
 		"[hub]",
 		fmt.Sprintf("grpc_socket = %q", socketPath),
-		fmt.Sprintf("unified_addr = %q", defaultHubWebAddr),
+		fmt.Sprintf("addr = %q", defaultHubAddr),
 		"web_enabled = true",
 		"",
 		"[auth]",

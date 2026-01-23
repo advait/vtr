@@ -17,7 +17,7 @@ bun install
 bun run build
 
 cd ..
-go run ./cmd/vtr hub --socket /tmp/vtrpc.sock --unified-addr 127.0.0.1:4620
+go run ./cmd/vtr hub --socket /tmp/vtrpc.sock --addr 127.0.0.1:4620
 ```
 
 ## Setup
@@ -25,7 +25,7 @@ go run ./cmd/vtr hub --socket /tmp/vtrpc.sock --unified-addr 127.0.0.1:4620
 1. Start a hub (coordinator + web UI):
 
 ```bash
-go run ./cmd/vtr hub --socket /tmp/vtrpc.sock --unified-addr 127.0.0.1:4620
+go run ./cmd/vtr hub --socket /tmp/vtrpc.sock --addr 127.0.0.1:4620
 ```
 
 2. Open `http://127.0.0.1:4620`.

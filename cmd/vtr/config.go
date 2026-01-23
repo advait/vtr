@@ -20,11 +20,14 @@ type clientConfig struct {
 }
 
 type hubConfig struct {
+	Addr       string `toml:"addr"`
+	GrpcSocket string `toml:"grpc_socket"`
+	WebEnabled *bool  `toml:"web_enabled"`
+
+	// Legacy fields (deprecated): prefer Addr.
 	GrpcAddr    string `toml:"grpc_addr"`
-	GrpcSocket  string `toml:"grpc_socket"`
 	WebAddr     string `toml:"web_addr"`
 	UnifiedAddr string `toml:"unified_addr"`
-	WebEnabled  *bool  `toml:"web_enabled"`
 }
 
 type authConfig struct {
@@ -52,9 +55,8 @@ const (
 	defaultConfigDirName  = "vtrpc"
 	defaultConfigFileName = "vtrpc.toml"
 
-	defaultHubGrpcAddr   = "127.0.0.1:4621"
 	defaultHubGrpcSocket = "/var/run/vtrpc.sock"
-	defaultHubWebAddr    = "127.0.0.1:4620"
+	defaultHubAddr       = "127.0.0.1:4620"
 )
 
 func configDir() string {
@@ -105,20 +107,19 @@ func resolveConfigPaths(cfg *clientConfig, dir string) *clientConfig {
 }
 
 func resolveHubConfig(cfg hubConfig) hubConfig {
-	if strings.TrimSpace(cfg.GrpcAddr) == "" {
-		cfg.GrpcAddr = defaultHubGrpcAddr
-	}
 	if strings.TrimSpace(cfg.GrpcSocket) == "" {
 		cfg.GrpcSocket = defaultHubGrpcSocket
 	}
-	if strings.TrimSpace(cfg.WebAddr) == "" {
-		cfg.WebAddr = defaultHubWebAddr
-	}
-	if strings.TrimSpace(cfg.UnifiedAddr) == "" {
-		if strings.TrimSpace(cfg.WebAddr) != "" {
-			cfg.UnifiedAddr = cfg.WebAddr
-		} else if strings.TrimSpace(cfg.GrpcAddr) != "" {
-			cfg.UnifiedAddr = cfg.GrpcAddr
+	if strings.TrimSpace(cfg.Addr) == "" {
+		switch {
+		case strings.TrimSpace(cfg.UnifiedAddr) != "":
+			cfg.Addr = cfg.UnifiedAddr
+		case strings.TrimSpace(cfg.WebAddr) != "":
+			cfg.Addr = cfg.WebAddr
+		case strings.TrimSpace(cfg.GrpcAddr) != "":
+			cfg.Addr = cfg.GrpcAddr
+		default:
+			cfg.Addr = defaultHubAddr
 		}
 	}
 	if cfg.WebEnabled == nil {

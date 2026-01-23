@@ -20,7 +20,7 @@ import (
 
 type hubOptions struct {
 	socket        string
-	unifiedAddr   string
+	addr          string
 	noWeb         bool
 	shell         string
 	cols          int
@@ -42,7 +42,7 @@ func newHubCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&opts.socket, "socket", "", "path to Unix socket (default from vtrpc.toml)")
-	cmd.Flags().StringVar(&opts.unifiedAddr, "unified-addr", "", "single listener for gRPC + web (default from vtrpc.toml)")
+	cmd.Flags().StringVar(&opts.addr, "addr", "", "single listener for gRPC + web (default from vtrpc.toml)")
 	cmd.Flags().BoolVar(&opts.noWeb, "no-web", false, "disable the web UI")
 	cmd.Flags().StringVar(&opts.shell, "shell", "", "default shell path")
 	cmd.Flags().IntVar(&opts.cols, "cols", 80, "default columns")
@@ -75,9 +75,9 @@ func runHub(opts hubOptions) error {
 	if strings.TrimSpace(socketPath) == "" {
 		socketPath = cfg.Hub.GrpcSocket
 	}
-	unifiedAddr := opts.unifiedAddr
-	if strings.TrimSpace(unifiedAddr) == "" {
-		unifiedAddr = cfg.Hub.UnifiedAddr
+	addr := opts.addr
+	if strings.TrimSpace(addr) == "" {
+		addr = cfg.Hub.Addr
 	}
 	webEnabled := true
 	if cfg.Hub.WebEnabled != nil {
@@ -131,7 +131,7 @@ func runHub(opts hubOptions) error {
 
 	logger.Info("hub starting",
 		"socket", socketPath,
-		"unified_addr", unifiedAddr,
+		"addr", addr,
 		"web_enabled", webEnabled,
 		"log_level", strings.ToLower(opts.logLevel),
 	)
@@ -149,15 +149,15 @@ func runHub(opts hubOptions) error {
 		return server.ServeUnix(ctx, coord, socketPath)
 	})
 
-	if strings.TrimSpace(unifiedAddr) != "" {
-		if !isLoopbackHost(unifiedAddr) && tlsConfig == nil {
-			return errors.New("unified-addr requires TLS when binding to a non-loopback address")
+	if strings.TrimSpace(addr) != "" {
+		if !isLoopbackHost(addr) && tlsConfig == nil {
+			return errors.New("addr requires TLS when binding to a non-loopback address")
 		}
 		resolver := webResolver{coords: []coordinatorRef{{Name: coordinatorName(socketPath), Path: socketPath}}}
 		webHandler := http.NotFoundHandler()
 		if webEnabled {
 			webOpts := webOptions{
-				addr:      unifiedAddr,
+				addr:      addr,
 				socket:    socketPath,
 				dev:       envBool("VTR_WEB_DEV", false),
 				devServer: envString("VTR_WEB_DEV_SERVER", defaultViteDevServer),
@@ -171,7 +171,7 @@ func runHub(opts hubOptions) error {
 		grpcServer := server.NewGRPCServerWithToken(coord, token)
 		handler := grpcOrHTTPHandler(grpcServer, webHandler)
 		srv := &http.Server{
-			Addr: unifiedAddr,
+			Addr: addr,
 		}
 		if tlsConfig == nil {
 			srv.Handler = h2c.NewHandler(handler, &http2.Server{})
@@ -179,7 +179,7 @@ func runHub(opts hubOptions) error {
 			srv.TLSConfig = tlsConfig
 			srv.Handler = handler
 		}
-		logger.Info("unified listener", "addr", unifiedAddr, "web_enabled", webEnabled, "tls", tlsConfig != nil)
+		logger.Info("unified listener", "addr", addr, "web_enabled", webEnabled, "tls", tlsConfig != nil)
 		go func() {
 			<-ctx.Done()
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -201,7 +201,7 @@ func runHub(opts hubOptions) error {
 			return err
 		})
 	} else if webEnabled {
-		return errors.New("web UI requires unified-addr")
+		return errors.New("web UI requires addr")
 	}
 
 	var firstErr error
