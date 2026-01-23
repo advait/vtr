@@ -45,6 +45,7 @@ function normalizeSession(session: Session): SessionInfo {
     cols: session.cols ?? 0,
     rows: session.rows ?? 0,
     idle: session.idle ?? false,
+    order: session.order ?? 0,
     exitCode: session.exit_code,
   };
 }

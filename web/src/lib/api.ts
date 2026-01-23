@@ -11,6 +11,7 @@ export type SessionListResponse = {
       rows: number;
       idle?: boolean;
       exit_code?: number;
+      order?: number;
     }>;
   }>;
 };
@@ -33,6 +34,7 @@ export type SessionCreateResponse = {
     rows: number;
     idle?: boolean;
     exit_code?: number;
+    order?: number;
   };
 };
 
@@ -54,6 +56,7 @@ function normalizeSession(session: SessionCreateResponse["session"]): SessionInf
     cols: session.cols ?? 0,
     rows: session.rows ?? 0,
     idle: session.idle ?? false,
+    order: session.order ?? 0,
     exitCode: session.exit_code,
   };
 }
@@ -74,6 +77,7 @@ export async function fetchSessions(): Promise<CoordinatorInfo[]> {
       cols: session.cols ?? 0,
       rows: session.rows ?? 0,
       idle: session.idle ?? false,
+      order: session.order ?? 0,
       exitCode: session.exit_code,
     }));
     return { name: coord.name, path: coord.path, sessions };

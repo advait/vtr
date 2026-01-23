@@ -127,6 +127,7 @@ type sessionListItem struct {
 	status   proto.SessionStatus
 	exitCode int32
 	idle     bool
+	order    uint32
 }
 
 func (s sessionListItem) Title() string {
@@ -149,6 +150,52 @@ func (s sessionListItem) Description() string {
 
 func (s sessionListItem) FilterValue() string {
 	return s.name
+}
+
+func sortSessionListItems(items []sessionListItem) {
+	sort.Slice(items, func(i, j int) bool {
+		left := items[i]
+		right := items[j]
+		if left.order == right.order {
+			return left.name < right.name
+		}
+		if left.order == 0 {
+			return false
+		}
+		if right.order == 0 {
+			return true
+		}
+		return left.order < right.order
+	})
+}
+
+func sortProtoSessions(sessions []*proto.Session) {
+	sort.Slice(sessions, func(i, j int) bool {
+		left := sessions[i]
+		right := sessions[j]
+		leftOrder := uint32(0)
+		rightOrder := uint32(0)
+		leftName := ""
+		rightName := ""
+		if left != nil {
+			leftOrder = left.GetOrder()
+			leftName = left.GetName()
+		}
+		if right != nil {
+			rightOrder = right.GetOrder()
+			rightName = right.GetName()
+		}
+		if leftOrder == rightOrder {
+			return leftName < rightName
+		}
+		if leftOrder == 0 {
+			return false
+		}
+		if rightOrder == 0 {
+			return true
+		}
+		return leftOrder < rightOrder
+	})
 }
 
 var (
@@ -302,18 +349,18 @@ func resolveFirstSessionTarget(ctx context.Context, coord coordinatorRef, cfg *c
 		if err != nil {
 			return err
 		}
-		names := make([]string, 0, len(resp.Sessions))
-		for _, session := range resp.Sessions {
+		sessions := resp.Sessions
+		if len(sessions) == 0 {
+			return nil
+		}
+		sortProtoSessions(sessions)
+		for _, session := range sessions {
 			if session == nil || session.Name == "" {
 				continue
 			}
-			names = append(names, session.Name)
+			first = session.Name
+			break
 		}
-		if len(names) == 0 {
-			return nil
-		}
-		sort.Strings(names)
-		first = names[0]
 		return nil
 	})
 	if err != nil {
@@ -693,8 +740,10 @@ func nextSessionCmd(client proto.VTRClient, current string, forward bool, showEx
 		if err != nil {
 			return sessionSwitchMsg{err: err}
 		}
-		names := make([]string, 0, len(resp.Sessions))
-		for _, session := range resp.Sessions {
+		sessions := resp.Sessions
+		sortProtoSessions(sessions)
+		names := make([]string, 0, len(sessions))
+		for _, session := range sessions {
 			if session != nil && session.Name != "" {
 				if !showExited && session.Status == proto.SessionStatus_SESSION_STATUS_EXITED {
 					continue
@@ -705,7 +754,6 @@ func nextSessionCmd(client proto.VTRClient, current string, forward bool, showEx
 		if len(names) == 0 {
 			return sessionSwitchMsg{err: fmt.Errorf("no sessions")}
 		}
-		sort.Strings(names)
 		idx := -1
 		for i, name := range names {
 			if name == current {
@@ -734,12 +782,7 @@ func loadSessionListCmd(client proto.VTRClient, activate bool) tea.Cmd {
 			return sessionListMsg{err: err, activate: activate}
 		}
 		sessions := resp.Sessions
-		sort.Slice(sessions, func(i, j int) bool {
-			if sessions[i] == nil || sessions[j] == nil {
-				return sessions[i] != nil
-			}
-			return sessions[i].Name < sessions[j].Name
-		})
+		sortProtoSessions(sessions)
 		items := make([]list.Item, 0, len(sessions))
 		out := make([]sessionListItem, 0, len(sessions))
 		for _, session := range sessions {
@@ -751,6 +794,7 @@ func loadSessionListCmd(client proto.VTRClient, activate bool) tea.Cmd {
 				status:   session.Status,
 				exitCode: session.ExitCode,
 				idle:     session.GetIdle(),
+				order:    session.GetOrder(),
 			}
 			out = append(out, entry)
 			items = append(items, entry)
@@ -1230,10 +1274,9 @@ func applySessionIdle(m attachModel, name string, idle bool) (attachModel, tea.C
 			name:   name,
 			status: proto.SessionStatus_SESSION_STATUS_RUNNING,
 			idle:   idle,
+			order:  0,
 		})
-		sort.Slice(m.sessionItems, func(i, j int) bool {
-			return m.sessionItems[i].name < m.sessionItems[j].name
-		})
+		sortSessionListItems(m.sessionItems)
 	}
 	return m, m.sessionList.SetItems(sessionItemsToListItems(visibleSessionItems(m)))
 }
@@ -1255,10 +1298,8 @@ func ensureSessionItem(items []sessionListItem, name string, exited bool, exitCo
 	if exited {
 		status = proto.SessionStatus_SESSION_STATUS_EXITED
 	}
-	items = append(items, sessionListItem{name: name, status: status, exitCode: exitCode})
-	sort.Slice(items, func(i, j int) bool {
-		return items[i].name < items[j].name
-	})
+	items = append(items, sessionListItem{name: name, status: status, exitCode: exitCode, order: 0})
+	sortSessionListItems(items)
 	return items
 }
 
@@ -1879,11 +1920,9 @@ func collectTabSessions(items []sessionListItem, active string, exited bool, exi
 		if exited {
 			status = proto.SessionStatus_SESSION_STATUS_EXITED
 		}
-		out = append(out, sessionListItem{name: active, status: status, exitCode: exitCode})
+		out = append(out, sessionListItem{name: active, status: status, exitCode: exitCode, order: 0})
 	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].name < out[j].name
-	})
+	sortSessionListItems(out)
 	return out
 }
 

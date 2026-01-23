@@ -38,6 +38,7 @@ message Session {
   int32 rows = 4;
   int32 exit_code = 5;
   bool idle = 8;
+  uint32 order = 9;
 }
 
 message ListRequest {}
@@ -152,6 +153,7 @@ export type Session = {
   rows?: number;
   exit_code?: number;
   idle?: boolean;
+  order?: number;
 };
 
 export type ScreenRow = { cells?: ScreenCell[] };

@@ -9,6 +9,7 @@ export type SessionInfo = {
   cols: number;
   rows: number;
   idle: boolean;
+  order: number;
   exitCode?: number;
 };
 
@@ -41,22 +42,18 @@ function statusBadge(session: SessionInfo) {
 }
 
 function orderSessions(sessions: SessionInfo[]) {
-  const running: SessionInfo[] = [];
-  const closing: SessionInfo[] = [];
-  const unknown: SessionInfo[] = [];
-  const exited: SessionInfo[] = [];
-  for (const session of sessions) {
-    if (session.status === "running") {
-      running.push(session);
-    } else if (session.status === "closing") {
-      closing.push(session);
-    } else if (session.status === "exited") {
-      exited.push(session);
-    } else {
-      unknown.push(session);
+  return [...sessions].sort((a, b) => {
+    if (a.order === b.order) {
+      return a.name.localeCompare(b.name);
     }
-  }
-  return [...running, ...closing, ...unknown, ...exited];
+    if (a.order === 0) {
+      return 1;
+    }
+    if (b.order === 0) {
+      return -1;
+    }
+    return a.order - b.order;
+  });
 }
 
 export function CoordinatorTree({

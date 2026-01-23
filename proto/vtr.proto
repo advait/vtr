@@ -56,6 +56,7 @@ message Session {
   google.protobuf.Timestamp created_at = 6;
   google.protobuf.Timestamp exited_at = 7;  // only valid when status = EXITED
   bool idle = 8;
+  uint32 order = 9;
 }
 
 // Session management messages

@@ -69,17 +69,19 @@ type SessionInfo struct {
 	Rows      uint16
 	ExitCode  int
 	Idle      bool
+	Order     uint32
 	CreatedAt time.Time
 	ExitedAt  time.Time
 }
 
 // Coordinator manages named PTY sessions.
 type Coordinator struct {
-	mu       sync.Mutex
-	sessions map[string]*Session
-	opts     CoordinatorOptions
-	changeMu sync.Mutex
-	changeCh chan struct{}
+	mu        sync.Mutex
+	sessions  map[string]*Session
+	opts      CoordinatorOptions
+	nextOrder uint32
+	changeMu  sync.Mutex
+	changeCh  chan struct{}
 }
 
 // NewCoordinator creates a coordinator with defaults applied.
@@ -177,7 +179,8 @@ func (c *Coordinator) Spawn(name string, opts SpawnOptions) (*SessionInfo, error
 		return nil, err
 	}
 
-	session := newSession(name, cols, rows, vt, ptyHandle, c.opts.IdleThreshold, c.signalSessionsChanged)
+	order := atomic.AddUint32(&c.nextOrder, 1)
+	session := newSession(name, cols, rows, order, vt, ptyHandle, c.opts.IdleThreshold, c.signalSessionsChanged)
 
 	c.mu.Lock()
 	c.sessions[name] = session
@@ -216,7 +219,16 @@ func (c *Coordinator) List() []SessionInfo {
 		out = append(out, session.Info())
 	}
 	sort.Slice(out, func(i, j int) bool {
-		return out[i].Name < out[j].Name
+		if out[i].Order == out[j].Order {
+			return out[i].Name < out[j].Name
+		}
+		if out[i].Order == 0 {
+			return false
+		}
+		if out[j].Order == 0 {
+			return true
+		}
+		return out[i].Order < out[j].Order
 	})
 	return out
 }
@@ -460,6 +472,7 @@ type Session struct {
 	name         string
 	cols         uint16
 	rows         uint16
+	order        uint32
 	pty          *PTY
 	vt           *VT
 	createdAt    time.Time
@@ -493,12 +506,13 @@ type Session struct {
 	frameID uint64
 }
 
-func newSession(name string, cols, rows uint16, vt *VT, ptyHandle *PTY, idleThreshold time.Duration, onListChange func()) *Session {
+func newSession(name string, cols, rows uint16, order uint32, vt *VT, ptyHandle *PTY, idleThreshold time.Duration, onListChange func()) *Session {
 	now := time.Now()
 	return &Session{
 		name:          name,
 		cols:          cols,
 		rows:          rows,
+		order:         order,
 		pty:           ptyHandle,
 		vt:            vt,
 		createdAt:     now,
@@ -549,6 +563,7 @@ func (s *Session) Info() SessionInfo {
 	cols := s.cols
 	rows := s.rows
 	exitCode := s.exitCode
+	order := s.order
 	createdAt := s.createdAt
 	exitedAt := s.exitedAt
 	s.mu.Unlock()
@@ -560,6 +575,7 @@ func (s *Session) Info() SessionInfo {
 		Rows:      rows,
 		ExitCode:  exitCode,
 		Idle:      idle,
+		Order:     order,
 		CreatedAt: createdAt,
 		ExitedAt:  exitedAt,
 	}

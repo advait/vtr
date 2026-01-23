@@ -62,13 +62,26 @@ func newListCmd() *cobra.Command {
 				right := items[j]
 				leftName := ""
 				rightName := ""
+				leftOrder := uint32(0)
+				rightOrder := uint32(0)
 				if left.Session != nil {
 					leftName = left.Session.Name
+					leftOrder = left.Session.GetOrder()
 				}
 				if right.Session != nil {
 					rightName = right.Session.Name
+					rightOrder = right.Session.GetOrder()
 				}
-				return leftName < rightName
+				if leftOrder == rightOrder {
+					return leftName < rightName
+				}
+				if leftOrder == 0 {
+					return false
+				}
+				if rightOrder == 0 {
+					return true
+				}
+				return leftOrder < rightOrder
 			})
 			return writeJSON(cmd.OutOrStdout(), sessionsToJSON(items))
 		},
