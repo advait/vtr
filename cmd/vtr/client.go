@@ -228,6 +228,9 @@ func newSendCmd() *cobra.Command {
 		Args:  cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			text := strings.Join(args[1:], " ")
+			if !strings.HasSuffix(text, "\n") && !strings.HasSuffix(text, "\r") {
+				fmt.Fprintln(cmd.ErrOrStderr(), "warning: text does not end with newline; input will not be submitted.")
+			}
 			cfg, _, err := loadConfigWithPath()
 			if err != nil {
 				return err

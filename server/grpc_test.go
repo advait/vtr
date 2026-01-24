@@ -211,17 +211,10 @@ func TestGRPCSpawnSendScreen(t *testing.T) {
 	waitForScreenContains(t, client, "grpc-echo", "ready", 2*time.Second)
 
 	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
-	_, err = client.SendText(ctx, &proto.SendTextRequest{Name: "grpc-echo", Text: "hello"})
+	_, err = client.SendText(ctx, &proto.SendTextRequest{Name: "grpc-echo", Text: "hello\n"})
 	cancel()
 	if err != nil {
 		t.Fatalf("SendText: %v", err)
-	}
-
-	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
-	_, err = client.SendKey(ctx, &proto.SendKeyRequest{Name: "grpc-echo", Key: "enter"})
-	cancel()
-	if err != nil {
-		t.Fatalf("SendKey: %v", err)
 	}
 
 	waitForScreenContains(t, client, "grpc-echo", "got:hello", 2*time.Second)

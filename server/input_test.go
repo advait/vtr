@@ -36,3 +36,23 @@ func TestKeyToBytesCtrlC(t *testing.T) {
 		t.Fatalf("got %v want %v", got, want)
 	}
 }
+
+func TestNormalizeTextInput(t *testing.T) {
+	cases := []struct {
+		input string
+		want  []byte
+	}{
+		{input: "", want: nil},
+		{input: "hello", want: []byte("hello")},
+		{input: "hello\n", want: []byte("hello\r")},
+		{input: "hello\r\nworld\n", want: []byte("hello\rworld\r")},
+		{input: "hello\rworld", want: []byte("hello\rworld")},
+	}
+
+	for _, tc := range cases {
+		got := normalizeTextInput(tc.input)
+		if !bytes.Equal(got, tc.want) {
+			t.Fatalf("normalizeTextInput(%q)=%v want %v", tc.input, got, tc.want)
+		}
+	}
+}

@@ -430,7 +430,7 @@ func (s *GRPCServer) SendText(_ context.Context, req *proto.SendTextRequest) (*p
 	if !utf8.ValidString(req.Text) {
 		return nil, status.Error(codes.InvalidArgument, "text must be valid UTF-8")
 	}
-	if err := s.coord.Send(req.Name, []byte(req.Text)); err != nil {
+	if err := s.coord.Send(req.Name, normalizeTextInput(req.Text)); err != nil {
 		return nil, mapCoordinatorErr(err)
 	}
 	return &proto.SendTextResponse{}, nil

@@ -115,3 +115,15 @@ func altSequence(part string) ([]byte, error) {
 	}
 	return append([]byte{0x1b}, []byte(part)...), nil
 }
+
+func normalizeTextInput(text string) []byte {
+	if text == "" {
+		return nil
+	}
+	if !strings.Contains(text, "\n") {
+		return []byte(text)
+	}
+	normalized := strings.ReplaceAll(text, "\r\n", "\n")
+	normalized = strings.ReplaceAll(normalized, "\n", "\r")
+	return []byte(normalized)
+}

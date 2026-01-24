@@ -81,13 +81,9 @@ func TestCLIEndToEnd(t *testing.T) {
 
 	waitForCLIScreenContains(t, socketPath, "cli-e2e", "ready", 2*time.Second)
 
-	_, err = runCLICommand(t, "agent", "send", "--hub", socketPath, "cli-e2e", "hello")
+	_, err = runCLICommand(t, "agent", "send", "--hub", socketPath, "cli-e2e", "hello\n")
 	if err != nil {
 		t.Fatalf("send: %v", err)
-	}
-	_, err = runCLICommand(t, "agent", "key", "--hub", socketPath, "cli-e2e", "enter")
-	if err != nil {
-		t.Fatalf("key: %v", err)
 	}
 
 	waitForCLIScreenContains(t, socketPath, "cli-e2e", "got:hello", 2*time.Second)
