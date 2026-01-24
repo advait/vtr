@@ -492,8 +492,8 @@ export function TerminalView({
     if (!screen) {
       return null;
     }
-    const baseX = padding + screen.cursorX * cellSize.width;
-    const baseY = padding + screen.cursorY * cellSize.height;
+    const baseX = screen.cursorX * cellSize.width;
+    const baseY = screen.cursorY * cellSize.height;
     const underlineHeight = Math.max(2, Math.round(cellSize.height * 0.15));
     const barWidth = Math.max(2, Math.round(cellSize.width * 0.15));
     switch (screen.cursorStyle) {
