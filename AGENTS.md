@@ -4,7 +4,7 @@
 
 ## docs
 
-See `docs/*.md` for deeper documentation starting with `docs/spec.md`.
+See `docs/*.md` for deeper documentation starting with `docs/README.md`.
 
 <!-- br-agent-instructions-v1 -->
 
@@ -66,7 +66,7 @@ git push                # Push to remote
 ### Best Practices
 
 - Check `br ready` at session start to find available work
-- Update status as you work (in_progress → closed)
+- Update status as you work (in_progress -> closed)
 - Create new issues with `br create` when you discover tasks
 - Use descriptive titles and set appropriate priority/type
 - Always sync before ending session

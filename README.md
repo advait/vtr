@@ -8,7 +8,7 @@ vtr (short for vtrpc) is a terminal multiplexer for the agent era. It supports:
   via gRPC
 - Multi-client terminal control including Web UI, TUI, and agent-first CLI
 - Ability to run multiple coordinators (terminal engines) on different machines, VMs, and docker
-  containers and control them all centrally from any client
+  containers; registration to a hub is supported, while proxying is planned
 
 > ⚠️ **Alpha software** - vtr is under active development and not yet ready for production
 > workloads. APIs may change, and there will be bugs. Use at your own risk.
@@ -115,39 +115,31 @@ or sleep hacks required.
 
 ## Hub/Spoke Federation
 
-Run coordinators on multiple machines and control them all from a single client:
+Spokes can register to a hub today, but the hub does not proxy requests yet.
+Use `vtr web` with multiple coordinators for a multi-coordinator UI.
 
 ```bash
 # On the hub machine (central control + web UI)
-vtr hub --addr 0.0.0.0:4620
+vtr hub --addr 127.0.0.1:4620
 
 # On container/VM A
 vtr spoke --hub hub.internal:4621 --name container-a
 
 # On container/VM B
 vtr spoke --hub hub.internal:4621 --name container-b
-
-# From any client: list all sessions across all coordinators
-vtr agent ls --hub hub.internal:4621
-
-# Address sessions explicitly when names collide
-vtr agent screen container-a:shell
-vtr agent screen container-b:shell
 ```
 
-The web UI at `http://hub.internal:4620` shows a tree view of all coordinators and their sessions.
+For a multi-coordinator web UI, point `vtr web` at multiple sockets:
 
-## Roadmap
+```bash
+vtr web --coordinator /path/to/a.sock --coordinator /path/to/b.sock
+```
 
-| Status     | Features                                                                |
-| ---------- | ----------------------------------------------------------------------- |
-| ✅ Done    | Core server, gRPC API, PTY management, `WaitFor`, `WaitForIdle`, `Grep` |
-| ✅ Done    | TUI with Bubbletea, Subscribe streaming, leader key bindings            |
-| ✅ Done    | Web UI (React + shadcn/ui), WebSocket bridge, multi-coordinator tree    |
-| 🚧 Next    | Mouse support (track mode, `SendMouse` RPC)                             |
-| ✅ Done    | Multi-platform builds (macOS + Linux via `build-multi`)                  |
-| 📋 Planned | First-class Tailscale Serve integration for hub                         |
-| 📋 Planned | Session recording (`DumpAsciinema` RPC), playback in web UI             |
+Note: non-loopback gRPC addresses require TLS and token auth; see `docs/operations.md`.
+
+## Docs
+
+See `docs/README.md` for the structured documentation set.
 
 ## Comparison vs other terminal multiplexers
 
