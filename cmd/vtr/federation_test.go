@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"testing"
+	"time"
 
 	proto "github.com/advait/vtrpc/proto"
 	"github.com/advait/vtrpc/server"
@@ -150,5 +151,83 @@ func TestFederatedInfoRoutesToSpoke(t *testing.T) {
 	}
 	if resp.GetSession().GetName() != "spoke-a:alpha" {
 		t.Fatalf("expected prefixed name, got %q", resp.GetSession().GetName())
+	}
+}
+
+func TestTunnelListAndInfoRoutesToSpoke(t *testing.T) {
+	coord := server.NewCoordinator(server.CoordinatorOptions{})
+	defer coord.CloseAll()
+	local := server.NewGRPCServer(coord)
+
+	spoke := &fakeVTRServer{
+		listSessions: []*proto.Session{{Name: "alpha"}},
+	}
+
+	listener := bufconn.Listen(bufSize)
+	grpcServer := grpc.NewServer()
+	federated := newFederatedServer(local, "hub", nil, nil, nil, nil)
+	proto.RegisterVTRServer(grpcServer, federated)
+	go func() {
+		_ = grpcServer.Serve(listener)
+	}()
+	t.Cleanup(func() {
+		grpcServer.Stop()
+		_ = listener.Close()
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	conn, err := grpc.DialContext(ctx, "hub",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+			return listener.DialContext(ctx)
+		}),
+	)
+	if err != nil {
+		t.Fatalf("dial hub: %v", err)
+	}
+	defer conn.Close()
+
+	client := proto.NewVTRClient(conn)
+	stream, err := client.Tunnel(ctx)
+	if err != nil {
+		t.Fatalf("tunnel: %v", err)
+	}
+	tunnel := &tunnelSpoke{
+		ctx:     ctx,
+		stream:  stream,
+		service: spoke,
+		calls:   make(map[string]context.CancelFunc),
+	}
+	go func() {
+		_ = tunnel.serve("spoke-a", &proto.SpokeInfo{Name: "spoke-a"})
+	}()
+
+	deadline := time.After(500 * time.Millisecond)
+	for {
+		if federated.tunnels.Get("spoke-a") != nil {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("tunnel did not register")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	listResp, err := client.List(ctx, &proto.ListRequest{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(listResp.GetSessions()) == 0 || listResp.GetSessions()[0].GetName() != "spoke-a:alpha" {
+		t.Fatalf("expected prefixed session, got %#v", listResp.GetSessions())
+	}
+
+	infoResp, err := client.Info(ctx, &proto.InfoRequest{Name: "spoke-a:alpha"})
+	if err != nil {
+		t.Fatalf("Info: %v", err)
+	}
+	if infoResp.GetSession().GetName() != "spoke-a:alpha" {
+		t.Fatalf("expected prefixed info, got %q", infoResp.GetSession().GetName())
 	}
 }

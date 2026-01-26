@@ -170,7 +170,7 @@ func runHub(opts hubOptions) error {
 		resolver := webResolver{
 			cfg: cfg,
 			coordsFn: func() ([]coordinatorRef, error) {
-				return federatedCoordinatorRefs(socketPath, staticSpokes, localService.SpokeRegistry()), nil
+				return federatedCoordinatorRefs(socketPath, staticSpokes, localService.SpokeRegistry(), federated.tunnels), nil
 			},
 		}
 		webHandler := http.NotFoundHandler()

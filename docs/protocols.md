@@ -20,7 +20,7 @@ Streaming:
 - Subscribe
 
 Federation:
-- RegisterSpoke
+- RegisterSpoke, Tunnel
 
 Recording:
 - DumpAsciinema (defined but not implemented; server returns UNIMPLEMENTED)
@@ -35,9 +35,16 @@ Implemented in server code:
 - WaitFor, WaitForIdle
 - Subscribe
 - RegisterSpoke
+- Tunnel
 
 Not implemented:
 - DumpAsciinema
+
+## Tunnel (spoke-initiated federation)
+
+`Tunnel` is a bidirectional stream initiated by a spoke. The hub sends
+`TunnelRequest` frames (method + payload) and receives `TunnelResponse` or
+`TunnelStreamEvent` frames. Spokes reply with `TunnelError` frames on failures.
 
 ## Session identity
 

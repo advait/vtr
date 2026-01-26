@@ -39,6 +39,7 @@ service VTR {
 
   // Federation
   rpc RegisterSpoke(RegisterSpokeRequest) returns (RegisterSpokeResponse);
+  rpc Tunnel(stream TunnelFrame) returns (stream TunnelFrame);
 }
 
 // Session status enum
@@ -107,6 +108,48 @@ message RegisterSpokeResponse {
   bool ok = 1;
   string hub_name = 2;
   google.protobuf.Duration heartbeat_interval = 3;
+}
+
+message TunnelFrame {
+  string spoke_name = 1;
+  string call_id = 2;
+  oneof kind {
+    TunnelHello hello = 10;
+    TunnelRequest request = 11;
+    TunnelResponse response = 12;
+    TunnelStreamEvent event = 13;
+    TunnelCancel cancel = 14;
+    TunnelError error = 15;
+  }
+}
+
+message TunnelHello {
+  string version = 1;
+  map<string, string> labels = 2;
+}
+
+message TunnelRequest {
+  string method = 1;
+  bytes payload = 2;
+  bool stream = 3;
+}
+
+message TunnelResponse {
+  bytes payload = 1;
+  bool done = 2;
+}
+
+message TunnelStreamEvent {
+  bytes payload = 1;
+}
+
+message TunnelCancel {
+  string reason = 1;
+}
+
+message TunnelError {
+  int32 code = 1;
+  string message = 2;
 }
 
 message CoordinatorSessions {

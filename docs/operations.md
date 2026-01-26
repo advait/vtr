@@ -47,8 +47,8 @@ vtr spoke --hub host:4621 [--name spoke-a]
 ```
 
 Behavior:
-- By default, a spoke is client-only and registers to the hub; it does not serve a local socket.
-- Use `--serve-socket` to expose a local Unix socket.
+- By default, a spoke registers to the hub and opens a tunnel for hub-initiated RPCs (no local listener required).
+- Use `--serve-socket` to expose a local Unix socket for direct access.
 - Use `--grpc-addr` to expose TCP gRPC (disabled by default).
 
 ## Auth

@@ -130,6 +130,7 @@ func runSpoke(opts spokeOptions) error {
 		IdleThreshold: opts.idleThreshold,
 	})
 	defer coord.CloseAll()
+	localService := server.NewGRPCServer(coord)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -187,6 +188,7 @@ func runSpoke(opts spokeOptions) error {
 			Version:  Version,
 		}
 		go registerSpokeLoop(ctx, hubAddr, cfg, token, info)
+		go runSpokeTunnelLoop(ctx, hubAddr, cfg, token, info, localService, logger)
 	}
 
 	if servers == 0 {

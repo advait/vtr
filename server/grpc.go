@@ -386,6 +386,10 @@ func (s *GRPCServer) RegisterSpoke(ctx context.Context, req *proto.RegisterSpoke
 	return resp, nil
 }
 
+func (s *GRPCServer) Tunnel(proto.VTR_TunnelServer) error {
+	return status.Error(codes.Unimplemented, "tunnel is only supported by hubs")
+}
+
 func (s *GRPCServer) Info(_ context.Context, req *proto.InfoRequest) (*proto.InfoResponse, error) {
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "session id or name is required")
