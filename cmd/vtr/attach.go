@@ -1261,6 +1261,9 @@ func applySessionIdle(m attachModel, name string, idle bool) (attachModel, tea.C
 	if name == "" {
 		return m, nil
 	}
+	if name != m.session {
+		m = applySessionRename(m, name)
+	}
 	updated := false
 	for i := range m.sessionItems {
 		if m.sessionItems[i].name == name {
@@ -1352,6 +1355,9 @@ func applyScreenUpdate(m attachModel, update *proto.ScreenUpdate) (attachModel, 
 	}
 	if update.IsKeyframe {
 		if update.Screen != nil {
+			if name := strings.TrimSpace(update.Screen.Name); name != "" && name != m.session {
+				m = applySessionRename(m, name)
+			}
 			m.screen = update.Screen
 		}
 		m.frameID = update.FrameId
@@ -1370,6 +1376,46 @@ func applyScreenUpdate(m attachModel, update *proto.ScreenUpdate) (attachModel, 
 	m.screen = screen
 	m.frameID = update.FrameId
 	return m, nil
+}
+
+func applySessionRename(m attachModel, newName string) attachModel {
+	oldName := m.session
+	if newName == "" || oldName == "" || newName == oldName {
+		return m
+	}
+	m.session = newName
+	m.statusMsg = fmt.Sprintf("session renamed to %s", newName)
+	m.statusUntil = time.Now().Add(2 * time.Second)
+	m.sessionItems = renameSessionItems(m.sessionItems, oldName, newName)
+	m.sessionItems = ensureSessionItem(m.sessionItems, newName, m.exited, m.exitCode)
+	if m.hoverTab == oldName {
+		m.hoverTab = newName
+	}
+	return m
+}
+
+func renameSessionItems(items []sessionListItem, oldName, newName string) []sessionListItem {
+	if oldName == "" || newName == "" || oldName == newName {
+		return items
+	}
+	newExists := false
+	for _, item := range items {
+		if item.name == newName {
+			newExists = true
+			break
+		}
+	}
+	out := make([]sessionListItem, 0, len(items))
+	for _, item := range items {
+		if item.name == oldName {
+			if newExists {
+				continue
+			}
+			item.name = newName
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 func applyScreenDelta(screen *proto.GetScreenResponse, delta *proto.ScreenDelta) (*proto.GetScreenResponse, error) {

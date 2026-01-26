@@ -564,6 +564,10 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 		return mapCoordinatorErr(err)
 	}
 
+	sessionName := func() string {
+		info := session.Info()
+		return info.Name
+	}
 	offset, outputCh, _ := session.outputState()
 	includeScreen := req.IncludeScreenUpdates
 	includeRaw := req.IncludeRawOutput
@@ -576,13 +580,14 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 	sendErrCh := make(chan error, 1)
 	exitSignal := make(chan exitPayload, 1)
 	makeKeyframe := func() (*proto.ScreenUpdate, error) {
-		snap, err := s.coord.Snapshot(req.Name)
+		snap, err := session.vt.Snapshot()
 		if err != nil {
 			return nil, err
 		}
-		update := keyframeUpdateFromSnapshot(session, req.Name, snap)
+		name := sessionName()
+		update := keyframeUpdateFromSnapshot(session, name, snap)
 		total, _, _ := session.outputState()
-		s.cacheKeyframe(req.Name, update, total)
+		s.cacheKeyframe(name, update, total)
 		return update, nil
 	}
 
@@ -700,7 +705,7 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 	}
 
 	if includeScreen {
-		if cached := s.cachedKeyframe(session, req.Name); cached != nil {
+		if cached := s.cachedKeyframe(session, sessionName()); cached != nil {
 			setLatestScreen(cached)
 		} else {
 			update, err := makeKeyframe()
@@ -744,7 +749,7 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 		case <-idleCh:
 			idleState, nextCh := session.idleState()
 			idleCh = nextCh
-			setLatestIdle(&proto.SessionIdle{Name: req.Name, Idle: idleState})
+			setLatestIdle(&proto.SessionIdle{Name: sessionName(), Idle: idleState})
 		case <-session.exitCh:
 			if includeRaw {
 				data, nextOffset, nextCh := session.outputSnapshot(offset)
