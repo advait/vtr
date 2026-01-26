@@ -8,6 +8,7 @@ import {
 } from "react";
 import { ActionTray } from "./components/ActionTray";
 import type { CoordinatorInfo, SessionInfo } from "./components/CoordinatorTree";
+import { displaySessionName } from "./lib/session";
 import { InputBar } from "./components/InputBar";
 import { MultiViewDashboard } from "./components/MultiViewDashboard";
 import { SessionTabs } from "./components/SessionTabs";
@@ -106,11 +107,8 @@ function sessionKey(coord: string, session: SessionInfo) {
   return `${coord}:${ref}`;
 }
 
-function formatSessionLabel(coordinator: string, label: string) {
-  if (!coordinator) {
-    return label;
-  }
-  return `${coordinator}:${label}`;
+function formatSessionLabel(_coordinator: string, label: string) {
+  return displaySessionName(label);
 }
 
 function findSession(
@@ -697,7 +695,7 @@ export default function App() {
         y: nextY,
         sessionKey,
         sessionId: session.id || session.name,
-        sessionLabel: session.name,
+        sessionLabel: displaySessionName(session.name),
         coordinator,
         status: session.status,
       });

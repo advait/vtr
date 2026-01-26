@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { cn } from "../lib/utils";
+import { displaySessionName } from "../lib/session";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "./ui/Accordion";
 import { Badge } from "./ui/Badge";
 
@@ -44,8 +45,10 @@ function statusBadge(session: SessionInfo) {
 
 function orderSessions(sessions: SessionInfo[]) {
   return [...sessions].sort((a, b) => {
+    const aName = displaySessionName(a.name);
+    const bName = displaySessionName(b.name);
     if (a.order === b.order) {
-      return a.name.localeCompare(b.name);
+      return aName.localeCompare(bName);
     }
     if (a.order === 0) {
       return 1;
@@ -70,9 +73,11 @@ export function CoordinatorTree({
     }
     return coordinators
       .map((coord) => {
-        const matchedSessions = coord.sessions.filter((session) =>
-          `${coord.name}:${session.name}`.toLowerCase().includes(normalizedFilter),
-        );
+        const matchedSessions = coord.sessions.filter((session) => {
+          const displayName = displaySessionName(session.name);
+          const target = `${coord.name}:${displayName} ${session.name}`.toLowerCase();
+          return target.includes(normalizedFilter);
+        });
         if (coord.name.toLowerCase().includes(normalizedFilter)) {
           return { ...coord, sessions: orderSessions(coord.sessions) };
         }
@@ -119,7 +124,7 @@ export function CoordinatorTree({
                     )}
                   >
                     <div className="flex flex-col">
-                      <span className="text-tn-text">{session.name}</span>
+                      <span className="text-tn-text">{displaySessionName(session.name)}</span>
                       <span className="text-xs text-tn-muted">
                         {session.cols}x{session.rows}
                       </span>

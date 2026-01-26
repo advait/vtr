@@ -1,6 +1,7 @@
 import { Plus } from "lucide-react";
 import { type MouseEvent, type TouchEvent, useMemo, useRef } from "react";
 import { cn } from "../lib/utils";
+import { displaySessionName } from "../lib/session";
 import type { SessionInfo } from "./CoordinatorTree";
 
 export type SessionTab = {
@@ -117,8 +118,8 @@ export function SessionTabs({
               </span>
               {group.tabs.map(({ key, session }) => {
                 const isActive = activeSession === key;
-                const label = session.name;
-                const title = `${group.coordinator}:${label}`;
+                const label = displaySessionName(session.name);
+                const title = label;
                 return (
                   <div
                     key={key}

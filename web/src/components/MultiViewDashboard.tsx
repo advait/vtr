@@ -1,6 +1,7 @@
 import { Check } from "lucide-react";
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SubscribeEvent } from "../lib/proto";
+import { displaySessionName } from "../lib/session";
 import { applyScreenUpdate, type ScreenState } from "../lib/terminal";
 import { cn } from "../lib/utils";
 import { useVtrStream } from "../lib/ws";
@@ -172,7 +173,7 @@ function SessionThumbnail({
           {selected ? <Check className="h-3 w-3" aria-hidden="true" /> : null}
         </button>
         <span className="min-w-0 flex-1 truncate text-xs font-semibold text-tn-text">
-          {session.name}
+          {displaySessionName(session.name)}
         </span>
         <Badge variant={status.variant}>{status.label}</Badge>
       </div>
@@ -296,7 +297,8 @@ export function MultiViewDashboard({
           if (textTerms.length === 0) {
             return true;
           }
-          const target = `${coord.name}:${session.name}`.toLowerCase();
+          const displayName = displaySessionName(session.name);
+          const target = `${coord.name}:${displayName} ${session.name}`.toLowerCase();
           return textTerms.every((term) => target.includes(term));
         });
 
