@@ -35,3 +35,24 @@ func TestInputForKeyControlBytes(t *testing.T) {
 		})
 	}
 }
+
+func TestLooksLikeMouseSGRReport(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{name: "sgr-press", input: "35;148;16M", want: true},
+		{name: "sgr-release", input: "35;148;16m", want: true},
+		{name: "no-semicolons", input: "35M", want: false},
+		{name: "other-letters", input: "35;10;1X", want: false},
+		{name: "random-text", input: "mouse", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := looksLikeMouseSGRReport([]rune(tt.input)); got != tt.want {
+				t.Fatalf("expected %v, got %v", tt.want, got)
+			}
+		})
+	}
+}

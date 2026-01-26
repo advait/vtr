@@ -1151,6 +1151,9 @@ func inputForKey(msg tea.KeyMsg) (string, []byte, bool) {
 		if len(msg.Runes) == 0 {
 			return "", nil, false
 		}
+		if looksLikeMouseSGRReport(msg.Runes) {
+			return "", nil, false
+		}
 		return "", []byte(string(msg.Runes)), true
 	case tea.KeySpace:
 		return "", []byte(" "), true
@@ -1170,6 +1173,29 @@ func inputForKey(msg tea.KeyMsg) (string, []byte, bool) {
 		return key, nil, true
 	}
 	return "", nil, false
+}
+
+func looksLikeMouseSGRReport(runes []rune) bool {
+	if len(runes) == 0 {
+		return false
+	}
+	semiCount := 0
+	hasM := false
+	for _, r := range runes {
+		switch {
+		case r >= '0' && r <= '9':
+		case r == ';':
+			semiCount++
+		case r == 'M' || r == 'm':
+			hasM = true
+		default:
+			return false
+		}
+	}
+	if semiCount < 2 || !hasM {
+		return false
+	}
+	return true
 }
 
 func newSessionListModel(items []list.Item, width, height int) list.Model {
