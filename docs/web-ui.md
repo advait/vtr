@@ -18,7 +18,7 @@ Coordinator (local socket or configured coordinator list)
 ## Endpoints
 
 HTTP:
-- `GET /api/sessions` - list sessions by coordinator (debugging + UI)
+- `GET /api/sessions` - list sessions by coordinator (debugging/tooling)
 - `POST /api/sessions` - spawn session
 - `POST /api/sessions/action` - send_key / signal / close / remove / rename
 
