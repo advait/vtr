@@ -31,6 +31,8 @@ const (
 	keyframeRingSize = 4
 )
 
+const grpcGracefulShutdownTimeout = 5 * time.Second
+
 var keyframeInterval = 5 * time.Second
 var logResize = strings.TrimSpace(os.Getenv("VTR_LOG_RESIZE")) != ""
 
@@ -161,7 +163,7 @@ func ServeUnix(ctx context.Context, coord *Coordinator, socketPath string) error
 
 	select {
 	case <-ctx.Done():
-		grpcServer.GracefulStop()
+		gracefulStopWithTimeout(grpcServer, grpcGracefulShutdownTimeout)
 		err := <-errCh
 		if err != nil && !errors.Is(err, grpc.ErrServerStopped) {
 			return err
@@ -207,7 +209,7 @@ func ServeTCP(ctx context.Context, coord *Coordinator, addr string, tlsConfig *t
 
 	select {
 	case <-ctx.Done():
-		grpcServer.GracefulStop()
+		gracefulStopWithTimeout(grpcServer, grpcGracefulShutdownTimeout)
 		err := <-errCh
 		if err != nil && !errors.Is(err, grpc.ErrServerStopped) {
 			return err
@@ -224,6 +226,24 @@ func tokenUnaryInterceptor(token string) grpc.UnaryServerInterceptor {
 			return nil, status.Error(codes.Unauthenticated, "missing or invalid authorization token")
 		}
 		return handler(ctx, req)
+	}
+}
+
+func gracefulStopWithTimeout(server *grpc.Server, timeout time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		server.GracefulStop()
+		close(done)
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case <-done:
+		return
+	case <-timer.C:
+		server.Stop()
 	}
 }
 
