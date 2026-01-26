@@ -36,6 +36,9 @@ service VTR {
   
   // Recording (P2)
   rpc DumpAsciinema(DumpAsciinemaRequest) returns (DumpAsciinemaResponse);
+
+  // Federation
+  rpc RegisterSpoke(RegisterSpokeRequest) returns (RegisterSpokeResponse);
 }
 
 // Session status enum
@@ -85,6 +88,24 @@ message SubscribeSessionsRequest {
 
 message SubscribeSessionsEvent {
   repeated Session sessions = 1;
+}
+
+// Federation messages
+message SpokeInfo {
+  string name = 1;
+  string grpc_addr = 2;
+  map<string, string> labels = 3;
+  string version = 4;
+}
+
+message RegisterSpokeRequest {
+  SpokeInfo spoke = 1;
+}
+
+message RegisterSpokeResponse {
+  bool ok = 1;
+  string hub_name = 2;
+  google.protobuf.Duration heartbeat_interval = 3;
 }
 
 message CoordinatorSessions {

@@ -57,6 +57,8 @@ served through Tailscale.
 ## Federation behavior
 ### Spoke discovery
 - Static: hub config lists spokes with name + tailnet address + port.
+- Optional: spokes register themselves with the hub over gRPC (RegisterSpoke) to advertise
+  name, address, and version metadata.
 - Optional future: discovery via Tailscale netmap or tagged hosts.
 
 ### Session listing

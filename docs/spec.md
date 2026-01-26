@@ -145,8 +145,8 @@ Single `vtr` binary serves as both client and server.
 vtr hub [--socket /path/to.sock] [--addr 127.0.0.1:4620] [--no-web] \
   [--shell /bin/bash] [--cols 80] [--rows 24] [--scrollback 10000] [--kill-timeout 5s] [--idle-threshold 5s]
 
-# Start spoke coordinator and register with hub
-vtr spoke --hub host:4621 [--socket /path/to.sock] [--name spoke-a]
+# Start spoke coordinator and register with hub (client-only by default)
+vtr spoke --hub host:4621 [--name spoke-a] [--serve-socket --socket /path/to.sock] [--grpc-addr 127.0.0.1:4621]
 
 # One-time local setup (config + auth material)
 vtr setup

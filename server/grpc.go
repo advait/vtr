@@ -42,6 +42,7 @@ type GRPCServer struct {
 
 	keyframeMu   sync.Mutex
 	keyframeRing map[string]*keyframeRing
+	spokes       *SpokeRegistry
 }
 
 type keyframeEntry struct {
@@ -66,6 +67,7 @@ func NewGRPCServer(coord *Coordinator) *GRPCServer {
 		coord:        coord,
 		shell:        shell,
 		keyframeRing: make(map[string]*keyframeRing),
+		spokes:       NewSpokeRegistry(),
 	}
 }
 
@@ -314,6 +316,30 @@ func (s *GRPCServer) SubscribeSessions(req *proto.SubscribeSessionsRequest, stre
 			signal = s.coord.sessionsChanged()
 		}
 	}
+}
+
+func (s *GRPCServer) RegisterSpoke(ctx context.Context, req *proto.RegisterSpokeRequest) (*proto.RegisterSpokeResponse, error) {
+	if req == nil || req.Spoke == nil {
+		return nil, status.Error(codes.InvalidArgument, "spoke info is required")
+	}
+	name := strings.TrimSpace(req.Spoke.Name)
+	if name == "" {
+		return nil, status.Error(codes.InvalidArgument, "spoke name is required")
+	}
+	if s.spokes == nil {
+		s.spokes = NewSpokeRegistry()
+	}
+	peerAddr := ""
+	if p, ok := peer.FromContext(ctx); ok && p.Addr != nil {
+		peerAddr = p.Addr.String()
+	}
+	s.spokes.Upsert(req.Spoke, peerAddr)
+	interval := s.spokes.HeartbeatInterval()
+	resp := &proto.RegisterSpokeResponse{Ok: true}
+	if interval > 0 {
+		resp.HeartbeatInterval = durationpb.New(interval)
+	}
+	return resp, nil
 }
 
 func (s *GRPCServer) Info(_ context.Context, req *proto.InfoRequest) (*proto.InfoResponse, error) {
