@@ -139,6 +139,44 @@ vtr agent screen --hub $HUB $SESSION | tail -40
 - Similar pattern, uses Enter to submit
 - Wait for the prompt indicator to reappear
 
+### Waiting for Agent Completion (Critical Pattern)
+
+**`wait` and `idle` are the primary mechanisms for blocking on agent output.** Never use sleep+poll loops. These commands subscribe to the live output stream and block efficiently until the condition is met.
+
+#### `wait` — Block until a pattern appears in output
+```bash
+# Wait for Codex to finish (shows "context left" when idle)
+vtr agent wait --hub $HUB --timeout 120s $SESSION "context left"
+
+# Wait for a build to complete
+vtr agent wait --hub $HUB --timeout 300s $SESSION "Build succeeded"
+
+# Wait for test results
+vtr agent wait --hub $HUB --timeout 180s $SESSION "PASS\|FAIL"
+```
+
+**Key behaviors:**
+- Watches the **live output stream** — only matches NEW output after wait starts
+- Returns JSON: `{"matched": true, "matched_line": "...", "timed_out": false}`
+- If pattern appeared before wait started, it won't match (use `grep` for scrollback)
+- Pattern is a regex
+
+#### `idle` — Block until session goes quiet
+```bash
+# Wait until no output for 5 seconds (default)
+vtr agent idle --hub $HUB --timeout 60s $SESSION
+
+# Wait until no output for 10 seconds (for slow agents)
+vtr agent idle --hub $HUB --timeout 120s --idle 10s $SESSION
+```
+
+**When to use which:**
+| Method | Use when |
+|--------|----------|
+| `wait "pattern"` | You know what the agent will print when done (e.g. `"context left"`, `"Worked for"`) |
+| `idle --idle 5s` | You don't know the exact output but want to wait for silence |
+| `grep` | You want to search scrollback for something that already appeared |
+
 ### Complete Interaction Pattern
 
 ```bash
@@ -148,7 +186,7 @@ SESSION="codex-1"
 # 1. Send the prompt (with trailing newline!)
 vtr agent send --hub $HUB $SESSION "Is git clean? Run git status.\n"
 
-# 2. Wait for completion
+# 2. Block until agent finishes (PREFERRED over sleep+poll)
 vtr agent wait --hub $HUB --timeout 90s $SESSION "context left"
 
 # 3. Read the result
@@ -192,12 +230,14 @@ docker exec <container> bash -c 'cd /path/to/vtrpc && bin/vtr agent ls --hub loc
 ```
 
 ### Polling vs Waiting
-Prefer `wait` and `idle` over manual sleep+screen polling:
-```bash
-# ✅ Efficient - blocks until pattern appears
-vtr agent wait --hub $HUB --timeout 60s $SESSION "pattern"
+**Always use `wait`/`idle` to block on agent output.** These are the correct primitives — they subscribe to the output stream and return immediately when the condition is met. Never poll with sleep+screen loops.
 
-# ❌ Wasteful - sleep loops
+```bash
+# ✅ Correct — blocks efficiently, returns immediately on match
+vtr agent wait --hub $HUB --timeout 60s $SESSION "pattern"
+vtr agent idle --hub $HUB --timeout 60s --idle 5s $SESSION
+
+# ❌ Wrong — wasteful, races, misses output
 sleep 10 && vtr agent screen --hub $HUB $SESSION | grep "pattern"
 ```
 
