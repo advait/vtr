@@ -10,9 +10,10 @@ import (
 )
 
 type clientConfig struct {
-	Hub    hubConfig    `toml:"hub"`
-	Auth   authConfig   `toml:"auth"`
-	Server serverConfig `toml:"server"`
+	Hub        hubConfig        `toml:"hub"`
+	Auth       authConfig       `toml:"auth"`
+	Server     serverConfig     `toml:"server"`
+	Federation federationConfig `toml:"federation"`
 
 	// Legacy client config fields (pre-vtrpc.toml).
 	Coordinators []coordinatorConfig `toml:"coordinators"`
@@ -45,6 +46,16 @@ type serverConfig struct {
 
 type coordinatorConfig struct {
 	Path string `toml:"path"`
+}
+
+type federationConfig struct {
+	Mode   string                  `toml:"mode"`
+	Spokes []federationSpokeConfig `toml:"spokes"`
+}
+
+type federationSpokeConfig struct {
+	Name    string `toml:"name"`
+	Address string `toml:"address"`
 }
 
 type defaultsConfig struct {
@@ -103,6 +114,7 @@ func resolveConfigPaths(cfg *clientConfig, dir string) *clientConfig {
 	out.Hub = resolveHubConfig(out.Hub)
 	out.Auth = resolveAuthConfig(out.Auth, dir)
 	out.Server = resolveServerConfig(out.Server, out.Auth, dir)
+	out.Federation = resolveFederationConfig(out.Federation)
 	return &out
 }
 
@@ -220,6 +232,27 @@ func resolveCoordinatorPaths(cfg *clientConfig) ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+func resolveFederationConfig(cfg federationConfig) federationConfig {
+	cfg.Mode = strings.TrimSpace(cfg.Mode)
+	if len(cfg.Spokes) == 0 {
+		return cfg
+	}
+	out := cfg
+	out.Spokes = make([]federationSpokeConfig, 0, len(cfg.Spokes))
+	for _, entry := range cfg.Spokes {
+		name := strings.TrimSpace(entry.Name)
+		addr := expandPath(entry.Address)
+		if name == "" && addr == "" {
+			continue
+		}
+		out.Spokes = append(out.Spokes, federationSpokeConfig{
+			Name:    name,
+			Address: addr,
+		})
+	}
+	return out
 }
 
 func containsGlob(value string) bool {

@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
+	"google.golang.org/grpc"
 )
 
 type hubOptions struct {
@@ -126,6 +127,19 @@ func runHub(opts hubOptions) error {
 	})
 	defer coord.CloseAll()
 
+	localService := server.NewGRPCServer(coord)
+	staticSpokes := federationSpokesFromConfig(cfg)
+	federated := newFederatedServer(
+		localService,
+		coordinatorName(socketPath),
+		staticSpokes,
+		localService.SpokeRegistry(),
+		func(ctx context.Context, addr string) (*grpc.ClientConn, error) {
+			return dialClient(ctx, addr, cfg)
+		},
+		logger,
+	)
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -153,7 +167,12 @@ func runHub(opts hubOptions) error {
 		if !isLoopbackHost(addr) && tlsConfig == nil {
 			return errors.New("addr requires TLS when binding to a non-loopback address")
 		}
-		resolver := webResolver{coords: []coordinatorRef{{Name: coordinatorName(socketPath), Path: socketPath}}}
+		resolver := webResolver{
+			cfg: cfg,
+			coordsFn: func() ([]coordinatorRef, error) {
+				return federatedCoordinatorRefs(socketPath, staticSpokes, localService.SpokeRegistry()), nil
+			},
+		}
 		webHandler := http.NotFoundHandler()
 		if webEnabled {
 			webOpts := webOptions{
@@ -168,7 +187,7 @@ func runHub(opts hubOptions) error {
 			}
 			webHandler = handler
 		}
-		grpcServer := server.NewGRPCServerWithToken(coord, token)
+		grpcServer := server.NewGRPCServerWithTokenAndService(federated, token)
 		handler := grpcOrHTTPHandler(grpcServer, webHandler)
 		srv := &http.Server{
 			Addr: addr,

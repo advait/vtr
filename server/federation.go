@@ -19,12 +19,14 @@ type SpokeRegistry struct {
 	mu        sync.RWMutex
 	spokes    map[string]SpokeRecord
 	heartbeat time.Duration
+	changed   chan struct{}
 }
 
 func NewSpokeRegistry() *SpokeRegistry {
 	return &SpokeRegistry{
 		spokes:    make(map[string]SpokeRecord),
 		heartbeat: defaultSpokeHeartbeat,
+		changed:   make(chan struct{}),
 	}
 }
 
@@ -35,6 +37,15 @@ func (r *SpokeRegistry) HeartbeatInterval() time.Duration {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.heartbeat
+}
+
+func (r *SpokeRegistry) Changed() <-chan struct{} {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.changed
 }
 
 func (r *SpokeRegistry) Upsert(info *proto.SpokeInfo, peerAddr string) {
@@ -52,6 +63,31 @@ func (r *SpokeRegistry) Upsert(info *proto.SpokeInfo, peerAddr string) {
 		LastSeen: time.Now(),
 		PeerAddr: peerAddr,
 	}
+	r.signalChangedLocked()
+}
+
+func (r *SpokeRegistry) List() []SpokeRecord {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]SpokeRecord, 0, len(r.spokes))
+	for _, record := range r.spokes {
+		copy := record
+		copy.Info = cloneSpokeInfo(record.Info)
+		out = append(out, copy)
+	}
+	return out
+}
+
+func (r *SpokeRegistry) signalChangedLocked() {
+	if r.changed == nil {
+		r.changed = make(chan struct{})
+		return
+	}
+	close(r.changed)
+	r.changed = make(chan struct{})
 }
 
 func cloneSpokeInfo(info *proto.SpokeInfo) *proto.SpokeInfo {

@@ -10,8 +10,6 @@ import (
 	"time"
 
 	proto "github.com/advait/vtrpc/proto"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 const (
@@ -26,7 +24,8 @@ type coordinatorRef struct {
 
 type sessionTarget struct {
 	Coordinator coordinatorRef
-	Session     string
+	ID          string
+	Label       string
 }
 
 func loadConfigWithPath() (*clientConfig, string, error) {
@@ -133,7 +132,7 @@ func resolveSpawnTarget(configPath string, coords []coordinatorRef, socketFlag s
 	if socketFlag != "" {
 		return sessionTarget{
 			Coordinator: coordinatorRef{Name: coordinatorName(socketFlag), Path: socketFlag},
-			Session:     arg,
+			Label:       arg,
 		}, nil
 	}
 	if coordName, session, ok := parseSessionRef(arg); ok {
@@ -144,13 +143,13 @@ func resolveSpawnTarget(configPath string, coords []coordinatorRef, socketFlag s
 		if err != nil {
 			return sessionTarget{}, err
 		}
-		return sessionTarget{Coordinator: coord, Session: session}, nil
+		return sessionTarget{Coordinator: coord, Label: session}, nil
 	}
 	if len(coords) == 0 {
-		return sessionTarget{Coordinator: coordinatorRef{Name: coordinatorName(defaultSocketPath), Path: defaultSocketPath}, Session: arg}, nil
+		return sessionTarget{Coordinator: coordinatorRef{Name: coordinatorName(defaultSocketPath), Path: defaultSocketPath}, Label: arg}, nil
 	}
 	if len(coords) == 1 {
-		return sessionTarget{Coordinator: coords[0], Session: arg}, nil
+		return sessionTarget{Coordinator: coords[0], Label: arg}, nil
 	}
 	if configPath == "" {
 		return sessionTarget{}, errors.New("multiple coordinators configured; use --socket or prefix with coordinator")
@@ -159,14 +158,15 @@ func resolveSpawnTarget(configPath string, coords []coordinatorRef, socketFlag s
 }
 
 func resolveSessionTarget(ctx context.Context, coords []coordinatorRef, socketFlag string, arg string) (sessionTarget, error) {
+	return resolveSessionTargetWithConfig(ctx, coords, socketFlag, arg, nil)
+}
+
+func resolveSessionTargetWithConfig(ctx context.Context, coords []coordinatorRef, socketFlag string, arg string, cfg *clientConfig) (sessionTarget, error) {
 	if socketFlag != "" {
 		if _, _, ok := parseSessionRef(arg); ok {
 			return sessionTarget{}, errors.New("cannot use --socket with coordinator prefix")
 		}
-		return sessionTarget{
-			Coordinator: coordinatorRef{Name: coordinatorName(socketFlag), Path: socketFlag},
-			Session:     arg,
-		}, nil
+		return resolveSessionOnCoordinatorWithConfig(ctx, coordinatorRef{Name: coordinatorName(socketFlag), Path: socketFlag}, arg, cfg)
 	}
 	if coordName, session, ok := parseSessionRef(arg); ok {
 		if len(coords) == 0 {
@@ -176,13 +176,13 @@ func resolveSessionTarget(ctx context.Context, coords []coordinatorRef, socketFl
 		if err != nil {
 			return sessionTarget{}, err
 		}
-		return sessionTarget{Coordinator: coord, Session: session}, nil
+		return resolveSessionOnCoordinatorWithConfig(ctx, coord, session, cfg)
 	}
 	if len(coords) == 0 {
-		return sessionTarget{Coordinator: coordinatorRef{Name: coordinatorName(defaultSocketPath), Path: defaultSocketPath}, Session: arg}, nil
+		return resolveSessionOnCoordinatorWithConfig(ctx, coordinatorRef{Name: coordinatorName(defaultSocketPath), Path: defaultSocketPath}, arg, cfg)
 	}
 	if len(coords) == 1 {
-		return sessionTarget{Coordinator: coords[0], Session: arg}, nil
+		return resolveSessionOnCoordinatorWithConfig(ctx, coords[0], arg, cfg)
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -190,41 +190,92 @@ func resolveSessionTarget(ctx context.Context, coords []coordinatorRef, socketFl
 	ctx, cancel := context.WithTimeout(ctx, resolveTimeout)
 	defer cancel()
 
-	matches, err := findSessionAcrossCoordinators(ctx, coords, arg)
+	matches, err := findSessionAcrossCoordinatorsWithConfig(ctx, coords, arg, cfg)
 	if err != nil {
 		return sessionTarget{}, err
 	}
 	if len(matches) == 1 {
-		return sessionTarget{Coordinator: matches[0], Session: arg}, nil
+		return matches[0], nil
 	}
 	if len(matches) == 0 {
 		return sessionTarget{}, fmt.Errorf("session %q not found in configured coordinators", arg)
 	}
 	var names []string
 	for _, match := range matches {
-		names = append(names, match.Name)
+		names = append(names, match.Coordinator.Name)
 	}
 	return sessionTarget{}, fmt.Errorf("session %q is ambiguous (matches: %s)", arg, strings.Join(names, ", "))
 }
 
-func findSessionAcrossCoordinators(ctx context.Context, coords []coordinatorRef, name string) ([]coordinatorRef, error) {
-	var matches []coordinatorRef
+var errSessionNotFound = errors.New("session not found")
+
+func resolveSessionOnCoordinator(ctx context.Context, coord coordinatorRef, ref string) (sessionTarget, error) {
+	return resolveSessionOnCoordinatorWithConfig(ctx, coord, ref, nil)
+}
+
+func resolveSessionOnCoordinatorWithConfig(ctx context.Context, coord coordinatorRef, ref string, cfg *clientConfig) (sessionTarget, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, resolveTimeout)
+	defer cancel()
+
+	var sessionID string
+	var sessionLabel string
+	err := withCoordinator(ctx, coord, cfg, func(client proto.VTRClient) error {
+		resp, err := client.List(ctx, &proto.ListRequest{})
+		if err != nil {
+			return err
+		}
+		id, label, err := matchSessionRef(ref, resp.Sessions)
+		if err != nil {
+			return err
+		}
+		sessionID = id
+		sessionLabel = label
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, errSessionNotFound) {
+			return sessionTarget{}, errSessionNotFound
+		}
+		return sessionTarget{}, err
+	}
+	return sessionTarget{Coordinator: coord, ID: sessionID, Label: sessionLabel}, nil
+}
+
+func matchSessionRef(ref string, sessions []*proto.Session) (string, string, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return "", "", errSessionNotFound
+	}
+	for _, session := range sessions {
+		if session != nil && session.GetId() == ref {
+			return session.GetId(), session.GetName(), nil
+		}
+	}
+	for _, session := range sessions {
+		if session != nil && session.GetName() == ref {
+			return session.GetId(), session.GetName(), nil
+		}
+	}
+	return "", "", errSessionNotFound
+}
+
+func findSessionAcrossCoordinators(ctx context.Context, coords []coordinatorRef, ref string) ([]sessionTarget, error) {
+	return findSessionAcrossCoordinatorsWithConfig(ctx, coords, ref, nil)
+}
+
+func findSessionAcrossCoordinatorsWithConfig(ctx context.Context, coords []coordinatorRef, ref string, cfg *clientConfig) ([]sessionTarget, error) {
+	var matches []sessionTarget
 	var errs []string
 	for _, coord := range coords {
-		err := withCoordinator(ctx, coord, nil, func(client proto.VTRClient) error {
-			resp, err := client.Info(ctx, &proto.InfoRequest{Name: name})
-			if err != nil {
-				return err
-			}
-			if resp.Session != nil {
-				matches = append(matches, coord)
-			}
-			return nil
-		})
+		target, err := resolveSessionOnCoordinatorWithConfig(ctx, coord, ref, cfg)
 		if err == nil {
+			matches = append(matches, target)
 			continue
 		}
-		if status.Code(err) == codes.NotFound {
+		if errors.Is(err, errSessionNotFound) {
 			continue
 		}
 		errs = append(errs, fmt.Sprintf("%s: %v", coord.Name, err))

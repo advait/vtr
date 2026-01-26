@@ -57,6 +57,32 @@ type keyframeRing struct {
 	count   int
 }
 
+func (s *GRPCServer) resolveSessionID(name, id string) (string, error) {
+	if id != "" {
+		return id, nil
+	}
+	if strings.TrimSpace(name) == "" {
+		return "", status.Error(codes.InvalidArgument, "session id or name is required")
+	}
+	resolved, err := s.coord.LookupIDByLabel(name)
+	if err != nil {
+		return "", mapCoordinatorErr(err)
+	}
+	return resolved, nil
+}
+
+func (s *GRPCServer) resolveSession(name, id string) (*Session, error) {
+	sessionID, err := s.resolveSessionID(name, id)
+	if err != nil {
+		return nil, err
+	}
+	session, err := s.coord.getSession(sessionID)
+	if err != nil {
+		return nil, mapCoordinatorErr(err)
+	}
+	return session, nil
+}
+
 // NewGRPCServer constructs a gRPC server backed by the coordinator.
 func NewGRPCServer(coord *Coordinator) *GRPCServer {
 	shell := "/bin/sh"
@@ -71,14 +97,32 @@ func NewGRPCServer(coord *Coordinator) *GRPCServer {
 	}
 }
 
+func (s *GRPCServer) SpokeRegistry() *SpokeRegistry {
+	if s == nil {
+		return nil
+	}
+	return s.spokes
+}
+
+func (s *GRPCServer) SetSpokeRegistry(registry *SpokeRegistry) {
+	if s == nil {
+		return
+	}
+	s.spokes = registry
+}
+
 // NewGRPCServerWithToken constructs a gRPC server with token interceptors attached.
 func NewGRPCServerWithToken(coord *Coordinator, token string) *grpc.Server {
+	return NewGRPCServerWithTokenAndService(NewGRPCServer(coord), token)
+}
+
+func NewGRPCServerWithTokenAndService(service proto.VTRServer, token string) *grpc.Server {
 	opts := []grpc.ServerOption{
 		grpc.UnaryInterceptor(tokenUnaryInterceptor(token)),
 		grpc.StreamInterceptor(tokenStreamInterceptor(token)),
 	}
 	grpcServer := grpc.NewServer(opts...)
-	proto.RegisterVTRServer(grpcServer, NewGRPCServer(coord))
+	proto.RegisterVTRServer(grpcServer, service)
 	return grpcServer
 }
 
@@ -238,7 +282,7 @@ func (s *GRPCServer) Spawn(_ context.Context, req *proto.SpawnRequest) (*proto.S
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "spawn request is required")
 	}
-	if req.Name == "" {
+	if strings.TrimSpace(req.Name) == "" {
 		return nil, status.Error(codes.InvalidArgument, "session name is required")
 	}
 
@@ -267,7 +311,7 @@ func (s *GRPCServer) Spawn(_ context.Context, req *proto.SpawnRequest) (*proto.S
 		return nil, mapCoordinatorErr(err)
 	}
 
-	s.clearKeyframes(req.Name)
+	s.clearKeyframes(info.ID)
 	return &proto.SpawnResponse{Session: toProtoSession(info)}, nil
 }
 
@@ -343,10 +387,14 @@ func (s *GRPCServer) RegisterSpoke(ctx context.Context, req *proto.RegisterSpoke
 }
 
 func (s *GRPCServer) Info(_ context.Context, req *proto.InfoRequest) (*proto.InfoResponse, error) {
-	if req == nil || req.Name == "" {
-		return nil, status.Error(codes.InvalidArgument, "session name is required")
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "session id or name is required")
 	}
-	info, err := s.coord.Info(req.Name)
+	sessionID, err := s.resolveSessionID(req.Name, req.Id)
+	if err != nil {
+		return nil, err
+	}
+	info, err := s.coord.Info(sessionID)
 	if err != nil {
 		return nil, mapCoordinatorErr(err)
 	}
@@ -354,69 +402,88 @@ func (s *GRPCServer) Info(_ context.Context, req *proto.InfoRequest) (*proto.Inf
 }
 
 func (s *GRPCServer) Kill(_ context.Context, req *proto.KillRequest) (*proto.KillResponse, error) {
-	if req == nil || req.Name == "" {
-		return nil, status.Error(codes.InvalidArgument, "session name is required")
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "session id or name is required")
 	}
 	sig, err := parseSignal(req.Signal)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if err := s.coord.Kill(req.Name, sig); err != nil {
+	sessionID, err := s.resolveSessionID(req.Name, req.Id)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.coord.Kill(sessionID, sig); err != nil {
 		return nil, mapCoordinatorErr(err)
 	}
 	return &proto.KillResponse{}, nil
 }
 
 func (s *GRPCServer) Close(_ context.Context, req *proto.CloseRequest) (*proto.CloseResponse, error) {
-	if req == nil || req.Name == "" {
-		return nil, status.Error(codes.InvalidArgument, "session name is required")
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "session id or name is required")
 	}
-	if err := s.coord.Close(req.Name); err != nil {
+	sessionID, err := s.resolveSessionID(req.Name, req.Id)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.coord.Close(sessionID); err != nil {
 		return nil, mapCoordinatorErr(err)
 	}
 	return &proto.CloseResponse{}, nil
 }
 
 func (s *GRPCServer) Remove(_ context.Context, req *proto.RemoveRequest) (*proto.RemoveResponse, error) {
-	if req == nil || req.Name == "" {
-		return nil, status.Error(codes.InvalidArgument, "session name is required")
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "session id or name is required")
 	}
-	if err := s.coord.Remove(req.Name); err != nil {
+	sessionID, err := s.resolveSessionID(req.Name, req.Id)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.coord.Remove(sessionID); err != nil {
 		return nil, mapCoordinatorErr(err)
 	}
-	s.clearKeyframes(req.Name)
+	s.clearKeyframes(sessionID)
 	return &proto.RemoveResponse{}, nil
 }
 
 func (s *GRPCServer) Rename(_ context.Context, req *proto.RenameRequest) (*proto.RenameResponse, error) {
-	if req == nil || strings.TrimSpace(req.Name) == "" {
-		return nil, status.Error(codes.InvalidArgument, "session name is required")
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "session id or name is required")
 	}
 	if strings.TrimSpace(req.NewName) == "" {
 		return nil, status.Error(codes.InvalidArgument, "new name is required")
 	}
-	if err := s.coord.Rename(req.Name, req.NewName); err != nil {
+	sessionID, err := s.resolveSessionID(req.Name, req.Id)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.coord.Rename(sessionID, req.NewName); err != nil {
 		return nil, mapCoordinatorErr(err)
 	}
-	s.clearKeyframes(req.Name)
-	s.clearKeyframes(req.NewName)
+	s.clearKeyframes(sessionID)
 	return &proto.RenameResponse{}, nil
 }
 
 func (s *GRPCServer) GetScreen(_ context.Context, req *proto.GetScreenRequest) (*proto.GetScreenResponse, error) {
-	if req == nil || req.Name == "" {
-		return nil, status.Error(codes.InvalidArgument, "session name is required")
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "session id or name is required")
 	}
-	snap, err := s.coord.Snapshot(req.Name)
+	session, err := s.resolveSession(req.Name, req.Id)
+	if err != nil {
+		return nil, err
+	}
+	snap, err := session.vt.Snapshot()
 	if err != nil {
 		return nil, mapCoordinatorErr(err)
 	}
-	return screenResponseFromSnapshot(req.Name, snap), nil
+	return screenResponseFromSnapshot(session.ID(), session.Label(), snap), nil
 }
 
 func (s *GRPCServer) Grep(_ context.Context, req *proto.GrepRequest) (*proto.GrepResponse, error) {
-	if req == nil || req.Name == "" {
-		return nil, status.Error(codes.InvalidArgument, "session name is required")
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "session id or name is required")
 	}
 	if strings.TrimSpace(req.Pattern) == "" {
 		return nil, status.Error(codes.InvalidArgument, "pattern is required")
@@ -432,7 +499,11 @@ func (s *GRPCServer) Grep(_ context.Context, req *proto.GrepRequest) (*proto.Gre
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	matches, err := s.coord.Grep(req.Name, re, int(req.ContextBefore), int(req.ContextAfter), maxMatches)
+	sessionID, err := s.resolveSessionID(req.Name, req.Id)
+	if err != nil {
+		return nil, err
+	}
+	matches, err := s.coord.Grep(sessionID, re, int(req.ContextBefore), int(req.ContextAfter), maxMatches)
 	if err != nil {
 		return nil, mapCoordinatorErr(err)
 	}
@@ -450,48 +521,60 @@ func (s *GRPCServer) Grep(_ context.Context, req *proto.GrepRequest) (*proto.Gre
 }
 
 func (s *GRPCServer) SendText(_ context.Context, req *proto.SendTextRequest) (*proto.SendTextResponse, error) {
-	if req == nil || req.Name == "" {
-		return nil, status.Error(codes.InvalidArgument, "session name is required")
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "session id or name is required")
 	}
 	if !utf8.ValidString(req.Text) {
 		return nil, status.Error(codes.InvalidArgument, "text must be valid UTF-8")
 	}
-	if err := s.coord.Send(req.Name, normalizeTextInput(req.Text)); err != nil {
+	sessionID, err := s.resolveSessionID(req.Name, req.Id)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.coord.Send(sessionID, normalizeTextInput(req.Text)); err != nil {
 		return nil, mapCoordinatorErr(err)
 	}
 	return &proto.SendTextResponse{}, nil
 }
 
 func (s *GRPCServer) SendKey(_ context.Context, req *proto.SendKeyRequest) (*proto.SendKeyResponse, error) {
-	if req == nil || req.Name == "" {
-		return nil, status.Error(codes.InvalidArgument, "session name is required")
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "session id or name is required")
 	}
 	seq, err := keyToBytes(req.Key)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if err := s.coord.Send(req.Name, seq); err != nil {
+	sessionID, err := s.resolveSessionID(req.Name, req.Id)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.coord.Send(sessionID, seq); err != nil {
 		return nil, mapCoordinatorErr(err)
 	}
 	return &proto.SendKeyResponse{}, nil
 }
 
 func (s *GRPCServer) SendBytes(_ context.Context, req *proto.SendBytesRequest) (*proto.SendBytesResponse, error) {
-	if req == nil || req.Name == "" {
-		return nil, status.Error(codes.InvalidArgument, "session name is required")
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "session id or name is required")
 	}
 	if len(req.Data) > maxRawInputBytes {
 		return nil, status.Errorf(codes.InvalidArgument, "data exceeds %d bytes", maxRawInputBytes)
 	}
-	if err := s.coord.Send(req.Name, req.Data); err != nil {
+	sessionID, err := s.resolveSessionID(req.Name, req.Id)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.coord.Send(sessionID, req.Data); err != nil {
 		return nil, mapCoordinatorErr(err)
 	}
 	return &proto.SendBytesResponse{}, nil
 }
 
 func (s *GRPCServer) Resize(ctx context.Context, req *proto.ResizeRequest) (*proto.ResizeResponse, error) {
-	if req == nil || req.Name == "" {
-		return nil, status.Error(codes.InvalidArgument, "session name is required")
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "session id or name is required")
 	}
 	cols, err := requiredUint16(req.Cols)
 	if err != nil {
@@ -501,6 +584,10 @@ func (s *GRPCServer) Resize(ctx context.Context, req *proto.ResizeRequest) (*pro
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
+	sessionID, err := s.resolveSessionID(req.Name, req.Id)
+	if err != nil {
+		return nil, err
+	}
 	if logResize {
 		peerAddr := "unknown"
 		if p, ok := peer.FromContext(ctx); ok && p != nil && p.Addr != nil {
@@ -508,21 +595,21 @@ func (s *GRPCServer) Resize(ctx context.Context, req *proto.ResizeRequest) (*pro
 		}
 		prevCols := 0
 		prevRows := 0
-		if info, infoErr := s.coord.Info(req.Name); infoErr == nil && info != nil {
+		if info, infoErr := s.coord.Info(sessionID); infoErr == nil && info != nil {
 			prevCols = int(info.Cols)
 			prevRows = int(info.Rows)
 		}
-		log.Printf("resize grpc name=%s cols=%d rows=%d prev=%dx%d peer=%s", req.Name, cols, rows, prevCols, prevRows, peerAddr)
+		log.Printf("resize grpc id=%s cols=%d rows=%d prev=%dx%d peer=%s", sessionID, cols, rows, prevCols, prevRows, peerAddr)
 	}
-	if err := s.coord.Resize(req.Name, cols, rows); err != nil {
+	if err := s.coord.Resize(sessionID, cols, rows); err != nil {
 		return nil, mapCoordinatorErr(err)
 	}
 	return &proto.ResizeResponse{}, nil
 }
 
 func (s *GRPCServer) WaitFor(ctx context.Context, req *proto.WaitForRequest) (*proto.WaitForResponse, error) {
-	if req == nil || req.Name == "" {
-		return nil, status.Error(codes.InvalidArgument, "session name is required")
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "session id or name is required")
 	}
 	if strings.TrimSpace(req.Pattern) == "" {
 		return nil, status.Error(codes.InvalidArgument, "pattern is required")
@@ -535,7 +622,11 @@ func (s *GRPCServer) WaitFor(ctx context.Context, req *proto.WaitForRequest) (*p
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	matched, line, timedOut, err := s.coord.WaitFor(ctx, req.Name, re, timeout)
+	sessionID, err := s.resolveSessionID(req.Name, req.Id)
+	if err != nil {
+		return nil, err
+	}
+	matched, line, timedOut, err := s.coord.WaitFor(ctx, sessionID, re, timeout)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, err
@@ -550,8 +641,8 @@ func (s *GRPCServer) WaitFor(ctx context.Context, req *proto.WaitForRequest) (*p
 }
 
 func (s *GRPCServer) WaitForIdle(ctx context.Context, req *proto.WaitForIdleRequest) (*proto.WaitForIdleResponse, error) {
-	if req == nil || req.Name == "" {
-		return nil, status.Error(codes.InvalidArgument, "session name is required")
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "session id or name is required")
 	}
 	idle, err := durationFromProto(req.IdleDuration)
 	if err != nil {
@@ -564,7 +655,11 @@ func (s *GRPCServer) WaitForIdle(ctx context.Context, req *proto.WaitForIdleRequ
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	idleReached, timedOut, err := s.coord.WaitForIdle(ctx, req.Name, idle, timeout)
+	sessionID, err := s.resolveSessionID(req.Name, req.Id)
+	if err != nil {
+		return nil, err
+	}
+	idleReached, timedOut, err := s.coord.WaitForIdle(ctx, sessionID, idle, timeout)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, err
@@ -578,21 +673,20 @@ func (s *GRPCServer) WaitForIdle(ctx context.Context, req *proto.WaitForIdleRequ
 }
 
 func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_SubscribeServer) error {
-	if req == nil || req.Name == "" {
-		return status.Error(codes.InvalidArgument, "session name is required")
+	if req == nil {
+		return status.Error(codes.InvalidArgument, "session id or name is required")
 	}
 	if !req.IncludeScreenUpdates && !req.IncludeRawOutput {
 		return status.Error(codes.InvalidArgument, "subscribe requires screen updates or raw output")
 	}
 
-	session, err := s.coord.getSession(req.Name)
+	session, err := s.resolveSession(req.Name, req.Id)
 	if err != nil {
-		return mapCoordinatorErr(err)
+		return err
 	}
-
-	sessionName := func() string {
-		info := session.Info()
-		return info.Name
+	sessionID := session.ID()
+	sessionLabel := func() string {
+		return session.Label()
 	}
 	offset, outputCh, _ := session.outputState()
 	includeScreen := req.IncludeScreenUpdates
@@ -610,10 +704,10 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 		if err != nil {
 			return nil, err
 		}
-		name := sessionName()
-		update := keyframeUpdateFromSnapshot(session, name, snap)
+		label := sessionLabel()
+		update := keyframeUpdateFromSnapshot(session, sessionID, label, snap)
 		total, _, _ := session.outputState()
-		s.cacheKeyframe(name, update, total)
+		s.cacheKeyframe(sessionID, update, total)
 		return update, nil
 	}
 
@@ -720,7 +814,7 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 			finalScreen = update
 		}
 		exitSignal <- exitPayload{
-			exit:        &proto.SessionExited{ExitCode: int32(info.ExitCode)},
+			exit:        &proto.SessionExited{ExitCode: int32(info.ExitCode), Id: sessionID},
 			finalScreen: finalScreen,
 		}
 		err := <-sendErrCh
@@ -731,7 +825,7 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 	}
 
 	if includeScreen {
-		if cached := s.cachedKeyframe(session, sessionName()); cached != nil {
+		if cached := s.cachedKeyframe(session, sessionID); cached != nil {
 			setLatestScreen(cached)
 		} else {
 			update, err := makeKeyframe()
@@ -775,7 +869,7 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 		case <-idleCh:
 			idleState, nextCh := session.idleState()
 			idleCh = nextCh
-			setLatestIdle(&proto.SessionIdle{Name: sessionName(), Idle: idleState})
+			setLatestIdle(&proto.SessionIdle{Name: sessionLabel(), Idle: idleState, Id: sessionID})
 		case <-session.exitCh:
 			if includeRaw {
 				data, nextOffset, nextCh := session.outputSnapshot(offset)
@@ -799,7 +893,7 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 
 			info := session.Info()
 			exitSignal <- exitPayload{
-				exit:        &proto.SessionExited{ExitCode: int32(info.ExitCode)},
+				exit:        &proto.SessionExited{ExitCode: int32(info.ExitCode), Id: sessionID},
 				finalScreen: finalScreen,
 			}
 			err := <-sendErrCh
@@ -958,15 +1052,15 @@ func (r *keyframeRing) Latest() (keyframeEntry, bool) {
 	return r.entries[idx], true
 }
 
-func (s *GRPCServer) cacheKeyframe(name string, update *proto.ScreenUpdate, outputTotal int64) {
+func (s *GRPCServer) cacheKeyframe(id string, update *proto.ScreenUpdate, outputTotal int64) {
 	if update == nil || !update.IsKeyframe {
 		return
 	}
 	s.keyframeMu.Lock()
-	ring := s.keyframeRing[name]
+	ring := s.keyframeRing[id]
 	if ring == nil {
 		ring = newKeyframeRing(keyframeRingSize)
-		s.keyframeRing[name] = ring
+		s.keyframeRing[id] = ring
 	}
 	ring.Add(keyframeEntry{
 		update:      update,
@@ -976,14 +1070,14 @@ func (s *GRPCServer) cacheKeyframe(name string, update *proto.ScreenUpdate, outp
 	s.keyframeMu.Unlock()
 }
 
-func (s *GRPCServer) cachedKeyframe(session *Session, name string) *proto.ScreenUpdate {
+func (s *GRPCServer) cachedKeyframe(session *Session, id string) *proto.ScreenUpdate {
 	if session == nil {
 		return nil
 	}
 	total, _, _ := session.outputState()
 	info := session.Info()
 	s.keyframeMu.Lock()
-	ring := s.keyframeRing[name]
+	ring := s.keyframeRing[id]
 	var entry keyframeEntry
 	var ok bool
 	if ring != nil {
@@ -1003,9 +1097,9 @@ func (s *GRPCServer) cachedKeyframe(session *Session, name string) *proto.Screen
 	return entry.update
 }
 
-func (s *GRPCServer) clearKeyframes(name string) {
+func (s *GRPCServer) clearKeyframes(id string) {
 	s.keyframeMu.Lock()
-	delete(s.keyframeRing, name)
+	delete(s.keyframeRing, id)
 	s.keyframeMu.Unlock()
 }
 
@@ -1014,7 +1108,7 @@ func toProtoSession(info *SessionInfo) *proto.Session {
 		return nil
 	}
 	session := &proto.Session{
-		Name:      info.Name,
+		Name:      info.Label,
 		Status:    toProtoStatus(info.State),
 		Cols:      int32(info.Cols),
 		Rows:      int32(info.Rows),
@@ -1022,6 +1116,7 @@ func toProtoSession(info *SessionInfo) *proto.Session {
 		CreatedAt: timestamppb.New(info.CreatedAt),
 		Idle:      info.Idle,
 		Order:     info.Order,
+		Id:        info.ID,
 	}
 	if info.State != SessionExited {
 		session.ExitCode = 0
@@ -1094,9 +1189,9 @@ func packRGB(c color.RGBA) int32 {
 	return int32(c.R)<<16 | int32(c.G)<<8 | int32(c.B)
 }
 
-func screenResponseFromSnapshot(name string, snap *Snapshot) *proto.GetScreenResponse {
+func screenResponseFromSnapshot(id, label string, snap *Snapshot) *proto.GetScreenResponse {
 	if snap == nil {
-		return &proto.GetScreenResponse{Name: name}
+		return &proto.GetScreenResponse{Name: label, Id: id}
 	}
 	rows := make([]*proto.ScreenRow, snap.Rows)
 	for row := 0; row < snap.Rows; row++ {
@@ -1117,16 +1212,17 @@ func screenResponseFromSnapshot(name string, snap *Snapshot) *proto.GetScreenRes
 		rows[row] = &proto.ScreenRow{Cells: cells}
 	}
 	return &proto.GetScreenResponse{
-		Name:       name,
+		Name:       label,
 		Cols:       int32(snap.Cols),
 		Rows:       int32(snap.Rows),
 		CursorX:    int32(snap.CursorX),
 		CursorY:    int32(snap.CursorY),
 		ScreenRows: rows,
+		Id:         id,
 	}
 }
 
-func keyframeUpdateFromSnapshot(session *Session, name string, snap *Snapshot) *proto.ScreenUpdate {
+func keyframeUpdateFromSnapshot(session *Session, id, label string, snap *Snapshot) *proto.ScreenUpdate {
 	if session == nil {
 		return nil
 	}
@@ -1134,7 +1230,7 @@ func keyframeUpdateFromSnapshot(session *Session, name string, snap *Snapshot) *
 		FrameId:     session.nextFrameID(),
 		BaseFrameId: 0,
 		IsKeyframe:  true,
-		Screen:      screenResponseFromSnapshot(name, snap),
+		Screen:      screenResponseFromSnapshot(id, label, snap),
 	}
 }
 
