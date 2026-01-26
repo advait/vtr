@@ -8,6 +8,10 @@ vtr is a terminal multiplexer designed for the agent era. Each container runs a 
 
 **Core insight**: Agents don't need 60fps terminal streaming. They need consistent screen state on demand, pattern matching on output, and reliable input delivery.
 
+## Documentation
+
+- Release process: `docs/RELEASING.md`.
+
 ## Implementation Status (post-M6)
 
 - Implemented gRPC methods: Spawn, List, Info, Kill, Close, Remove, Rename, GetScreen, Grep, SendText, SendKey, SendBytes, Resize, WaitFor, WaitForIdle, Subscribe.
