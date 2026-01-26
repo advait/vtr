@@ -18,8 +18,9 @@ const (
 )
 
 type coordinatorRef struct {
-	Name string
-	Path string
+	Name          string
+	Path          string
+	SessionPrefix string
 }
 
 type sessionTarget struct {
@@ -227,7 +228,8 @@ func resolveSessionOnCoordinatorWithConfig(ctx context.Context, coord coordinato
 		if err != nil {
 			return err
 		}
-		id, label, err := matchSessionRef(ref, resp.Sessions)
+		sessions := filterSessionsByPrefix(resp.Sessions, coord.SessionPrefix)
+		id, label, err := matchSessionRef(ref, sessions)
 		if err != nil {
 			return err
 		}

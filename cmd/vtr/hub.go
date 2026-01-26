@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -170,7 +171,7 @@ func runHub(opts hubOptions) error {
 		resolver := webResolver{
 			cfg: cfg,
 			coordsFn: func() ([]coordinatorRef, error) {
-				return federatedCoordinatorRefs(socketPath, staticSpokes, localService.SpokeRegistry(), federated.tunnels), nil
+				return federatedCoordinatorRefs(socketPath, hubDialAddr(addr), staticSpokes, localService.SpokeRegistry(), federated.tunnels), nil
 			},
 		}
 		webHandler := http.NotFoundHandler()
@@ -238,3 +239,23 @@ func runHub(opts hubOptions) error {
 }
 
 // auth helpers in auth.go
+
+func hubDialAddr(addr string) string {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return ""
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	host = strings.Trim(host, "[]")
+	switch host {
+	case "", "0.0.0.0":
+		return net.JoinHostPort("127.0.0.1", port)
+	case "::":
+		return net.JoinHostPort("::1", port)
+	default:
+		return addr
+	}
+}

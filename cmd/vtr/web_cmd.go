@@ -304,7 +304,9 @@ func handleWebsocket(resolver webResolver) http.HandlerFunc {
 
 		streamCtx, streamCancel := context.WithCancel(ctx)
 		defer streamCancel()
+		targetName := strings.TrimSpace(target.Label)
 		stream, err := client.Subscribe(streamCtx, &proto.SubscribeRequest{
+			Name:                 targetName,
 			Id:                   target.ID,
 			IncludeScreenUpdates: hello.GetIncludeScreenUpdates(),
 			IncludeRawOutput:     hello.GetIncludeRawOutput(),
@@ -319,7 +321,7 @@ func handleWebsocket(resolver webResolver) http.HandlerFunc {
 			errCh <- streamToWeb(ctx, sender, stream)
 		}()
 		go func() {
-			errCh <- handleWebInput(ctx, conn, client, target.ID)
+			errCh <- handleWebInput(ctx, conn, client, target.ID, targetName)
 		}()
 
 		err = <-errCh
@@ -522,7 +524,7 @@ func watchCoordinatorSessions(
 				signalUpdate()
 				break
 			}
-			state.setSessions(coord.Name, event.GetSessions())
+			state.setSessions(coord.Name, filterSessionsByPrefix(event.GetSessions(), coord.SessionPrefix))
 			signalUpdate()
 		}
 	}
@@ -643,8 +645,9 @@ func handleWebSessionsList(w http.ResponseWriter, r *http.Request, resolver webR
 			out.Coordinators = append(out.Coordinators, entry)
 			continue
 		}
-		entry.Sessions = make([]webSession, 0, len(resp.Sessions))
-		for _, session := range resp.Sessions {
+		sessions := filterSessionsByPrefix(resp.Sessions, coord.SessionPrefix)
+		entry.Sessions = make([]webSession, 0, len(sessions))
+		for _, session := range sessions {
 			entry.Sessions = append(entry.Sessions, webSessionFromProto(session))
 		}
 		out.Coordinators = append(out.Coordinators, entry)
@@ -688,9 +691,16 @@ func handleWebSessionCreate(w http.ResponseWriter, r *http.Request, resolver web
 	defer conn.Close()
 
 	client := proto.NewVTRClient(conn)
+	spawnName := name
+	if coord.SessionPrefix != "" {
+		prefix := coord.SessionPrefix + ":"
+		if !strings.HasPrefix(spawnName, prefix) {
+			spawnName = prefix + spawnName
+		}
+	}
 	ctx, cancel = context.WithTimeout(r.Context(), rpcTimeout)
 	resp, err := client.Spawn(ctx, &proto.SpawnRequest{
-		Name:       name,
+		Name:       spawnName,
 		Command:    strings.TrimSpace(req.Command),
 		WorkingDir: strings.TrimSpace(req.WorkingDir),
 		Cols:       req.Cols,
@@ -751,6 +761,7 @@ func handleWebSessionAction(resolver webResolver) http.HandlerFunc {
 		defer conn.Close()
 
 		client := proto.NewVTRClient(conn)
+		targetName := strings.TrimSpace(target.Label)
 		switch action {
 		case "send_key":
 			key := strings.TrimSpace(req.Key)
@@ -760,6 +771,7 @@ func handleWebSessionAction(resolver webResolver) http.HandlerFunc {
 			}
 			ctx, cancel = context.WithTimeout(r.Context(), rpcTimeout)
 			_, err = client.SendKey(ctx, &proto.SendKeyRequest{
+				Name: targetName,
 				Id:  target.ID,
 				Key: key,
 			})
@@ -771,17 +783,18 @@ func handleWebSessionAction(resolver webResolver) http.HandlerFunc {
 			}
 			ctx, cancel = context.WithTimeout(r.Context(), rpcTimeout)
 			_, err = client.Kill(ctx, &proto.KillRequest{
+				Name:   targetName,
 				Id:     target.ID,
 				Signal: sig,
 			})
 			cancel()
 		case "close":
 			ctx, cancel = context.WithTimeout(r.Context(), rpcTimeout)
-			_, err = client.Close(ctx, &proto.CloseRequest{Id: target.ID})
+			_, err = client.Close(ctx, &proto.CloseRequest{Name: targetName, Id: target.ID})
 			cancel()
 		case "remove":
 			ctx, cancel = context.WithTimeout(r.Context(), rpcTimeout)
-			_, err = client.Remove(ctx, &proto.RemoveRequest{Id: target.ID})
+			_, err = client.Remove(ctx, &proto.RemoveRequest{Name: targetName, Id: target.ID})
 			cancel()
 		case "rename":
 			newName := strings.TrimSpace(req.NewName)
@@ -790,7 +803,7 @@ func handleWebSessionAction(resolver webResolver) http.HandlerFunc {
 				return
 			}
 			ctx, cancel = context.WithTimeout(r.Context(), rpcTimeout)
-			_, err = client.Rename(ctx, &proto.RenameRequest{Id: target.ID, NewName: newName})
+			_, err = client.Rename(ctx, &proto.RenameRequest{Name: targetName, Id: target.ID, NewName: newName})
 			cancel()
 		default:
 			http.Error(w, fmt.Sprintf("unknown action %q", action), http.StatusBadRequest)
@@ -1026,13 +1039,14 @@ func wrapResolveError(err error) error {
 	}
 }
 
-func resizeSession(ctx context.Context, client proto.VTRClient, sessionID string, cols, rows int32) error {
+func resizeSession(ctx context.Context, client proto.VTRClient, sessionID string, sessionName string, cols, rows int32) error {
 	if cols <= 0 || rows <= 0 {
 		return wsProtocolError{Code: codes.InvalidArgument, Message: "resize requires cols and rows"}
 	}
 	ctxTimeout, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
 	_, err := client.Resize(ctxTimeout, &proto.ResizeRequest{
+		Name: sessionName,
 		Id:   sessionID,
 		Cols: cols,
 		Rows: rows,
@@ -1040,7 +1054,7 @@ func resizeSession(ctx context.Context, client proto.VTRClient, sessionID string
 	return err
 }
 
-func handleWebInput(ctx context.Context, conn *websocket.Conn, client proto.VTRClient, sessionID string) error {
+func handleWebInput(ctx context.Context, conn *websocket.Conn, client proto.VTRClient, sessionID string, sessionName string) error {
 	for {
 		msgType, data, err := conn.Read(ctx)
 		if err != nil {
@@ -1057,6 +1071,7 @@ func handleWebInput(ctx context.Context, conn *websocket.Conn, client proto.VTRC
 		case *proto.SendTextRequest:
 			ctxTimeout, cancel := context.WithTimeout(ctx, rpcTimeout)
 			_, err := client.SendText(ctxTimeout, &proto.SendTextRequest{
+				Name: sessionName,
 				Id:   sessionID,
 				Text: m.GetText(),
 			})
@@ -1067,6 +1082,7 @@ func handleWebInput(ctx context.Context, conn *websocket.Conn, client proto.VTRC
 		case *proto.SendKeyRequest:
 			ctxTimeout, cancel := context.WithTimeout(ctx, rpcTimeout)
 			_, err := client.SendKey(ctxTimeout, &proto.SendKeyRequest{
+				Name: sessionName,
 				Id:  sessionID,
 				Key: m.GetKey(),
 			})
@@ -1077,6 +1093,7 @@ func handleWebInput(ctx context.Context, conn *websocket.Conn, client proto.VTRC
 		case *proto.SendBytesRequest:
 			ctxTimeout, cancel := context.WithTimeout(ctx, rpcTimeout)
 			_, err := client.SendBytes(ctxTimeout, &proto.SendBytesRequest{
+				Name: sessionName,
 				Id:   sessionID,
 				Data: m.GetData(),
 			})
@@ -1088,7 +1105,7 @@ func handleWebInput(ctx context.Context, conn *websocket.Conn, client proto.VTRC
 			if envBool("VTR_LOG_RESIZE", false) {
 				log.Printf("resize web session=%s cols=%d rows=%d", sessionID, m.GetCols(), m.GetRows())
 			}
-			if err := resizeSession(ctx, client, sessionID, m.GetCols(), m.GetRows()); err != nil {
+			if err := resizeSession(ctx, client, sessionID, sessionName, m.GetCols(), m.GetRows()); err != nil {
 				return err
 			}
 		default:

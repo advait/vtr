@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strconv"
@@ -129,6 +130,7 @@ type spawnSessionMsg struct {
 type sessionListItem struct {
 	id       string
 	label    string
+	coord    string
 	status   proto.SessionStatus
 	exitCode int32
 	idle     bool
@@ -136,25 +138,41 @@ type sessionListItem struct {
 }
 
 func (s sessionListItem) Title() string {
-	return fmt.Sprintf("%s %s", renderSessionStatusIcon(s), s.label)
+	label := sessionDisplayLabel(s)
+	return fmt.Sprintf("%s%s %s", sessionListIndent, renderSessionStatusIcon(s), label)
 }
 
 func (s sessionListItem) Description() string {
+	prefix := sessionListIndent
 	switch s.status {
 	case proto.SessionStatus_SESSION_STATUS_EXITED:
-		return fmt.Sprintf("exited (%d)", s.exitCode)
+		return fmt.Sprintf("%sexited (%d)", prefix, s.exitCode)
 	case proto.SessionStatus_SESSION_STATUS_RUNNING:
 		if s.idle {
-			return "idle"
+			return prefix + "idle"
 		}
-		return "active"
+		return prefix + "active"
 	default:
-		return "unknown"
+		return prefix + "unknown"
 	}
 }
 
 func (s sessionListItem) FilterValue() string {
-	return s.label
+	coord, label := splitCoordinatorPrefix(s.label, s.coord)
+	if coord == "" {
+		return label
+	}
+	return fmt.Sprintf("%s:%s %s", coord, label, label)
+}
+
+type sessionListHeader struct {
+	name   string
+	count  int
+	filter string
+}
+
+func (s sessionListHeader) FilterValue() string {
+	return s.filter
 }
 
 func sortSessionListItems(items []sessionListItem) {
@@ -234,6 +252,15 @@ var (
 				Bold(true)
 	attachTabNewHoverStyle = attachTabNewStyle.Copy().
 				Underline(true)
+	attachTabChipStyle = lipgloss.NewStyle().
+				Background(lipgloss.Color("238")).
+				Foreground(lipgloss.Color("250")).
+				Padding(0, 1)
+	attachTabChipActiveStyle = attachTabChipStyle.Copy().
+					Background(lipgloss.Color("240")).
+					Bold(true)
+	attachTabChipHoverStyle = attachTabChipStyle.Copy().
+				Underline(true)
 	attachTabTextStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("252"))
 	attachTabTextActiveStyle = lipgloss.NewStyle().
@@ -255,6 +282,11 @@ var (
 	attachFooterTagStyle = lipgloss.NewStyle().
 				Background(lipgloss.Color("235")).
 				Foreground(lipgloss.Color("250"))
+	attachListHeaderStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("245")).
+				Bold(true)
+	attachListHeaderCountStyle = lipgloss.NewStyle().
+					Foreground(lipgloss.Color("240"))
 	attachOverflowStyle = attachTabBaseStyle.Copy().
 				Foreground(lipgloss.Color("244"))
 	attachModalStyle = lipgloss.NewStyle().
@@ -457,8 +489,8 @@ func confirmCreateSession(name string) (bool, error) {
 
 func (m attachModel) Init() tea.Cmd {
 	return tea.Batch(
-		startSubscribeCmd(m.client, m.sessionID, m.streamID),
-		loadSessionListCmd(m.client, false),
+		startSubscribeCmd(m.client, m.sessionID, m.sessionLabel, m.streamID),
+		loadSessionListCmd(m.client, false, m.coordinator.Name),
 		tickCmd(),
 	)
 }
@@ -512,12 +544,14 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.exited = true
 			m.exitCode = exited.ExitCode
 			m.leaderActive = false
-			m.sessionItems = ensureSessionItem(m.sessionItems, m.sessionID, m.sessionLabel, true, exited.ExitCode)
+			m.sessionItems = ensureSessionItem(m.sessionItems, m.sessionID, m.sessionLabel, true, exited.ExitCode, m.coordinator.Name)
 			if m.streamCancel != nil {
 				m.streamCancel()
 				m.streamCancel = nil
 			}
-			return m, m.sessionList.SetItems(sessionItemsToListItems(visibleSessionItems(m)))
+			cmd := m.sessionList.SetItems(sessionItemsToListItems(visibleSessionItems(m), m.coordinator.Name))
+			skipSessionListHeaders(&m.sessionList, 1)
+			return m, cmd
 		}
 		return m, waitSubscribeCmd(m.stream, m.streamID)
 	case tickMsg:
@@ -529,7 +563,7 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds := []tea.Cmd{tickCmd()}
 		if m.client != nil && !m.listActive && !m.createActive && (m.lastListAt.IsZero() || m.now.Sub(m.lastListAt) > 5*time.Second) {
 			m.lastListAt = m.now
-			cmds = append(cmds, loadSessionListCmd(m.client, false))
+			cmds = append(cmds, loadSessionListCmd(m.client, false, m.coordinator.Name))
 		}
 		return m, tea.Batch(cmds...)
 	case tea.WindowSizeMsg:
@@ -543,7 +577,7 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.exited {
 				return m, nil
 			}
-			return m, resizeCmd(m.client, m.sessionID, m.viewportWidth, m.viewportHeight)
+			return m, resizeCmd(m.client, m.sessionID, m.sessionLabel, m.viewportWidth, m.viewportHeight)
 		}
 		return m, nil
 	case rpcErrMsg:
@@ -573,7 +607,8 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.lastListAt = time.Now()
-		cmd := m.sessionList.SetItems(sessionItemsToListItems(visibleSessionItems(m)))
+		cmd := m.sessionList.SetItems(sessionItemsToListItems(visibleSessionItems(m), m.coordinator.Name))
+		skipSessionListHeaders(&m.sessionList, 1)
 		if msg.activate {
 			m.listActive = true
 		}
@@ -648,6 +683,7 @@ func (m attachModel) View() string {
 		sessions:    visibleSessionItems(m),
 		activeID:    m.sessionID,
 		activeLabel: m.sessionLabel,
+		coordinator: m.coordinator.Name,
 		width:       overlayWidth,
 		exited:      m.exited,
 		exitCode:    m.exitCode,
@@ -667,11 +703,13 @@ func (m attachModel) View() string {
 	return clampViewHeight(view, m.height)
 }
 
-func startSubscribeCmd(client proto.VTRClient, id string, streamID int) tea.Cmd {
+func startSubscribeCmd(client proto.VTRClient, id, label string, streamID int) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithCancel(context.Background())
+		name, idRef := sessionRequestRef(id, label)
 		stream, err := client.Subscribe(ctx, &proto.SubscribeRequest{
-			Id:                   id,
+			Name:                 name,
+			Id:                   idRef,
 			IncludeScreenUpdates: true,
 			IncludeRawOutput:     false,
 		})
@@ -699,15 +737,17 @@ func tickCmd() tea.Cmd {
 	})
 }
 
-func resizeCmd(client proto.VTRClient, id string, cols, rows int) tea.Cmd {
+func resizeCmd(client proto.VTRClient, id, label string, cols, rows int) tea.Cmd {
 	if cols <= 0 || rows <= 0 {
 		return nil
 	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 		defer cancel()
+		name, idRef := sessionRequestRef(id, label)
 		_, err := client.Resize(ctx, &proto.ResizeRequest{
-			Id:   id,
+			Name: name,
+			Id:   idRef,
 			Cols: int32(cols),
 			Rows: int32(rows),
 		})
@@ -718,7 +758,7 @@ func resizeCmd(client proto.VTRClient, id string, cols, rows int) tea.Cmd {
 	}
 }
 
-func sendBytesCmd(client proto.VTRClient, id string, data []byte) tea.Cmd {
+func sendBytesCmd(client proto.VTRClient, id, label string, data []byte) tea.Cmd {
 	if len(data) == 0 {
 		return nil
 	}
@@ -726,8 +766,10 @@ func sendBytesCmd(client proto.VTRClient, id string, data []byte) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 		defer cancel()
+		name, idRef := sessionRequestRef(id, label)
 		_, err := client.SendBytes(ctx, &proto.SendBytesRequest{
-			Id:   id,
+			Name: name,
+			Id:   idRef,
 			Data: payload,
 		})
 		if err != nil {
@@ -737,16 +779,18 @@ func sendBytesCmd(client proto.VTRClient, id string, data []byte) tea.Cmd {
 	}
 }
 
-func sendKeyCmd(client proto.VTRClient, id, key string) tea.Cmd {
+func sendKeyCmd(client proto.VTRClient, id, label, key string) tea.Cmd {
 	if strings.TrimSpace(key) == "" {
 		return nil
 	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 		defer cancel()
+		name, idRef := sessionRequestRef(id, label)
 		_, err := client.SendKey(ctx, &proto.SendKeyRequest{
-			Id:  id,
-			Key: key,
+			Name: name,
+			Id:   idRef,
+			Key:  key,
 		})
 		if err != nil {
 			return rpcErrMsg{err: err, op: "send key"}
@@ -755,12 +799,17 @@ func sendKeyCmd(client proto.VTRClient, id, key string) tea.Cmd {
 	}
 }
 
-func killCmd(client proto.VTRClient, id string) tea.Cmd {
+func killCmd(client proto.VTRClient, id, label string) tea.Cmd {
+	if id == "" && strings.TrimSpace(label) == "" {
+		return nil
+	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 		defer cancel()
+		name, idRef := sessionRequestRef(id, label)
 		_, err := client.Kill(ctx, &proto.KillRequest{
-			Id:     id,
+			Name:   name,
+			Id:     idRef,
 			Signal: "TERM",
 		})
 		if err != nil {
@@ -821,7 +870,7 @@ func nextSessionCmd(client proto.VTRClient, currentID string, forward bool, show
 	}
 }
 
-func loadSessionListCmd(client proto.VTRClient, activate bool) tea.Cmd {
+func loadSessionListCmd(client proto.VTRClient, activate bool, fallbackCoord string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 		defer cancel()
@@ -831,24 +880,24 @@ func loadSessionListCmd(client proto.VTRClient, activate bool) tea.Cmd {
 		}
 		sessions := resp.Sessions
 		sortProtoSessions(sessions)
-		items := make([]list.Item, 0, len(sessions))
 		out := make([]sessionListItem, 0, len(sessions))
 		for _, session := range sessions {
 			if session == nil || session.GetId() == "" {
 				continue
 			}
+			coord, _ := splitCoordinatorPrefix(session.GetName(), fallbackCoord)
 			entry := sessionListItem{
 				id:       session.GetId(),
 				label:    session.GetName(),
+				coord:    coord,
 				status:   session.Status,
 				exitCode: session.ExitCode,
 				idle:     session.GetIdle(),
 				order:    session.GetOrder(),
 			}
 			out = append(out, entry)
-			items = append(items, entry)
 		}
-		return sessionListMsg{items: items, sessions: out, activate: activate}
+		return sessionListMsg{sessions: out, activate: activate}
 	}
 }
 
@@ -952,13 +1001,13 @@ func handleLeaderKey(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
 	}
 	switch key {
 	case "ctrl+b":
-		return m, sendKeyCmd(m.client, m.sessionID, "ctrl+b")
+		return m, sendKeyCmd(m.client, m.sessionID, m.sessionLabel, "ctrl+b")
 	case "d":
 		return m, tea.Quit
 	case "x":
 		m.statusMsg = "kill sent"
 		m.statusUntil = time.Now().Add(2 * time.Second)
-		return m, killCmd(m.client, m.sessionID)
+		return m, killCmd(m.client, m.sessionID, m.sessionLabel)
 	case "j", "n", "l":
 		return m, nextSessionCmd(m.client, m.sessionID, true, m.showExited)
 	case "k", "p", "h":
@@ -973,10 +1022,12 @@ func handleLeaderKey(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
 			m.statusMsg = "hiding closed sessions"
 		}
 		m.statusUntil = time.Now().Add(2 * time.Second)
-		return m, m.sessionList.SetItems(sessionItemsToListItems(visibleSessionItems(m)))
+		cmd := m.sessionList.SetItems(sessionItemsToListItems(visibleSessionItems(m), m.coordinator.Name))
+		skipSessionListHeaders(&m.sessionList, 1)
+		return m, cmd
 	case "w":
 		m.listActive = true
-		return m, loadSessionListCmd(m.client, true)
+		return m, loadSessionListCmd(m.client, true, m.coordinator.Name)
 	default:
 		m.statusMsg = fmt.Sprintf("unknown leader key: %s", key)
 		m.statusUntil = time.Now().Add(2 * time.Second)
@@ -1029,6 +1080,7 @@ func handleMouse(m attachModel, msg tea.MouseMsg) (attachModel, tea.Cmd) {
 			sessions:    visibleSessionItems(m),
 			activeID:    m.sessionID,
 			activeLabel: m.sessionLabel,
+			coordinator: m.coordinator.Name,
 			width:       headerWidth,
 			exited:      m.exited,
 			exitCode:    m.exitCode,
@@ -1087,6 +1139,7 @@ func handleMouse(m attachModel, msg tea.MouseMsg) (attachModel, tea.Cmd) {
 		sessions:    visibleSessionItems(m),
 		activeID:    m.sessionID,
 		activeLabel: m.sessionLabel,
+		coordinator: m.coordinator.Name,
 		width:       headerWidth,
 		exited:      m.exited,
 		exitCode:    m.exitCode,
@@ -1106,14 +1159,14 @@ func handleMouse(m attachModel, msg tea.MouseMsg) (attachModel, tea.Cmd) {
 		if tab.id == "" || tab.id == m.sessionID {
 			return m, nil
 		}
-		return switchSession(m, sessionSwitchMsg{id: tab.id, label: tab.label})
+		return switchSession(m, sessionSwitchMsg{id: tab.id, label: tab.sessionLabel})
 	case tea.MouseButtonMiddle:
 		if tab.id == "" {
 			return m, nil
 		}
 		m.statusMsg = "kill sent"
 		m.statusUntil = time.Now().Add(2 * time.Second)
-		return m, killCmd(m.client, tab.id)
+		return m, killCmd(m.client, tab.id, tab.sessionLabel)
 	default:
 		return m, nil
 	}
@@ -1131,9 +1184,9 @@ func handleInputKey(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
 		return m, nil
 	}
 	if len(data) > 0 {
-		return m, sendBytesCmd(m.client, m.sessionID, data)
+		return m, sendBytesCmd(m.client, m.sessionID, m.sessionLabel, data)
 	}
-	return m, sendKeyCmd(m.client, m.sessionID, key)
+	return m, sendKeyCmd(m.client, m.sessionID, m.sessionLabel, key)
 }
 
 func inputForKey(msg tea.KeyMsg) (string, []byte, bool) {
@@ -1199,13 +1252,40 @@ func looksLikeMouseSGRReport(runes []rune) bool {
 }
 
 func newSessionListModel(items []list.Item, width, height int) list.Model {
-	delegate := list.NewDefaultDelegate()
+	delegate := newSessionListDelegate()
 	model := list.New(items, delegate, width, height)
 	model.Title = "Sessions"
 	model.SetShowStatusBar(false)
 	model.SetShowHelp(false)
 	model.SetFilteringEnabled(true)
 	return model
+}
+
+type sessionListDelegate struct {
+	list.DefaultDelegate
+}
+
+func newSessionListDelegate() sessionListDelegate {
+	return sessionListDelegate{DefaultDelegate: list.NewDefaultDelegate()}
+}
+
+func (d sessionListDelegate) Render(w io.Writer, m list.Model, index int, item list.Item) {
+	if header, ok := item.(sessionListHeader); ok {
+		label := attachListHeaderStyle.Render(header.name)
+		if header.count > 0 {
+			label = fmt.Sprintf("%s %s", label, attachListHeaderCountStyle.Render(fmt.Sprintf("(%d)", header.count)))
+		}
+		if width := m.Width(); width > 0 {
+			label = ansi.Truncate(label, width, "")
+		}
+		if d.ShowDescription {
+			fmt.Fprintf(w, "%s\n%s", label, "")
+			return
+		}
+		fmt.Fprint(w, label)
+		return
+	}
+	d.DefaultDelegate.Render(w, m, index, item)
 }
 
 func newCreateInput() textinput.Model {
@@ -1257,7 +1337,66 @@ func updateSessionList(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
 	}
 	var cmd tea.Cmd
 	m.sessionList, cmd = m.sessionList.Update(msg)
+	switch msg.String() {
+	case "up", "k":
+		skipSessionListHeaders(&m.sessionList, -1)
+	case "down", "j":
+		skipSessionListHeaders(&m.sessionList, 1)
+	default:
+		skipSessionListHeaders(&m.sessionList, 1)
+	}
 	return m, cmd
+}
+
+func skipSessionListHeaders(model *list.Model, direction int) {
+	if model == nil {
+		return
+	}
+	items := model.VisibleItems()
+	if len(items) == 0 {
+		return
+	}
+	hasSessions := false
+	for _, item := range items {
+		if _, ok := item.(sessionListItem); ok {
+			hasSessions = true
+			break
+		}
+	}
+	if !hasSessions {
+		return
+	}
+	if direction == 0 {
+		direction = 1
+	}
+	idx := model.Index()
+	if idx < 0 || idx >= len(items) {
+		idx = 0
+		model.Select(0)
+	}
+	if _, ok := items[idx].(sessionListItem); ok {
+		return
+	}
+	for step := 1; step <= len(items); step++ {
+		next := idx + step*direction
+		if next < 0 || next >= len(items) {
+			break
+		}
+		if _, ok := items[next].(sessionListItem); ok {
+			model.Select(next)
+			return
+		}
+	}
+	for step := 1; step <= len(items); step++ {
+		next := idx - step*direction
+		if next < 0 || next >= len(items) {
+			break
+		}
+		if _, ok := items[next].(sessionListItem); ok {
+			model.Select(next)
+			return
+		}
+	}
 }
 
 func updateCreateModal(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
@@ -1342,12 +1481,12 @@ func switchSession(m attachModel, msg sessionSwitchMsg) (attachModel, tea.Cmd) {
 		m.statusMsg = "attached"
 	}
 	m.statusUntil = time.Now().Add(2 * time.Second)
-	m.sessionItems = ensureSessionItem(m.sessionItems, m.sessionID, m.sessionLabel, false, 0)
-	cmds := []tea.Cmd{startSubscribeCmd(m.client, m.sessionID, m.streamID)}
+	m.sessionItems = ensureSessionItem(m.sessionItems, m.sessionID, m.sessionLabel, false, 0, m.coordinator.Name)
+	cmds := []tea.Cmd{startSubscribeCmd(m.client, m.sessionID, m.sessionLabel, m.streamID)}
 	if m.viewportWidth > 0 && m.viewportHeight > 0 {
-		cmds = append(cmds, resizeCmd(m.client, m.sessionID, m.viewportWidth, m.viewportHeight))
+		cmds = append(cmds, resizeCmd(m.client, m.sessionID, m.sessionLabel, m.viewportWidth, m.viewportHeight))
 	}
-	cmds = append(cmds, loadSessionListCmd(m.client, false))
+	cmds = append(cmds, loadSessionListCmd(m.client, false, m.coordinator.Name))
 	return m, tea.Batch(cmds...)
 }
 
@@ -1363,26 +1502,30 @@ func applySessionIdle(m attachModel, id, label string, idle bool) (attachModel, 
 		if m.sessionItems[i].id == id {
 			m.sessionItems[i].idle = idle
 			if label != "" {
-				m.sessionItems[i].label = label
+				applySessionItemLabel(&m.sessionItems[i], label, m.coordinator.Name)
 			}
 			updated = true
 			break
 		}
 	}
 	if !updated {
+		coord, _ := splitCoordinatorPrefix(label, m.coordinator.Name)
 		m.sessionItems = append(m.sessionItems, sessionListItem{
 			id:     id,
 			label:  label,
+			coord:  coord,
 			status: proto.SessionStatus_SESSION_STATUS_RUNNING,
 			idle:   idle,
 			order:  0,
 		})
 		sortSessionListItems(m.sessionItems)
 	}
-	return m, m.sessionList.SetItems(sessionItemsToListItems(visibleSessionItems(m)))
+	cmd := m.sessionList.SetItems(sessionItemsToListItems(visibleSessionItems(m), m.coordinator.Name))
+	skipSessionListHeaders(&m.sessionList, 1)
+	return m, cmd
 }
 
-func ensureSessionItem(items []sessionListItem, id, label string, exited bool, exitCode int32) []sessionListItem {
+func ensureSessionItem(items []sessionListItem, id, label string, exited bool, exitCode int32, fallbackCoord string) []sessionListItem {
 	if id == "" {
 		return items
 	}
@@ -1393,7 +1536,7 @@ func ensureSessionItem(items []sessionListItem, id, label string, exited bool, e
 				items[i].exitCode = exitCode
 			}
 			if label != "" {
-				items[i].label = label
+				applySessionItemLabel(&items[i], label, fallbackCoord)
 			}
 			return items
 		}
@@ -1402,7 +1545,8 @@ func ensureSessionItem(items []sessionListItem, id, label string, exited bool, e
 	if exited {
 		status = proto.SessionStatus_SESSION_STATUS_EXITED
 	}
-	items = append(items, sessionListItem{id: id, label: label, status: status, exitCode: exitCode, order: 0})
+	coord, _ := splitCoordinatorPrefix(label, fallbackCoord)
+	items = append(items, sessionListItem{id: id, label: label, coord: coord, status: status, exitCode: exitCode, order: 0})
 	sortSessionListItems(items)
 	return items
 }
@@ -1425,10 +1569,63 @@ func filterVisibleSessionItems(items []sessionListItem, showExited bool, activeI
 	return out
 }
 
-func sessionItemsToListItems(items []sessionListItem) []list.Item {
-	out := make([]list.Item, 0, len(items))
+func sessionItemsToListItems(items []sessionListItem, fallbackCoord string) []list.Item {
+	if len(items) == 0 {
+		return nil
+	}
+	return groupSessionListItems(items, fallbackCoord)
+}
+
+func groupSessionListItems(items []sessionListItem, fallbackCoord string) []list.Item {
+	if len(items) == 0 {
+		return nil
+	}
+	byCoord := make(map[string][]sessionListItem)
 	for _, item := range items {
-		out = append(out, item)
+		coord := item.coord
+		if coord == "" {
+			coord, _ = splitCoordinatorPrefix(item.label, fallbackCoord)
+		}
+		if coord == "" {
+			coord = fallbackCoord
+		}
+		item.coord = coord
+		byCoord[coord] = append(byCoord[coord], item)
+	}
+	coords := make([]string, 0, len(byCoord))
+	for coord := range byCoord {
+		coords = append(coords, coord)
+	}
+	sort.Strings(coords)
+	if fallbackCoord != "" {
+		for i, coord := range coords {
+			if coord == fallbackCoord {
+				if i > 0 {
+					coords = append([]string{coord}, append(coords[:i], coords[i+1:]...)...)
+				}
+				break
+			}
+		}
+	}
+	out := make([]list.Item, 0, len(items)+len(coords))
+	for _, coord := range coords {
+		group := byCoord[coord]
+		sortSessionListItems(group)
+		var filter strings.Builder
+		for i, item := range group {
+			if i > 0 {
+				filter.WriteByte(' ')
+			}
+			filter.WriteString(item.FilterValue())
+		}
+		out = append(out, sessionListHeader{
+			name:   coord,
+			count:  len(group),
+			filter: filter.String(),
+		})
+		for _, item := range group {
+			out = append(out, item)
+		}
 	}
 	return out
 }
@@ -1447,7 +1644,8 @@ func currentSessionItem(m attachModel) sessionListItem {
 	if m.exited {
 		status = proto.SessionStatus_SESSION_STATUS_EXITED
 	}
-	return sessionListItem{id: m.sessionID, label: m.sessionLabel, status: status, exitCode: m.exitCode}
+	coord, _ := splitCoordinatorPrefix(m.sessionLabel, m.coordinator.Name)
+	return sessionListItem{id: m.sessionID, label: m.sessionLabel, coord: coord, status: status, exitCode: m.exitCode}
 }
 
 func applyScreenUpdate(m attachModel, update *proto.ScreenUpdate) (attachModel, tea.Cmd) {
@@ -1495,23 +1693,32 @@ func applySessionLabelUpdate(m attachModel, id, label string) attachModel {
 	m.sessionLabel = label
 	m.statusMsg = fmt.Sprintf("session renamed to %s", label)
 	m.statusUntil = time.Now().Add(2 * time.Second)
-	m.sessionItems = updateSessionLabel(m.sessionItems, id, label)
-	m.sessionItems = ensureSessionItem(m.sessionItems, id, label, m.exited, m.exitCode)
+	m.sessionItems = updateSessionLabel(m.sessionItems, id, label, m.coordinator.Name)
+	m.sessionItems = ensureSessionItem(m.sessionItems, id, label, m.exited, m.exitCode, m.coordinator.Name)
 	return m
 }
 
-func updateSessionLabel(items []sessionListItem, id, label string) []sessionListItem {
+func updateSessionLabel(items []sessionListItem, id, label string, fallbackCoord string) []sessionListItem {
 	if id == "" || label == "" {
 		return items
 	}
 	out := make([]sessionListItem, 0, len(items))
 	for _, item := range items {
 		if item.id == id {
-			item.label = label
+			applySessionItemLabel(&item, label, fallbackCoord)
 		}
 		out = append(out, item)
 	}
 	return out
+}
+
+func applySessionItemLabel(item *sessionListItem, label string, fallbackCoord string) {
+	if item == nil || label == "" {
+		return
+	}
+	item.label = label
+	coord, _ := splitCoordinatorPrefix(label, fallbackCoord)
+	item.coord = coord
 }
 
 func applyScreenDelta(screen *proto.GetScreenResponse, delta *proto.ScreenDelta) (*proto.GetScreenResponse, error) {
@@ -1551,9 +1758,9 @@ func resubscribe(m attachModel, reason string) (attachModel, tea.Cmd) {
 		m.statusMsg = fmt.Sprintf("resync: %s", reason)
 		m.statusUntil = time.Now().Add(2 * time.Second)
 	}
-	cmds := []tea.Cmd{startSubscribeCmd(m.client, m.sessionID, m.streamID)}
+	cmds := []tea.Cmd{startSubscribeCmd(m.client, m.sessionID, m.sessionLabel, m.streamID)}
 	if m.viewportWidth > 0 && m.viewportHeight > 0 {
-		cmds = append(cmds, resizeCmd(m.client, m.sessionID, m.viewportWidth, m.viewportHeight))
+		cmds = append(cmds, resizeCmd(m.client, m.sessionID, m.sessionLabel, m.viewportWidth, m.viewportHeight))
 	}
 	return m, tea.Batch(cmds...)
 }
@@ -1792,6 +1999,7 @@ type headerView struct {
 	sessions    []sessionListItem
 	activeID    string
 	activeLabel string
+	coordinator string
 	width       int
 	exited      bool
 	exitCode    int32
@@ -1831,6 +2039,7 @@ const (
 	tabOverflowGlyph   = "…"
 	tabNewGlyph        = "+"
 	tabNameMaxWidth    = 20
+	sessionListIndent  = "  "
 )
 
 const borderOverlayOffset = 1
@@ -1966,11 +2175,33 @@ func joinLegendSegments(segments []string) string {
 	return strings.Join(segments, " "+sep+" ")
 }
 
-func stripCoordinatorPrefix(name string) string {
-	if idx := strings.LastIndex(name, ":"); idx >= 0 && idx < len(name)-1 {
-		return name[idx+1:]
+func splitCoordinatorPrefix(name, fallback string) (string, string) {
+	if coord, session, ok := parseSessionRef(name); ok {
+		return coord, session
 	}
-	return name
+	return fallback, name
+}
+
+func stripCoordinatorPrefix(name string) string {
+	_, label := splitCoordinatorPrefix(name, "")
+	return label
+}
+
+func sessionDisplayLabel(item sessionListItem) string {
+	_, label := splitCoordinatorPrefix(item.label, item.coord)
+	return label
+}
+
+func sessionRequestRef(id, label string) (string, string) {
+	if strings.TrimSpace(label) != "" {
+		if _, _, ok := parseSessionRef(label); ok {
+			return label, ""
+		}
+	}
+	if strings.TrimSpace(id) == "" {
+		return label, ""
+	}
+	return "", id
 }
 func truncateTabName(name string, max int) string {
 	if max <= 0 {
@@ -1986,13 +2217,14 @@ func truncateTabName(name string, max int) string {
 }
 
 type tabItem struct {
-	id       string
-	label    string
-	width    int
-	active   bool
-	hovered  bool
-	newTab   bool
-	overflow bool
+	id           string
+	label        string
+	sessionLabel string
+	width        int
+	active       bool
+	hovered      bool
+	newTab       bool
+	overflow     bool
 }
 
 func renderTabBar(view headerView) string {
@@ -2042,13 +2274,17 @@ func headerTabItems(view headerView) []tabItem {
 	}
 	return append(sessionTabs, plus)
 }
-func collectTabSessions(items []sessionListItem, activeID, activeLabel string, exited bool, exitCode int32) []sessionListItem {
+func collectTabSessions(items []sessionListItem, activeID, activeLabel string, exited bool, exitCode int32, fallbackCoord string) []sessionListItem {
 	if activeID == "" && len(items) == 0 {
 		return nil
 	}
 	out := append([]sessionListItem(nil), items...)
 	found := false
 	for i := range out {
+		if out[i].coord == "" {
+			coord, _ := splitCoordinatorPrefix(out[i].label, fallbackCoord)
+			out[i].coord = coord
+		}
 		if out[i].id == activeID {
 			found = true
 			if exited {
@@ -2063,14 +2299,18 @@ func collectTabSessions(items []sessionListItem, activeID, activeLabel string, e
 		if exited {
 			status = proto.SessionStatus_SESSION_STATUS_EXITED
 		}
-		out = append(out, sessionListItem{id: activeID, label: activeLabel, status: status, exitCode: exitCode, order: 0})
+		coord, _ := splitCoordinatorPrefix(activeLabel, fallbackCoord)
+		out = append(out, sessionListItem{id: activeID, label: activeLabel, coord: coord, status: status, exitCode: exitCode, order: 0})
 	}
 	sortSessionListItems(out)
 	return out
 }
 
 func renderTabLabel(item sessionListItem, active, hovered bool) string {
-	label := stripCoordinatorPrefix(item.label)
+	coord, label := splitCoordinatorPrefix(item.label, item.coord)
+	if coord == "" {
+		coord = item.coord
+	}
 	label = truncateTabName(label, tabNameMaxWidth)
 	tabStyle := attachTabStyle
 	if active {
@@ -2090,17 +2330,27 @@ func renderTabLabel(item sessionListItem, active, hovered bool) string {
 	textStyle = textStyle.Inherit(tabStyle)
 	statusStyle := sessionStatusStyle(item).Inherit(tabStyle)
 	padStyle := tabStyle
+	chipStyle := attachTabChipStyle
+	if active {
+		chipStyle = attachTabChipActiveStyle
+	} else if hovered {
+		chipStyle = attachTabChipHoverStyle
+	}
 
 	var b strings.Builder
 	b.WriteString(padStyle.Render(" "))
 	b.WriteString(statusStyle.Render(sessionStatusGlyph(item)))
 	b.WriteString(padStyle.Render(" "))
+	if coord != "" {
+		b.WriteString(chipStyle.Render(coord))
+		b.WriteString(padStyle.Render(" "))
+	}
 	b.WriteString(textStyle.Render(label))
 	b.WriteString(padStyle.Render(" "))
 	return b.String()
 }
 func buildTabItems(view headerView) ([]tabItem, int) {
-	sessions := collectTabSessions(view.sessions, view.activeID, view.activeLabel, view.exited, view.exitCode)
+	sessions := collectTabSessions(view.sessions, view.activeID, view.activeLabel, view.exited, view.exitCode, view.coordinator)
 	if len(sessions) == 0 || view.width <= 0 {
 		return nil, 0
 	}
@@ -2113,10 +2363,11 @@ func buildTabItems(view headerView) ([]tabItem, int) {
 		}
 		label := renderTabLabel(session, active, session.id == view.hoverTabID)
 		tabs = append(tabs, tabItem{
-			id:     session.id,
-			label:  label,
-			width:  lipgloss.Width(label),
-			active: active,
+			id:           session.id,
+			label:        label,
+			sessionLabel: session.label,
+			width:        lipgloss.Width(label),
+			active:       active,
 		})
 	}
 	return tabs, activeIdx

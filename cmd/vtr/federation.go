@@ -69,7 +69,7 @@ func federationSpokesFromConfig(cfg *clientConfig) []spokeTarget {
 	return out
 }
 
-func federatedCoordinatorRefs(localSocket string, static []spokeTarget, registry *server.SpokeRegistry, tunnels *tunnelRegistry) []coordinatorRef {
+func federatedCoordinatorRefs(localSocket string, hubAddr string, static []spokeTarget, registry *server.SpokeRegistry, tunnels *tunnelRegistry) []coordinatorRef {
 	refs := make([]coordinatorRef, 0, 1+len(static))
 	socketPath := strings.TrimSpace(localSocket)
 	if socketPath != "" {
@@ -82,13 +82,24 @@ func federatedCoordinatorRefs(localSocket string, static []spokeTarget, registry
 	for _, ref := range refs {
 		seen[ref.Name] = struct{}{}
 	}
+	hubAddr = strings.TrimSpace(hubAddr)
 	targets := mergeSpokeTargets(static, registry, "", tunnelNames(tunnels))
 	for _, target := range targets {
 		if _, ok := seen[target.Name]; ok {
 			continue
 		}
-		if strings.TrimSpace(target.Addr) != "" {
-			refs = append(refs, coordinatorRef{Name: target.Name, Path: target.Addr})
+		addr := strings.TrimSpace(target.Addr)
+		if addr != "" {
+			refs = append(refs, coordinatorRef{Name: target.Name, Path: addr})
+			seen[target.Name] = struct{}{}
+			continue
+		}
+		if hubAddr != "" {
+			refs = append(refs, coordinatorRef{
+				Name:          target.Name,
+				Path:          hubAddr,
+				SessionPrefix: target.Name,
+			})
 			seen[target.Name] = struct{}{}
 		}
 	}

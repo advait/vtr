@@ -692,16 +692,16 @@ export function TerminalView({
     >
       <span
         ref={baseMeasureRef}
-        className="absolute -left-[9999px] -top-[9999px] font-mono"
-        style={{ fontSize: `${baseFontSize}px` }}
+        className="absolute -left-[9999px] -top-[9999px] font-mono whitespace-pre"
+        style={{ fontSize: `${baseFontSize}px`, fontFamily: FONT_STACK }}
         data-measure-count="16"
       >
         MMMMMMMMMMMMMMMM
       </span>
       <span
         ref={measureRef}
-        className="absolute -left-[9999px] -top-[9999px] font-mono"
-        style={{ fontSize: `${fontSize}px` }}
+        className="absolute -left-[9999px] -top-[9999px] font-mono whitespace-pre"
+        style={{ fontSize: `${fontSize}px`, fontFamily: FONT_STACK }}
         data-measure-count="16"
       >
         MMMMMMMMMMMMMMMM
