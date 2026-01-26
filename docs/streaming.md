@@ -22,11 +22,12 @@ message SubscribeRequest {
   string name = 1;
   bool include_screen_updates = 2;
   bool include_raw_output = 3;
+  string id = 4;
 }
 ```
 
 Rules:
-- `name` is required.
+- Either `id` or `name` is required; `id` is preferred and stable.
 - At least one of `include_screen_updates` or `include_raw_output` must be true.
 
 ### SubscribeEvent

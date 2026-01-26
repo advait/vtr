@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // SessionState tracks the lifecycle of a session.
@@ -63,7 +65,8 @@ type SpawnOptions struct {
 
 // SessionInfo reports session metadata and status.
 type SessionInfo struct {
-	Name      string
+	ID        string
+	Label     string
 	State     SessionState
 	Cols      uint16
 	Rows      uint16
@@ -76,9 +79,11 @@ type SessionInfo struct {
 
 // Coordinator manages named PTY sessions.
 type Coordinator struct {
-	mu        sync.Mutex
-	sessions  map[string]*Session
-	opts      CoordinatorOptions
+	mu       sync.Mutex
+	sessions map[string]*Session
+	labels   map[string]string
+	opts     CoordinatorOptions
+
 	nextOrder uint32
 	changeMu  sync.Mutex
 	changeCh  chan struct{}
@@ -112,14 +117,16 @@ func NewCoordinator(opts CoordinatorOptions) *Coordinator {
 	}
 	return &Coordinator{
 		sessions: make(map[string]*Session),
+		labels:   make(map[string]string),
 		opts:     opts,
 		changeCh: make(chan struct{}),
 	}
 }
 
 // Spawn creates and starts a new session.
-func (c *Coordinator) Spawn(name string, opts SpawnOptions) (*SessionInfo, error) {
-	if strings.TrimSpace(name) == "" {
+func (c *Coordinator) Spawn(label string, opts SpawnOptions) (*SessionInfo, error) {
+	label = strings.TrimSpace(label)
+	if label == "" {
 		return nil, ErrInvalidName
 	}
 
@@ -149,12 +156,14 @@ func (c *Coordinator) Spawn(name string, opts SpawnOptions) (*SessionInfo, error
 		return nil, ErrInvalidSize
 	}
 
+	id := uuid.NewString()
 	c.mu.Lock()
-	if _, ok := c.sessions[name]; ok {
+	if _, ok := c.labels[label]; ok {
 		c.mu.Unlock()
 		return nil, ErrSessionExists
 	}
-	c.sessions[name] = nil
+	c.labels[label] = id
+	c.sessions[id] = nil
 	c.mu.Unlock()
 
 	reserved := true
@@ -163,9 +172,10 @@ func (c *Coordinator) Spawn(name string, opts SpawnOptions) (*SessionInfo, error
 			return
 		}
 		c.mu.Lock()
-		if c.sessions[name] == nil {
-			delete(c.sessions, name)
+		if c.sessions[id] == nil {
+			delete(c.sessions, id)
 		}
+		delete(c.labels, label)
 		c.mu.Unlock()
 	}()
 
@@ -180,10 +190,10 @@ func (c *Coordinator) Spawn(name string, opts SpawnOptions) (*SessionInfo, error
 	}
 
 	order := atomic.AddUint32(&c.nextOrder, 1)
-	session := newSession(name, cols, rows, order, vt, ptyHandle, c.opts.IdleThreshold, c.signalSessionsChanged)
+	session := newSession(id, label, cols, rows, order, vt, ptyHandle, c.opts.IdleThreshold, c.signalSessionsChanged)
 
 	c.mu.Lock()
-	c.sessions[name] = session
+	c.sessions[id] = session
 	c.mu.Unlock()
 	reserved = false
 
@@ -194,8 +204,8 @@ func (c *Coordinator) Spawn(name string, opts SpawnOptions) (*SessionInfo, error
 }
 
 // Info returns session metadata.
-func (c *Coordinator) Info(name string) (*SessionInfo, error) {
-	session, err := c.getSession(name)
+func (c *Coordinator) Info(id string) (*SessionInfo, error) {
+	session, err := c.getSession(id)
 	if err != nil {
 		return nil, err
 	}
@@ -220,7 +230,7 @@ func (c *Coordinator) List() []SessionInfo {
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Order == out[j].Order {
-			return out[i].Name < out[j].Name
+			return out[i].Label < out[j].Label
 		}
 		if out[i].Order == 0 {
 			return false
@@ -293,8 +303,8 @@ func (c *Coordinator) Resize(name string, cols, rows uint16) error {
 }
 
 // Snapshot returns the current viewport snapshot.
-func (c *Coordinator) Snapshot(name string) (*Snapshot, error) {
-	session, err := c.getSession(name)
+func (c *Coordinator) Snapshot(id string) (*Snapshot, error) {
+	session, err := c.getSession(id)
 	if err != nil {
 		return nil, err
 	}
@@ -302,8 +312,8 @@ func (c *Coordinator) Snapshot(name string) (*Snapshot, error) {
 }
 
 // Dump returns a text dump of the requested scope.
-func (c *Coordinator) Dump(name string, scope DumpScope, unwrap bool) (string, error) {
-	session, err := c.getSession(name)
+func (c *Coordinator) Dump(id string, scope DumpScope, unwrap bool) (string, error) {
+	session, err := c.getSession(id)
 	if err != nil {
 		return "", err
 	}
@@ -311,8 +321,8 @@ func (c *Coordinator) Dump(name string, scope DumpScope, unwrap bool) (string, e
 }
 
 // Kill sends a signal to the session process.
-func (c *Coordinator) Kill(name string, sig os.Signal) error {
-	session, err := c.getSession(name)
+func (c *Coordinator) Kill(id string, sig os.Signal) error {
+	session, err := c.getSession(id)
 	if err != nil {
 		return err
 	}
@@ -326,8 +336,8 @@ func (c *Coordinator) Kill(name string, sig os.Signal) error {
 }
 
 // Close sends SIGHUP and schedules a SIGKILL if the session does not exit.
-func (c *Coordinator) Close(name string) error {
-	session, err := c.getSession(name)
+func (c *Coordinator) Close(id string) error {
+	session, err := c.getSession(id)
 	if err != nil {
 		return err
 	}
@@ -354,8 +364,8 @@ func (c *Coordinator) Close(name string) error {
 }
 
 // Remove stops a session and removes it from the registry.
-func (c *Coordinator) Remove(name string) error {
-	session, err := c.getSession(name)
+func (c *Coordinator) Remove(id string) error {
+	session, err := c.getSession(id)
 	if err != nil {
 		return err
 	}
@@ -369,57 +379,86 @@ func (c *Coordinator) Remove(name string) error {
 	session.Close(500 * time.Millisecond)
 
 	c.mu.Lock()
-	delete(c.sessions, name)
+	delete(c.sessions, id)
+	delete(c.labels, session.Label())
 	c.mu.Unlock()
 	c.signalSessionsChanged()
 	return nil
 }
 
 // Rename updates a session name.
-func (c *Coordinator) Rename(name, newName string) error {
-	if strings.TrimSpace(newName) == "" {
+func (c *Coordinator) Rename(id, newLabel string) error {
+	newLabel = strings.TrimSpace(newLabel)
+	if newLabel == "" {
 		return ErrInvalidName
-	}
-	if name == newName {
-		return nil
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	session := c.sessions[name]
+	session := c.sessions[id]
 	if session == nil {
 		return ErrSessionNotFound
 	}
-	if _, exists := c.sessions[newName]; exists {
+	if session.Label() == newLabel {
+		return nil
+	}
+	if _, exists := c.labels[newLabel]; exists {
 		return ErrSessionExists
 	}
-	delete(c.sessions, name)
-	c.sessions[newName] = session
-	session.SetName(newName)
+	oldLabel := session.Label()
+	if oldLabel != "" {
+		delete(c.labels, oldLabel)
+	}
+	c.labels[newLabel] = id
+	session.SetLabel(newLabel)
 	c.signalSessionsChanged()
 	return nil
+}
+
+// LookupIDByLabel returns the session ID for the given label.
+func (c *Coordinator) LookupIDByLabel(label string) (string, error) {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return "", ErrInvalidName
+	}
+	c.mu.Lock()
+	id := c.labels[label]
+	c.mu.Unlock()
+	if id == "" {
+		return "", ErrSessionNotFound
+	}
+	return id, nil
+}
+
+// InfoByLabel returns session info for a label.
+func (c *Coordinator) InfoByLabel(label string) (*SessionInfo, error) {
+	id, err := c.LookupIDByLabel(label)
+	if err != nil {
+		return nil, err
+	}
+	return c.Info(id)
 }
 
 // Close removes all sessions.
 func (c *Coordinator) CloseAll() error {
 	c.mu.Lock()
-	names := make([]string, 0, len(c.sessions))
-	for name := range c.sessions {
-		names = append(names, name)
+	ids := make([]string, 0, len(c.sessions))
+	for id := range c.sessions {
+		ids = append(ids, id)
 	}
 	c.mu.Unlock()
 
 	var firstErr error
-	for _, name := range names {
-		if err := c.Remove(name); err != nil && firstErr == nil {
+	for _, id := range ids {
+		if err := c.Remove(id); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
 	return firstErr
 }
 
-func (c *Coordinator) getSession(name string) (*Session, error) {
+func (c *Coordinator) getSession(id string) (*Session, error) {
 	c.mu.Lock()
-	session := c.sessions[name]
+	session := c.sessions[id]
 	c.mu.Unlock()
 	if session == nil {
 		return nil, ErrSessionNotFound
@@ -469,7 +508,8 @@ func defaultWorkingDir() string {
 }
 
 type Session struct {
-	name         string
+	id           string
+	label        string
 	cols         uint16
 	rows         uint16
 	order        uint32
@@ -506,10 +546,11 @@ type Session struct {
 	frameID uint64
 }
 
-func newSession(name string, cols, rows uint16, order uint32, vt *VT, ptyHandle *PTY, idleThreshold time.Duration, onListChange func()) *Session {
+func newSession(id, label string, cols, rows uint16, order uint32, vt *VT, ptyHandle *PTY, idleThreshold time.Duration, onListChange func()) *Session {
 	now := time.Now()
 	return &Session{
-		name:          name,
+		id:            id,
+		label:         label,
 		cols:          cols,
 		rows:          rows,
 		order:         order,
@@ -558,7 +599,8 @@ func (s *Session) markExited(code int) {
 // Info returns a copy of the session info.
 func (s *Session) Info() SessionInfo {
 	s.mu.Lock()
-	name := s.name
+	id := s.id
+	label := s.label
 	state := s.state
 	cols := s.cols
 	rows := s.rows
@@ -569,7 +611,8 @@ func (s *Session) Info() SessionInfo {
 	s.mu.Unlock()
 	idle := s.isIdle()
 	return SessionInfo{
-		Name:      name,
+		ID:        id,
+		Label:     label,
 		State:     state,
 		Cols:      cols,
 		Rows:      rows,
@@ -581,9 +624,23 @@ func (s *Session) Info() SessionInfo {
 	}
 }
 
-func (s *Session) SetName(name string) {
+func (s *Session) ID() string {
 	s.mu.Lock()
-	s.name = name
+	id := s.id
+	s.mu.Unlock()
+	return id
+}
+
+func (s *Session) Label() string {
+	s.mu.Lock()
+	label := s.label
+	s.mu.Unlock()
+	return label
+}
+
+func (s *Session) SetLabel(label string) {
+	s.mu.Lock()
+	s.label = label
 	s.mu.Unlock()
 }
 

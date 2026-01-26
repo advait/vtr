@@ -65,14 +65,14 @@ func unixDialer(ctx context.Context, addr string) (net.Conn, error) {
 	return d.DialContext(ctx, "unix", addr)
 }
 
-func waitForScreenContains(t *testing.T, client proto.VTRClient, name, want string, timeout time.Duration) {
+func waitForScreenContains(t *testing.T, client proto.VTRClient, id, want string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	var lastScreen string
 	var lastErr error
 	for time.Now().Before(deadline) {
 		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-		resp, err := client.GetScreen(ctx, &proto.GetScreenRequest{Name: name})
+		resp, err := client.GetScreen(ctx, &proto.GetScreenRequest{Id: id})
 		cancel()
 		if err == nil {
 			screen := screenToString(resp)
@@ -198,14 +198,14 @@ func (s *blockingSubscribeStream) Context() context.Context     { return s.ctx }
 func (s *blockingSubscribeStream) SendMsg(interface{}) error    { return nil }
 func (s *blockingSubscribeStream) RecvMsg(interface{}) error    { return nil }
 
-func waitForSessionStatus(t *testing.T, client proto.VTRClient, name string, want proto.SessionStatus, timeout time.Duration) *proto.Session {
+func waitForSessionStatus(t *testing.T, client proto.VTRClient, id string, want proto.SessionStatus, timeout time.Duration) *proto.Session {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	var lastSession *proto.Session
 	var lastErr error
 	for time.Now().Before(deadline) {
 		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-		resp, err := client.Info(ctx, &proto.InfoRequest{Name: name})
+		resp, err := client.Info(ctx, &proto.InfoRequest{Id: id})
 		cancel()
 		if err == nil {
 			if resp.Session != nil && resp.Session.Status == want {
@@ -234,7 +234,7 @@ func TestGRPCSpawnSendScreen(t *testing.T) {
 	defer cleanup()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	_, err := client.Spawn(ctx, &proto.SpawnRequest{
+	spawnResp, err := client.Spawn(ctx, &proto.SpawnRequest{
 		Name:    "grpc-echo",
 		Command: "printf 'ready\\n'; read line; printf 'got:%s\\n' \"$line\"; sleep 0.1",
 	})
@@ -242,17 +242,18 @@ func TestGRPCSpawnSendScreen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
+	sessionID := spawnResp.GetSession().GetId()
 
-	waitForScreenContains(t, client, "grpc-echo", "ready", 2*time.Second)
+	waitForScreenContains(t, client, sessionID, "ready", 2*time.Second)
 
 	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
-	_, err = client.SendText(ctx, &proto.SendTextRequest{Name: "grpc-echo", Text: "hello\n"})
+	_, err = client.SendText(ctx, &proto.SendTextRequest{Id: sessionID, Text: "hello\n"})
 	cancel()
 	if err != nil {
 		t.Fatalf("SendText: %v", err)
 	}
 
-	waitForScreenContains(t, client, "grpc-echo", "got:hello", 2*time.Second)
+	waitForScreenContains(t, client, sessionID, "got:hello", 2*time.Second)
 }
 
 func TestGRPCListInfoResize(t *testing.T) {
@@ -264,7 +265,7 @@ func TestGRPCListInfoResize(t *testing.T) {
 	defer cleanup()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	_, err := client.Spawn(ctx, &proto.SpawnRequest{
+	spawnResp, err := client.Spawn(ctx, &proto.SpawnRequest{
 		Name:    "grpc-info",
 		Command: "printf 'ready\\n'; while true; do sleep 0.2; done",
 	})
@@ -272,8 +273,9 @@ func TestGRPCListInfoResize(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
+	sessionID := spawnResp.GetSession().GetId()
 
-	waitForScreenContains(t, client, "grpc-info", "ready", 2*time.Second)
+	waitForScreenContains(t, client, sessionID, "ready", 2*time.Second)
 
 	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
 	listResp, err := client.List(ctx, &proto.ListRequest{})
@@ -295,7 +297,7 @@ func TestGRPCListInfoResize(t *testing.T) {
 	}
 
 	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
-	infoResp, err := client.Info(ctx, &proto.InfoRequest{Name: "grpc-info"})
+	infoResp, err := client.Info(ctx, &proto.InfoRequest{Id: sessionID})
 	cancel()
 	if err != nil {
 		t.Fatalf("Info: %v", err)
@@ -305,14 +307,14 @@ func TestGRPCListInfoResize(t *testing.T) {
 	}
 
 	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
-	_, err = client.Resize(ctx, &proto.ResizeRequest{Name: "grpc-info", Cols: 100, Rows: 30})
+	_, err = client.Resize(ctx, &proto.ResizeRequest{Id: sessionID, Cols: 100, Rows: 30})
 	cancel()
 	if err != nil {
 		t.Fatalf("Resize: %v", err)
 	}
 
 	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
-	screenResp, err := client.GetScreen(ctx, &proto.GetScreenRequest{Name: "grpc-info"})
+	screenResp, err := client.GetScreen(ctx, &proto.GetScreenRequest{Id: sessionID})
 	cancel()
 	if err != nil {
 		t.Fatalf("GetScreen: %v", err)
@@ -391,7 +393,7 @@ func TestGRPCKillRemove(t *testing.T) {
 	defer cleanup()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	_, err := client.Spawn(ctx, &proto.SpawnRequest{
+	spawnResp, err := client.Spawn(ctx, &proto.SpawnRequest{
 		Name:    "grpc-kill",
 		Command: "printf 'ready\\n'; trap 'exit 0' TERM; while true; do sleep 0.2; done",
 	})
@@ -399,27 +401,28 @@ func TestGRPCKillRemove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
+	sessionID := spawnResp.GetSession().GetId()
 
-	waitForScreenContains(t, client, "grpc-kill", "ready", 2*time.Second)
+	waitForScreenContains(t, client, sessionID, "ready", 2*time.Second)
 
 	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
-	_, err = client.Kill(ctx, &proto.KillRequest{Name: "grpc-kill", Signal: "TERM"})
+	_, err = client.Kill(ctx, &proto.KillRequest{Id: sessionID, Signal: "TERM"})
 	cancel()
 	if err != nil {
 		t.Fatalf("Kill: %v", err)
 	}
 
-	waitForSessionStatus(t, client, "grpc-kill", proto.SessionStatus_SESSION_STATUS_EXITED, 2*time.Second)
+	waitForSessionStatus(t, client, sessionID, proto.SessionStatus_SESSION_STATUS_EXITED, 2*time.Second)
 
 	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
-	_, err = client.Remove(ctx, &proto.RemoveRequest{Name: "grpc-kill"})
+	_, err = client.Remove(ctx, &proto.RemoveRequest{Id: sessionID})
 	cancel()
 	if err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
 
 	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
-	_, err = client.Info(ctx, &proto.InfoRequest{Name: "grpc-kill"})
+	_, err = client.Info(ctx, &proto.InfoRequest{Id: sessionID})
 	cancel()
 	if status.Code(err) != codes.NotFound {
 		t.Fatalf("expected NotFound after remove, got %v", err)
@@ -442,7 +445,7 @@ func TestGRPCErrors(t *testing.T) {
 	}
 
 	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
-	_, err = client.Spawn(ctx, &proto.SpawnRequest{
+	errorsResp, err := client.Spawn(ctx, &proto.SpawnRequest{
 		Name:    "grpc-errors",
 		Command: "printf 'ready\\n'; while true; do sleep 0.2; done",
 	})
@@ -450,8 +453,9 @@ func TestGRPCErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
+	errorsID := errorsResp.GetSession().GetId()
 
-	waitForScreenContains(t, client, "grpc-errors", "ready", 2*time.Second)
+	waitForScreenContains(t, client, errorsID, "ready", 2*time.Second)
 
 	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
 	_, err = client.Spawn(ctx, &proto.SpawnRequest{Name: "grpc-errors"})
@@ -461,7 +465,7 @@ func TestGRPCErrors(t *testing.T) {
 	}
 
 	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
-	_, err = client.SendKey(ctx, &proto.SendKeyRequest{Name: "grpc-errors", Key: "not-a-key"})
+	_, err = client.SendKey(ctx, &proto.SendKeyRequest{Id: errorsID, Key: "not-a-key"})
 	cancel()
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("expected InvalidArgument for bad key, got %v", err)
@@ -476,23 +480,24 @@ func TestGRPCErrors(t *testing.T) {
 
 	tooLarge := make([]byte, maxRawInputBytes+1)
 	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
-	_, err = client.SendBytes(ctx, &proto.SendBytesRequest{Name: "grpc-errors", Data: tooLarge})
+	_, err = client.SendBytes(ctx, &proto.SendBytesRequest{Id: errorsID, Data: tooLarge})
 	cancel()
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("expected InvalidArgument for oversized data, got %v", err)
 	}
 
 	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
-	_, err = client.Spawn(ctx, &proto.SpawnRequest{Name: "grpc-exit", Command: "exit 0"})
+	exitResp, err := client.Spawn(ctx, &proto.SpawnRequest{Name: "grpc-exit", Command: "exit 0"})
 	cancel()
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
+	exitID := exitResp.GetSession().GetId()
 
-	waitForSessionStatus(t, client, "grpc-exit", proto.SessionStatus_SESSION_STATUS_EXITED, 2*time.Second)
+	waitForSessionStatus(t, client, exitID, proto.SessionStatus_SESSION_STATUS_EXITED, 2*time.Second)
 
 	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
-	_, err = client.SendText(ctx, &proto.SendTextRequest{Name: "grpc-exit", Text: "hi"})
+	_, err = client.SendText(ctx, &proto.SendTextRequest{Id: exitID, Text: "hi"})
 	cancel()
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("expected FailedPrecondition for exited session, got %v", err)
@@ -508,7 +513,7 @@ func TestGRPCGrep(t *testing.T) {
 	defer cleanup()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	_, err := client.Spawn(ctx, &proto.SpawnRequest{
+	spawnResp, err := client.Spawn(ctx, &proto.SpawnRequest{
 		Name:    "grpc-grep",
 		Command: "printf 'zero\\none\\nerror here\\nthree\\n'; sleep 0.1",
 	})
@@ -516,12 +521,13 @@ func TestGRPCGrep(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
+	sessionID := spawnResp.GetSession().GetId()
 
-	waitForScreenContains(t, client, "grpc-grep", "error here", 2*time.Second)
+	waitForScreenContains(t, client, sessionID, "error here", 2*time.Second)
 
 	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
 	resp, err := client.Grep(ctx, &proto.GrepRequest{
-		Name:          "grpc-grep",
+		Id:            sessionID,
 		Pattern:       "error",
 		ContextBefore: 1,
 		ContextAfter:  1,
@@ -558,7 +564,7 @@ func TestGRPCWaitFor(t *testing.T) {
 	defer cleanup()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	_, err := client.Spawn(ctx, &proto.SpawnRequest{
+	spawnResp, err := client.Spawn(ctx, &proto.SpawnRequest{
 		Name:    "grpc-wait",
 		Command: "printf 'ready\\n'; sleep 0.2; printf 'done\\n'; sleep 0.1",
 	})
@@ -566,12 +572,13 @@ func TestGRPCWaitFor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
+	sessionID := spawnResp.GetSession().GetId()
 
-	waitForScreenContains(t, client, "grpc-wait", "ready", 2*time.Second)
+	waitForScreenContains(t, client, sessionID, "ready", 2*time.Second)
 
 	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
 	resp, err := client.WaitFor(ctx, &proto.WaitForRequest{
-		Name:    "grpc-wait",
+		Id:      sessionID,
 		Pattern: "done",
 		Timeout: durationpb.New(2 * time.Second),
 	})
@@ -588,7 +595,7 @@ func TestGRPCWaitFor(t *testing.T) {
 
 	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
 	resp, err = client.WaitFor(ctx, &proto.WaitForRequest{
-		Name:    "grpc-wait",
+		Id:      sessionID,
 		Pattern: "never",
 		Timeout: durationpb.New(200 * time.Millisecond),
 	})
@@ -610,7 +617,7 @@ func TestGRPCWaitForIdle(t *testing.T) {
 	defer cleanup()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	_, err := client.Spawn(ctx, &proto.SpawnRequest{
+	spawnResp, err := client.Spawn(ctx, &proto.SpawnRequest{
 		Name:    "grpc-idle",
 		Command: "printf 'ready\\n'; sleep 0.5",
 	})
@@ -618,12 +625,13 @@ func TestGRPCWaitForIdle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
+	sessionID := spawnResp.GetSession().GetId()
 
-	waitForScreenContains(t, client, "grpc-idle", "ready", 2*time.Second)
+	waitForScreenContains(t, client, sessionID, "ready", 2*time.Second)
 
 	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
 	resp, err := client.WaitForIdle(ctx, &proto.WaitForIdleRequest{
-		Name:         "grpc-idle",
+		Id:           sessionID,
 		IdleDuration: durationpb.New(200 * time.Millisecond),
 		Timeout:      durationpb.New(1 * time.Second),
 	})
@@ -645,7 +653,7 @@ func TestGRPCSubscribeIdleEvents(t *testing.T) {
 	defer cleanup()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	_, err := client.Spawn(ctx, &proto.SpawnRequest{
+	spawnResp, err := client.Spawn(ctx, &proto.SpawnRequest{
 		Name:    "grpc-subscribe-idle",
 		Command: "printf 'ready\\n'; sleep 0.4; printf 'again\\n'; sleep 0.4",
 	})
@@ -653,12 +661,13 @@ func TestGRPCSubscribeIdleEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
+	sessionID := spawnResp.GetSession().GetId()
 
-	waitForScreenContains(t, client, "grpc-subscribe-idle", "ready", 2*time.Second)
+	waitForScreenContains(t, client, sessionID, "ready", 2*time.Second)
 
 	ctx, cancel = context.WithTimeout(context.Background(), 3*time.Second)
 	stream, err := client.Subscribe(ctx, &proto.SubscribeRequest{
-		Name:                 "grpc-subscribe-idle",
+		Id:                   sessionID,
 		IncludeScreenUpdates: false,
 		IncludeRawOutput:     true,
 	})
@@ -683,8 +692,8 @@ func TestGRPCSubscribeIdleEvents(t *testing.T) {
 			}
 			continue
 		}
-		if idle.Name != "grpc-subscribe-idle" {
-			t.Fatalf("idle name=%q", idle.Name)
+		if idle.Id != sessionID {
+			t.Fatalf("idle id=%q", idle.Id)
 		}
 		if idle.Idle {
 			sawIdleTrue = true
@@ -710,7 +719,7 @@ func TestGRPCSubscribeInitialSnapshot(t *testing.T) {
 	defer cleanup()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	_, err := client.Spawn(ctx, &proto.SpawnRequest{
+	spawnResp, err := client.Spawn(ctx, &proto.SpawnRequest{
 		Name:    "grpc-subscribe",
 		Command: "printf 'ready\\n'; sleep 0.5",
 	})
@@ -718,12 +727,13 @@ func TestGRPCSubscribeInitialSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
+	sessionID := spawnResp.GetSession().GetId()
 
-	waitForScreenContains(t, client, "grpc-subscribe", "ready", 2*time.Second)
+	waitForScreenContains(t, client, sessionID, "ready", 2*time.Second)
 
 	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
 	stream, err := client.Subscribe(ctx, &proto.SubscribeRequest{
-		Name:                 "grpc-subscribe",
+		Id:                   sessionID,
 		IncludeScreenUpdates: true,
 		IncludeRawOutput:     false,
 	})
@@ -758,7 +768,7 @@ func TestGRPCSubscribeFrameIDMonotonic(t *testing.T) {
 	defer cleanup()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	_, err := client.Spawn(ctx, &proto.SpawnRequest{
+	spawnResp, err := client.Spawn(ctx, &proto.SpawnRequest{
 		Name:    "grpc-subscribe-frames",
 		Command: "sleep 0.1; printf 'one\\n'; sleep 0.1; printf 'two\\n'; sleep 0.2",
 	})
@@ -766,10 +776,11 @@ func TestGRPCSubscribeFrameIDMonotonic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
+	sessionID := spawnResp.GetSession().GetId()
 
 	ctx, cancel = context.WithTimeout(context.Background(), 3*time.Second)
 	stream, err := client.Subscribe(ctx, &proto.SubscribeRequest{
-		Name:                 "grpc-subscribe-frames",
+		Id:                   sessionID,
 		IncludeScreenUpdates: true,
 		IncludeRawOutput:     false,
 	})
@@ -810,7 +821,7 @@ func TestGRPCSubscribeResizeKeyframe(t *testing.T) {
 	defer cleanup()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	_, err := client.Spawn(ctx, &proto.SpawnRequest{
+	spawnResp, err := client.Spawn(ctx, &proto.SpawnRequest{
 		Name:    "grpc-subscribe-resize",
 		Command: "sleep 0.5",
 	})
@@ -818,10 +829,11 @@ func TestGRPCSubscribeResizeKeyframe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
+	sessionID := spawnResp.GetSession().GetId()
 
 	ctx, cancel = context.WithTimeout(context.Background(), 3*time.Second)
 	stream, err := client.Subscribe(ctx, &proto.SubscribeRequest{
-		Name:                 "grpc-subscribe-resize",
+		Id:                   sessionID,
 		IncludeScreenUpdates: true,
 		IncludeRawOutput:     false,
 	})
@@ -844,7 +856,7 @@ func TestGRPCSubscribeResizeKeyframe(t *testing.T) {
 
 	ctxResize, cancelResize := context.WithTimeout(context.Background(), 2*time.Second)
 	_, err = client.Resize(ctxResize, &proto.ResizeRequest{
-		Name: "grpc-subscribe-resize",
+		Id:   sessionID,
 		Cols: 100,
 		Rows: 40,
 	})
@@ -897,7 +909,7 @@ func TestGRPCSubscribePeriodicKeyframe(t *testing.T) {
 	defer cleanup()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	_, err := client.Spawn(ctx, &proto.SpawnRequest{
+	spawnResp, err := client.Spawn(ctx, &proto.SpawnRequest{
 		Name:    "grpc-subscribe-periodic",
 		Command: "sleep 1",
 	})
@@ -905,10 +917,11 @@ func TestGRPCSubscribePeriodicKeyframe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
+	sessionID := spawnResp.GetSession().GetId()
 
 	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
 	stream, err := client.Subscribe(ctx, &proto.SubscribeRequest{
-		Name:                 "grpc-subscribe-periodic",
+		Id:                   sessionID,
 		IncludeScreenUpdates: true,
 		IncludeRawOutput:     false,
 	})
@@ -975,12 +988,13 @@ func TestGRPCSubscribeLatestOnlyBackpressure(t *testing.T) {
 	coord := newTestCoordinator()
 	defer coord.CloseAll()
 
-	_, err := coord.Spawn("grpc-subscribe-backpressure", SpawnOptions{
+	info, err := coord.Spawn("grpc-subscribe-backpressure", SpawnOptions{
 		Command: []string{"cat"},
 	})
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
+	sessionID := info.ID
 
 	server := NewGRPCServer(coord)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -989,7 +1003,7 @@ func TestGRPCSubscribeLatestOnlyBackpressure(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- server.Subscribe(&proto.SubscribeRequest{
-			Name:                 "grpc-subscribe-backpressure",
+			Id:                   sessionID,
 			IncludeScreenUpdates: true,
 			IncludeRawOutput:     false,
 		}, stream)
@@ -1003,7 +1017,7 @@ func TestGRPCSubscribeLatestOnlyBackpressure(t *testing.T) {
 	}
 
 	for i := 0; i < 5; i++ {
-		if err := coord.Send("grpc-subscribe-backpressure", []byte(fmt.Sprintf("line%d\n", i))); err != nil {
+		if err := coord.Send(sessionID, []byte(fmt.Sprintf("line%d\n", i))); err != nil {
 			cancel()
 			t.Fatalf("Send: %v", err)
 		}
@@ -1053,7 +1067,7 @@ func TestGRPCSubscribeRawOutput(t *testing.T) {
 	defer cleanup()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	_, err := client.Spawn(ctx, &proto.SpawnRequest{
+	spawnResp, err := client.Spawn(ctx, &proto.SpawnRequest{
 		Name:    "grpc-subscribe-raw",
 		Command: "sleep 0.4; printf 'raw-output\\n'; sleep 0.1",
 	})
@@ -1061,10 +1075,11 @@ func TestGRPCSubscribeRawOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
+	sessionID := spawnResp.GetSession().GetId()
 
 	ctx, cancel = context.WithTimeout(context.Background(), 3*time.Second)
 	stream, err := client.Subscribe(ctx, &proto.SubscribeRequest{
-		Name:                 "grpc-subscribe-raw",
+		Id:                   sessionID,
 		IncludeScreenUpdates: false,
 		IncludeRawOutput:     true,
 	})
@@ -1109,7 +1124,7 @@ func TestGRPCSubscribeExitEvent(t *testing.T) {
 	defer cleanup()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	_, err := client.Spawn(ctx, &proto.SpawnRequest{
+	spawnResp, err := client.Spawn(ctx, &proto.SpawnRequest{
 		Name:    "grpc-subscribe-exit",
 		Command: "sleep 0.1; printf 'done\\n'; exit 7",
 	})
@@ -1117,10 +1132,11 @@ func TestGRPCSubscribeExitEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
+	sessionID := spawnResp.GetSession().GetId()
 
 	ctx, cancel = context.WithTimeout(context.Background(), 3*time.Second)
 	stream, err := client.Subscribe(ctx, &proto.SubscribeRequest{
-		Name:                 "grpc-subscribe-exit",
+		Id:                   sessionID,
 		IncludeScreenUpdates: true,
 		IncludeRawOutput:     false,
 	})
@@ -1193,7 +1209,7 @@ func TestGRPCSendKeyCtrlCExits(t *testing.T) {
 	defer cleanup()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	_, err := client.Spawn(ctx, &proto.SpawnRequest{
+	spawnResp, err := client.Spawn(ctx, &proto.SpawnRequest{
 		Name:    "grpc-ctrlc",
 		Command: "printf 'ready\\n'; trap 'exit 0' INT; while true; do sleep 0.2; done",
 	})
@@ -1201,15 +1217,16 @@ func TestGRPCSendKeyCtrlCExits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
+	sessionID := spawnResp.GetSession().GetId()
 
-	waitForScreenContains(t, client, "grpc-ctrlc", "ready", 2*time.Second)
+	waitForScreenContains(t, client, sessionID, "ready", 2*time.Second)
 
 	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
-	_, err = client.SendKey(ctx, &proto.SendKeyRequest{Name: "grpc-ctrlc", Key: "ctrl+c"})
+	_, err = client.SendKey(ctx, &proto.SendKeyRequest{Id: sessionID, Key: "ctrl+c"})
 	cancel()
 	if err != nil {
 		t.Fatalf("SendKey: %v", err)
 	}
 
-	waitForSessionStatus(t, client, "grpc-ctrlc", proto.SessionStatus_SESSION_STATUS_EXITED, 2*time.Second)
+	waitForSessionStatus(t, client, sessionID, proto.SessionStatus_SESSION_STATUS_EXITED, 2*time.Second)
 }

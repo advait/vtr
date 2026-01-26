@@ -41,12 +41,13 @@ Not implemented:
 
 ## Session identity
 
-- The API currently identifies sessions by `name` (string).
-- Names are used for routing in gRPC and the WebSocket bridge.
+- Sessions have stable UUIDs (`id`) and mutable labels (`name`).
+- gRPC and the WebSocket bridge accept `id` (preferred); `name` is legacy lookup.
+- For hubs with multiple coordinators, use `coordinator:session-id` when routing.
 
 ## Error behavior (common cases)
 
-- `NOT_FOUND`: unknown session name.
+- `NOT_FOUND`: unknown session id/label.
 - `ALREADY_EXISTS`: spawn with an existing name.
 - `FAILED_PRECONDITION`: input to an exited session.
 - `INVALID_ARGUMENT`: missing required fields or invalid subscribe flags.

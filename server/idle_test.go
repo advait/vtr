@@ -14,19 +14,20 @@ func TestSessionIdleDebounce(t *testing.T) {
 	coord := newTestCoordinator()
 	defer coord.CloseAll()
 
-	_, err := coord.Spawn("idle-debounce", SpawnOptions{
+	info, err := coord.Spawn("idle-debounce", SpawnOptions{
 		Command: []string{"/bin/sh", "-c", "printf 'ready\\n'; sleep 2"},
 	})
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
+	sessionID := info.ID
 
-	waitForDumpContains(t, coord, "idle-debounce", "ready", 2*time.Second)
-	if err := coord.Send("idle-debounce", []byte("x")); err != nil {
+	waitForDumpContains(t, coord, sessionID, "ready", 2*time.Second)
+	if err := coord.Send(sessionID, []byte("x")); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
-	session, err := coord.getSession("idle-debounce")
+	session, err := coord.getSession(sessionID)
 	if err != nil {
 		t.Fatalf("getSession: %v", err)
 	}
@@ -48,7 +49,7 @@ func TestSessionIdleDebounce(t *testing.T) {
 	case <-time.After(half):
 	}
 
-	if err := coord.Send("idle-debounce", []byte("y")); err != nil {
+	if err := coord.Send(sessionID, []byte("y")); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 

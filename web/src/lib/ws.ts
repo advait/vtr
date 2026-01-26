@@ -40,6 +40,7 @@ function sessionStatusFromProto(status?: number): SessionInfo["status"] {
 
 function normalizeSession(session: Session): SessionInfo {
   return {
+    id: session.id ?? "",
     name: session.name ?? "",
     status: sessionStatusFromProto(session.status),
     cols: session.cols ?? 0,
@@ -59,7 +60,7 @@ function snapshotToCoordinators(snapshot: SessionsSnapshot): CoordinatorInfo[] {
   }));
 }
 
-export function useVtrStream(sessionName: string | null, options: StreamOptions) {
+export function useVtrStream(sessionId: string | null, options: StreamOptions) {
   const [state, setState] = useState<StreamState>({ status: "idle" });
   const eventRef = useRef<((event: SubscribeEvent) => void) | null>(null);
   const pendingEventsRef = useRef<SubscribeEvent[]>([]);
@@ -97,54 +98,54 @@ export function useVtrStream(sessionName: string | null, options: StreamOptions)
 
   const sendText = useCallback(
     (text: string) => {
-      if (!sessionName) return;
-      sendProto("vtr.SendTextRequest", { name: sessionName, text: normalizeText(text) });
+      if (!sessionId) return;
+      sendProto("vtr.SendTextRequest", { id: sessionId, text: normalizeText(text) });
     },
-    [normalizeText, sendProto, sessionName],
+    [normalizeText, sendProto, sessionId],
   );
 
   const sendKey = useCallback(
     (key: string) => {
-      if (!sessionName) return;
-      sendProto("vtr.SendKeyRequest", { name: sessionName, key });
+      if (!sessionId) return;
+      sendProto("vtr.SendKeyRequest", { id: sessionId, key });
     },
-    [sendProto, sessionName],
+    [sendProto, sessionId],
   );
 
   const sendTextTo = useCallback(
-    (name: string, text: string) => {
-      if (!name) return;
-      sendProto("vtr.SendTextRequest", { name, text: normalizeText(text) });
+    (id: string, text: string) => {
+      if (!id) return;
+      sendProto("vtr.SendTextRequest", { id, text: normalizeText(text) });
     },
     [normalizeText, sendProto],
   );
 
   const sendKeyTo = useCallback(
-    (name: string, key: string) => {
-      if (!name) return;
-      sendProto("vtr.SendKeyRequest", { name, key });
+    (id: string, key: string) => {
+      if (!id) return;
+      sendProto("vtr.SendKeyRequest", { id, key });
     },
     [sendProto],
   );
 
   const sendBytes = useCallback(
     (data: Uint8Array) => {
-      if (!sessionName) return;
-      sendProto("vtr.SendBytesRequest", { name: sessionName, data });
+      if (!sessionId) return;
+      sendProto("vtr.SendBytesRequest", { id: sessionId, data });
     },
-    [sendProto, sessionName],
+    [sendProto, sessionId],
   );
 
   const resize = useCallback(
     (cols: number, rows: number) => {
-      if (!sessionName) return;
-      sendProto("vtr.ResizeRequest", { name: sessionName, cols, rows });
+      if (!sessionId) return;
+      sendProto("vtr.ResizeRequest", { id: sessionId, cols, rows });
     },
-    [sendProto, sessionName],
+    [sendProto, sessionId],
   );
 
   useEffect(() => {
-    if (!sessionName) {
+    if (!sessionId) {
       setState({ status: "idle" });
       return;
     }
@@ -170,7 +171,7 @@ export function useVtrStream(sessionName: string | null, options: StreamOptions)
           return;
         }
         const hello = encodeAny("vtr.SubscribeRequest", {
-          name: sessionName,
+          id: sessionId,
           include_screen_updates: true,
           include_raw_output: options.includeRawOutput ?? false,
         });
@@ -243,7 +244,7 @@ export function useVtrStream(sessionName: string | null, options: StreamOptions)
         wsRef.current.close();
       }
     };
-  }, [sessionName, options.includeRawOutput]);
+  }, [sessionId, options.includeRawOutput]);
 
   return {
     state,

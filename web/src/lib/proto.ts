@@ -39,6 +39,7 @@ message Session {
   int32 exit_code = 5;
   bool idle = 8;
   uint32 order = 9;
+  string id = 10;
 }
 
 message ListRequest {}
@@ -60,6 +61,7 @@ message SubscribeRequest {
   string name = 1;
   bool include_screen_updates = 2;
   bool include_raw_output = 3;
+  string id = 4;
 }
 
 message ScreenCell {
@@ -78,6 +80,7 @@ message GetScreenResponse {
   int32 cursor_x = 4;
   int32 cursor_y = 5;
   repeated ScreenRow screen_rows = 6;
+  string id = 7;
 }
 
 message ScreenUpdate {
@@ -101,8 +104,8 @@ message RowDelta {
   ScreenRow row_data = 2;
 }
 
-message SessionExited { int32 exit_code = 1; }
-message SessionIdle { string name = 1; bool idle = 2; }
+message SessionExited { int32 exit_code = 1; string id = 2; }
+message SessionIdle { string name = 1; bool idle = 2; string id = 3; }
 
 message SubscribeEvent {
   oneof event {
@@ -113,10 +116,10 @@ message SubscribeEvent {
   }
 }
 
-message SendTextRequest { string name = 1; string text = 2; }
-message SendKeyRequest { string name = 1; string key = 2; }
-message SendBytesRequest { string name = 1; bytes data = 2; }
-message ResizeRequest { string name = 1; int32 cols = 2; int32 rows = 3; }
+message SendTextRequest { string name = 1; string text = 2; string id = 3; }
+message SendKeyRequest { string name = 1; string key = 2; string id = 3; }
+message SendBytesRequest { string name = 1; bytes data = 2; string id = 3; }
+message ResizeRequest { string name = 1; int32 cols = 2; int32 rows = 3; string id = 4; }
 `;
 
 const root = new protobuf.Root();
@@ -148,6 +151,7 @@ export type ScreenCell = {
 
 export type Session = {
   name?: string;
+  id?: string;
   status?: number;
   cols?: number;
   rows?: number;
@@ -160,6 +164,7 @@ export type ScreenRow = { cells?: ScreenCell[] };
 
 export type GetScreenResponse = {
   name?: string;
+  id?: string;
   cols?: number;
   rows?: number;
   cursor_x?: number;
@@ -186,8 +191,8 @@ export type ScreenUpdate = {
 export type SubscribeEvent = {
   screen_update?: ScreenUpdate | null;
   raw_output?: Uint8Array;
-  session_exited?: { exit_code?: number } | null;
-  session_idle?: { name?: string; idle?: boolean } | null;
+  session_exited?: { exit_code?: number; id?: string } | null;
+  session_idle?: { name?: string; idle?: boolean; id?: string } | null;
 };
 
 export type CoordinatorSessions = {

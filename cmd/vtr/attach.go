@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -28,7 +29,8 @@ type attachModel struct {
 	coordinator  coordinatorRef
 	coords       []coordinatorRef
 	cfg          *clientConfig
-	session      string
+	sessionID    string
+	sessionLabel string
 	stream       proto.VTR_SubscribeClient
 	streamCancel context.CancelFunc
 	streamID     int
@@ -48,8 +50,8 @@ type attachModel struct {
 	createCoordIdx   int
 	createFocusInput bool
 
-	hoverTab string
-	hoverNew bool
+	hoverTabID string
+	hoverNew   bool
 
 	leaderActive bool
 	showExited   bool
@@ -104,8 +106,9 @@ type rpcErrMsg struct {
 }
 
 type sessionSwitchMsg struct {
-	name string
-	err  error
+	id    string
+	label string
+	err   error
 }
 
 type sessionListMsg struct {
@@ -116,14 +119,16 @@ type sessionListMsg struct {
 }
 
 type spawnSessionMsg struct {
-	name  string
+	id    string
+	label string
 	coord coordinatorRef
 	conn  *grpc.ClientConn
 	err   error
 }
 
 type sessionListItem struct {
-	name     string
+	id       string
+	label    string
 	status   proto.SessionStatus
 	exitCode int32
 	idle     bool
@@ -131,7 +136,7 @@ type sessionListItem struct {
 }
 
 func (s sessionListItem) Title() string {
-	return fmt.Sprintf("%s %s", renderSessionStatusIcon(s), s.name)
+	return fmt.Sprintf("%s %s", renderSessionStatusIcon(s), s.label)
 }
 
 func (s sessionListItem) Description() string {
@@ -149,7 +154,7 @@ func (s sessionListItem) Description() string {
 }
 
 func (s sessionListItem) FilterValue() string {
-	return s.name
+	return s.label
 }
 
 func sortSessionListItems(items []sessionListItem) {
@@ -157,7 +162,7 @@ func sortSessionListItems(items []sessionListItem) {
 		left := items[i]
 		right := items[j]
 		if left.order == right.order {
-			return left.name < right.name
+			return left.label < right.label
 		}
 		if left.order == 0 {
 			return false
@@ -280,7 +285,7 @@ func newTuiCmd() *cobra.Command {
 					return err
 				}
 			} else {
-				target.Session = args[0]
+				target.Label = args[0]
 			}
 
 			coords := []coordinatorRef{targetCoord}
@@ -291,9 +296,13 @@ func newTuiCmd() *cobra.Command {
 				return err
 			}
 			client := proto.NewVTRClient(conn)
-			if err := ensureSessionExists(client, target.Session); err != nil {
-				_ = conn.Close()
-				return err
+			if target.ID == "" {
+				resolved, err := ensureSessionExists(client, target.Label)
+				if err != nil {
+					_ = conn.Close()
+					return err
+				}
+				target = resolved
 			}
 
 			model := attachModel{
@@ -302,7 +311,8 @@ func newTuiCmd() *cobra.Command {
 				coordinator:      targetCoord,
 				coords:           coords,
 				cfg:              cfg,
-				session:          target.Session,
+				sessionID:        target.ID,
+				sessionLabel:     target.Label,
 				streamID:         1,
 				sessionList:      newSessionListModel(nil, 0, 0),
 				createInput:      newCreateInput(),
@@ -343,7 +353,8 @@ func resolveFirstSessionTarget(ctx context.Context, coord coordinatorRef, cfg *c
 	}
 	var errs []string
 	hadSuccess := false
-	first := ""
+	firstID := ""
+	firstLabel := ""
 	err := withCoordinator(ctx, coord, cfg, func(client proto.VTRClient) error {
 		resp, err := client.List(ctx, &proto.ListRequest{})
 		if err != nil {
@@ -355,10 +366,11 @@ func resolveFirstSessionTarget(ctx context.Context, coord coordinatorRef, cfg *c
 		}
 		sortProtoSessions(sessions)
 		for _, session := range sessions {
-			if session == nil || session.Name == "" {
+			if session == nil || session.GetId() == "" {
 				continue
 			}
-			first = session.Name
+			firstID = session.GetId()
+			firstLabel = session.GetName()
 			break
 		}
 		return nil
@@ -368,8 +380,8 @@ func resolveFirstSessionTarget(ctx context.Context, coord coordinatorRef, cfg *c
 	} else {
 		hadSuccess = true
 	}
-	if first != "" {
-		return sessionTarget{Coordinator: coord, Session: first}, nil
+	if firstID != "" {
+		return sessionTarget{Coordinator: coord, ID: firstID, Label: firstLabel}, nil
 	}
 	if !hadSuccess && len(errs) > 0 {
 		return sessionTarget{}, fmt.Errorf("unable to list sessions: %s", strings.Join(errs, "; "))
@@ -380,30 +392,47 @@ func resolveFirstSessionTarget(ctx context.Context, coord coordinatorRef, cfg *c
 	return sessionTarget{}, fmt.Errorf("no sessions found")
 }
 
-func ensureSessionExists(client proto.VTRClient, name string) error {
+func ensureSessionExists(client proto.VTRClient, ref string) (sessionTarget, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 	defer cancel()
-	_, err := client.Info(ctx, &proto.InfoRequest{Name: name})
-	if err == nil {
-		return nil
-	}
-	if status.Code(err) != codes.NotFound {
-		return err
-	}
-	ok, err := confirmCreateSession(name)
+	resp, err := client.List(ctx, &proto.ListRequest{})
 	if err != nil {
-		return err
+		return sessionTarget{}, err
+	}
+	id, label, err := matchSessionRef(ref, resp.Sessions)
+	if err == nil {
+		return sessionTarget{ID: id, Label: label}, nil
+	}
+	if !errors.Is(err, errSessionNotFound) {
+		return sessionTarget{}, err
+	}
+	ok, err := confirmCreateSession(ref)
+	if err != nil {
+		return sessionTarget{}, err
 	}
 	if !ok {
-		return fmt.Errorf("session %q not found", name)
+		return sessionTarget{}, fmt.Errorf("session %q not found", ref)
 	}
 	ctx, cancel = context.WithTimeout(context.Background(), rpcTimeout)
 	defer cancel()
-	_, err = client.Spawn(ctx, &proto.SpawnRequest{Name: name})
+	spawnResp, err := client.Spawn(ctx, &proto.SpawnRequest{Name: ref})
 	if err != nil && status.Code(err) != codes.AlreadyExists {
-		return err
+		return sessionTarget{}, err
 	}
-	return nil
+	if spawnResp != nil && spawnResp.Session != nil {
+		return sessionTarget{ID: spawnResp.Session.GetId(), Label: spawnResp.Session.GetName()}, nil
+	}
+	ctx, cancel = context.WithTimeout(context.Background(), rpcTimeout)
+	defer cancel()
+	listResp, err := client.List(ctx, &proto.ListRequest{})
+	if err != nil {
+		return sessionTarget{}, err
+	}
+	id, label, err = matchSessionRef(ref, listResp.Sessions)
+	if err != nil {
+		return sessionTarget{}, err
+	}
+	return sessionTarget{ID: id, Label: label}, nil
 }
 
 func confirmCreateSession(name string) (bool, error) {
@@ -428,7 +457,7 @@ func confirmCreateSession(name string) (bool, error) {
 
 func (m attachModel) Init() tea.Cmd {
 	return tea.Batch(
-		startSubscribeCmd(m.client, m.session, m.streamID),
+		startSubscribeCmd(m.client, m.sessionID, m.streamID),
 		loadSessionListCmd(m.client, false),
 		tickCmd(),
 	)
@@ -473,7 +502,7 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if idle := msg.event.GetSessionIdle(); idle != nil {
 			var cmd tea.Cmd
-			m, cmd = applySessionIdle(m, idle.Name, idle.Idle)
+			m, cmd = applySessionIdle(m, idle.GetId(), idle.GetName(), idle.Idle)
 			if cmd != nil {
 				return m, tea.Batch(cmd, waitSubscribeCmd(m.stream, m.streamID))
 			}
@@ -483,7 +512,7 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.exited = true
 			m.exitCode = exited.ExitCode
 			m.leaderActive = false
-			m.sessionItems = ensureSessionItem(m.sessionItems, m.session, true, exited.ExitCode)
+			m.sessionItems = ensureSessionItem(m.sessionItems, m.sessionID, m.sessionLabel, true, exited.ExitCode)
 			if m.streamCancel != nil {
 				m.streamCancel()
 				m.streamCancel = nil
@@ -514,7 +543,7 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.exited {
 				return m, nil
 			}
-			return m, resizeCmd(m.client, m.session, m.viewportWidth, m.viewportHeight)
+			return m, resizeCmd(m.client, m.sessionID, m.viewportWidth, m.viewportHeight)
 		}
 		return m, nil
 	case rpcErrMsg:
@@ -535,6 +564,14 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.sessionItems = msg.sessions
+		if m.sessionID != "" {
+			for _, item := range m.sessionItems {
+				if item.id == m.sessionID && item.label != "" {
+					m.sessionLabel = item.label
+					break
+				}
+			}
+		}
 		m.lastListAt = time.Now()
 		cmd := m.sessionList.SetItems(sessionItemsToListItems(visibleSessionItems(m)))
 		if msg.activate {
@@ -558,7 +595,7 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.client = proto.NewVTRClient(msg.conn)
 			m.coordinator = msg.coord
 		}
-		return switchSession(m, sessionSwitchMsg{name: msg.name})
+		return switchSession(m, sessionSwitchMsg{id: msg.id, label: msg.label})
 	case tea.MouseMsg:
 		return handleMouse(m, msg)
 	case tea.KeyMsg:
@@ -608,13 +645,14 @@ func (m attachModel) View() string {
 		border = attachExitedBorderStyle
 	}
 	headerLeft, headerRight := renderHeaderSegments(headerView{
-		sessions: visibleSessionItems(m),
-		active:   m.session,
-		width:    overlayWidth,
-		exited:   m.exited,
-		exitCode: m.exitCode,
-		hoverTab: m.hoverTab,
-		hoverNew: m.hoverNew,
+		sessions:    visibleSessionItems(m),
+		activeID:    m.sessionID,
+		activeLabel: m.sessionLabel,
+		width:       overlayWidth,
+		exited:      m.exited,
+		exitCode:    m.exitCode,
+		hoverTabID:  m.hoverTabID,
+		hoverNew:    m.hoverNew,
 	})
 	activeItem := currentSessionItem(m)
 	footerLeft, footerRight := renderFooterSegments(footerView{
@@ -629,11 +667,11 @@ func (m attachModel) View() string {
 	return clampViewHeight(view, m.height)
 }
 
-func startSubscribeCmd(client proto.VTRClient, name string, streamID int) tea.Cmd {
+func startSubscribeCmd(client proto.VTRClient, id string, streamID int) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithCancel(context.Background())
 		stream, err := client.Subscribe(ctx, &proto.SubscribeRequest{
-			Name:                 name,
+			Id:                   id,
 			IncludeScreenUpdates: true,
 			IncludeRawOutput:     false,
 		})
@@ -661,7 +699,7 @@ func tickCmd() tea.Cmd {
 	})
 }
 
-func resizeCmd(client proto.VTRClient, name string, cols, rows int) tea.Cmd {
+func resizeCmd(client proto.VTRClient, id string, cols, rows int) tea.Cmd {
 	if cols <= 0 || rows <= 0 {
 		return nil
 	}
@@ -669,7 +707,7 @@ func resizeCmd(client proto.VTRClient, name string, cols, rows int) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 		defer cancel()
 		_, err := client.Resize(ctx, &proto.ResizeRequest{
-			Name: name,
+			Id:   id,
 			Cols: int32(cols),
 			Rows: int32(rows),
 		})
@@ -680,7 +718,7 @@ func resizeCmd(client proto.VTRClient, name string, cols, rows int) tea.Cmd {
 	}
 }
 
-func sendBytesCmd(client proto.VTRClient, name string, data []byte) tea.Cmd {
+func sendBytesCmd(client proto.VTRClient, id string, data []byte) tea.Cmd {
 	if len(data) == 0 {
 		return nil
 	}
@@ -689,7 +727,7 @@ func sendBytesCmd(client proto.VTRClient, name string, data []byte) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 		defer cancel()
 		_, err := client.SendBytes(ctx, &proto.SendBytesRequest{
-			Name: name,
+			Id:   id,
 			Data: payload,
 		})
 		if err != nil {
@@ -699,7 +737,7 @@ func sendBytesCmd(client proto.VTRClient, name string, data []byte) tea.Cmd {
 	}
 }
 
-func sendKeyCmd(client proto.VTRClient, name, key string) tea.Cmd {
+func sendKeyCmd(client proto.VTRClient, id, key string) tea.Cmd {
 	if strings.TrimSpace(key) == "" {
 		return nil
 	}
@@ -707,8 +745,8 @@ func sendKeyCmd(client proto.VTRClient, name, key string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 		defer cancel()
 		_, err := client.SendKey(ctx, &proto.SendKeyRequest{
-			Name: name,
-			Key:  key,
+			Id:  id,
+			Key: key,
 		})
 		if err != nil {
 			return rpcErrMsg{err: err, op: "send key"}
@@ -717,12 +755,12 @@ func sendKeyCmd(client proto.VTRClient, name, key string) tea.Cmd {
 	}
 }
 
-func killCmd(client proto.VTRClient, name string) tea.Cmd {
+func killCmd(client proto.VTRClient, id string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 		defer cancel()
 		_, err := client.Kill(ctx, &proto.KillRequest{
-			Name:   name,
+			Id:     id,
 			Signal: "TERM",
 		})
 		if err != nil {
@@ -732,7 +770,7 @@ func killCmd(client proto.VTRClient, name string) tea.Cmd {
 	}
 }
 
-func nextSessionCmd(client proto.VTRClient, current string, forward bool, showExited bool) tea.Cmd {
+func nextSessionCmd(client proto.VTRClient, currentID string, forward bool, showExited bool) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 		defer cancel()
@@ -742,34 +780,44 @@ func nextSessionCmd(client proto.VTRClient, current string, forward bool, showEx
 		}
 		sessions := resp.Sessions
 		sortProtoSessions(sessions)
-		names := make([]string, 0, len(sessions))
+		entries := make([]sessionListItem, 0, len(sessions))
 		for _, session := range sessions {
-			if session != nil && session.Name != "" {
+			if session != nil && session.GetId() != "" {
 				if !showExited && session.Status == proto.SessionStatus_SESSION_STATUS_EXITED {
 					continue
 				}
-				names = append(names, session.Name)
+				entries = append(entries, sessionListItem{
+					id:       session.GetId(),
+					label:    session.GetName(),
+					status:   session.Status,
+					exitCode: session.ExitCode,
+					idle:     session.GetIdle(),
+					order:    session.GetOrder(),
+				})
 			}
 		}
-		if len(names) == 0 {
+		if len(entries) == 0 {
 			return sessionSwitchMsg{err: fmt.Errorf("no sessions")}
 		}
+		sortSessionListItems(entries)
 		idx := -1
-		for i, name := range names {
-			if name == current {
+		for i, entry := range entries {
+			if entry.id == currentID {
 				idx = i
 				break
 			}
 		}
 		if idx == -1 {
-			return sessionSwitchMsg{name: names[0]}
+			entry := entries[0]
+			return sessionSwitchMsg{id: entry.id, label: entry.label}
 		}
 		if forward {
-			idx = (idx + 1) % len(names)
+			idx = (idx + 1) % len(entries)
 		} else {
-			idx = (idx - 1 + len(names)) % len(names)
+			idx = (idx - 1 + len(entries)) % len(entries)
 		}
-		return sessionSwitchMsg{name: names[idx]}
+		entry := entries[idx]
+		return sessionSwitchMsg{id: entry.id, label: entry.label}
 	}
 }
 
@@ -786,11 +834,12 @@ func loadSessionListCmd(client proto.VTRClient, activate bool) tea.Cmd {
 		items := make([]list.Item, 0, len(sessions))
 		out := make([]sessionListItem, 0, len(sessions))
 		for _, session := range sessions {
-			if session == nil || session.Name == "" {
+			if session == nil || session.GetId() == "" {
 				continue
 			}
 			entry := sessionListItem{
-				name:     session.Name,
+				id:       session.GetId(),
+				label:    session.GetName(),
 				status:   session.Status,
 				exitCode: session.ExitCode,
 				idle:     session.GetIdle(),
@@ -807,11 +856,14 @@ func spawnCurrentCmd(client proto.VTRClient, name string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 		defer cancel()
-		_, err := client.Spawn(ctx, &proto.SpawnRequest{Name: name})
+		resp, err := client.Spawn(ctx, &proto.SpawnRequest{Name: name})
 		if err != nil {
 			return rpcErrMsg{err: err, op: "spawn"}
 		}
-		return sessionSwitchMsg{name: name}
+		if resp != nil && resp.Session != nil {
+			return sessionSwitchMsg{id: resp.Session.GetId(), label: resp.Session.GetName()}
+		}
+		return sessionSwitchMsg{err: fmt.Errorf("spawn: missing session response")}
 	}
 }
 func spawnAutoSessionCmd(client proto.VTRClient, base string) tea.Cmd {
@@ -845,10 +897,13 @@ func spawnAutoSessionCmd(client proto.VTRClient, base string) tea.Cmd {
 				continue
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
-			_, err = client.Spawn(ctx, &proto.SpawnRequest{Name: candidate})
+			resp, err := client.Spawn(ctx, &proto.SpawnRequest{Name: candidate})
 			cancel()
 			if err == nil {
-				return sessionSwitchMsg{name: candidate}
+				if resp != nil && resp.Session != nil {
+					return sessionSwitchMsg{id: resp.Session.GetId(), label: resp.Session.GetName()}
+				}
+				return sessionSwitchMsg{err: fmt.Errorf("spawn: missing session response")}
 			}
 			if status.Code(err) == codes.AlreadyExists {
 				names[candidate] = struct{}{}
@@ -869,12 +924,16 @@ func spawnSessionCmd(coord coordinatorRef, cfg *clientConfig, name string) tea.C
 		client := proto.NewVTRClient(conn)
 		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 		defer cancel()
-		_, err = client.Spawn(ctx, &proto.SpawnRequest{Name: name})
+		resp, err := client.Spawn(ctx, &proto.SpawnRequest{Name: name})
 		if err != nil {
 			_ = conn.Close()
 			return spawnSessionMsg{err: err, coord: coord}
 		}
-		return spawnSessionMsg{name: name, coord: coord, conn: conn}
+		if resp == nil || resp.Session == nil {
+			_ = conn.Close()
+			return spawnSessionMsg{err: fmt.Errorf("spawn: missing session response"), coord: coord}
+		}
+		return spawnSessionMsg{id: resp.Session.GetId(), label: resp.Session.GetName(), coord: coord, conn: conn}
 	}
 }
 
@@ -893,17 +952,17 @@ func handleLeaderKey(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
 	}
 	switch key {
 	case "ctrl+b":
-		return m, sendKeyCmd(m.client, m.session, "ctrl+b")
+		return m, sendKeyCmd(m.client, m.sessionID, "ctrl+b")
 	case "d":
 		return m, tea.Quit
 	case "x":
 		m.statusMsg = "kill sent"
 		m.statusUntil = time.Now().Add(2 * time.Second)
-		return m, killCmd(m.client, m.session)
+		return m, killCmd(m.client, m.sessionID)
 	case "j", "n", "l":
-		return m, nextSessionCmd(m.client, m.session, true, m.showExited)
+		return m, nextSessionCmd(m.client, m.sessionID, true, m.showExited)
 	case "k", "p", "h":
-		return m, nextSessionCmd(m.client, m.session, false, m.showExited)
+		return m, nextSessionCmd(m.client, m.sessionID, false, m.showExited)
 	case "c":
 		return beginCreateModal(m)
 	case "e":
@@ -927,25 +986,25 @@ func handleLeaderKey(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
 
 func handleMouse(m attachModel, msg tea.MouseMsg) (attachModel, tea.Cmd) {
 	clearHover := func() {
-		m.hoverTab = ""
+		m.hoverTabID = ""
 		m.hoverNew = false
 	}
 	if m.listActive || m.createActive {
-		if m.hoverTab != "" || m.hoverNew {
+		if m.hoverTabID != "" || m.hoverNew {
 			clearHover()
 		}
 		return m, nil
 	}
 	if msg.Action == tea.MouseActionMotion {
 		if msg.Y != 0 || m.width <= 0 {
-			if m.hoverTab != "" || m.hoverNew {
+			if m.hoverTabID != "" || m.hoverNew {
 				clearHover()
 			}
 			return m, nil
 		}
 		innerWidth := m.width - 2
 		if innerWidth <= 0 {
-			if m.hoverTab != "" || m.hoverNew {
+			if m.hoverTabID != "" || m.hoverNew {
 				clearHover()
 			}
 			return m, nil
@@ -954,38 +1013,40 @@ func handleMouse(m attachModel, msg tea.MouseMsg) (attachModel, tea.Cmd) {
 		startX := 1 + leftPad
 		localX := msg.X - startX
 		if localX < 0 {
-			if m.hoverTab != "" || m.hoverNew {
+			if m.hoverTabID != "" || m.hoverNew {
 				clearHover()
 			}
 			return m, nil
 		}
 		headerWidth := overlayAvailableWidth(innerWidth)
 		if headerWidth <= 0 {
-			if m.hoverTab != "" || m.hoverNew {
+			if m.hoverTabID != "" || m.hoverNew {
 				clearHover()
 			}
 			return m, nil
 		}
 		tab, ok := tabAtOffsetX(headerView{
-			sessions: visibleSessionItems(m),
-			active:   m.session,
-			width:    headerWidth,
-			exited:   m.exited,
-			exitCode: m.exitCode,
+			sessions:    visibleSessionItems(m),
+			activeID:    m.sessionID,
+			activeLabel: m.sessionLabel,
+			width:       headerWidth,
+			exited:      m.exited,
+			exitCode:    m.exitCode,
+			hoverTabID:  m.hoverTabID,
 		}, localX)
 		if !ok {
-			if m.hoverTab != "" || m.hoverNew {
+			if m.hoverTabID != "" || m.hoverNew {
 				clearHover()
 			}
 			return m, nil
 		}
 		if tab.newTab {
 			m.hoverNew = true
-			m.hoverTab = ""
+			m.hoverTabID = ""
 			return m, nil
 		}
 		m.hoverNew = false
-		m.hoverTab = tab.name
+		m.hoverTabID = tab.id
 		return m, nil
 	}
 	if msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown || msg.Button == tea.MouseButtonWheelLeft || msg.Button == tea.MouseButtonWheelRight {
@@ -994,9 +1055,9 @@ func handleMouse(m attachModel, msg tea.MouseMsg) (attachModel, tea.Cmd) {
 		}
 		switch msg.Button {
 		case tea.MouseButtonWheelUp, tea.MouseButtonWheelLeft:
-			return m, nextSessionCmd(m.client, m.session, false, m.showExited)
+			return m, nextSessionCmd(m.client, m.sessionID, false, m.showExited)
 		default:
-			return m, nextSessionCmd(m.client, m.session, true, m.showExited)
+			return m, nextSessionCmd(m.client, m.sessionID, true, m.showExited)
 		}
 	}
 	if msg.Action != tea.MouseActionPress {
@@ -1023,11 +1084,13 @@ func handleMouse(m attachModel, msg tea.MouseMsg) (attachModel, tea.Cmd) {
 		return m, nil
 	}
 	tab, ok := tabAtOffsetX(headerView{
-		sessions: visibleSessionItems(m),
-		active:   m.session,
-		width:    headerWidth,
-		exited:   m.exited,
-		exitCode: m.exitCode,
+		sessions:    visibleSessionItems(m),
+		activeID:    m.sessionID,
+		activeLabel: m.sessionLabel,
+		width:       headerWidth,
+		exited:      m.exited,
+		exitCode:    m.exitCode,
+		hoverTabID:  m.hoverTabID,
 	}, localX)
 	if !ok {
 		return m, nil
@@ -1040,17 +1103,17 @@ func handleMouse(m attachModel, msg tea.MouseMsg) (attachModel, tea.Cmd) {
 	}
 	switch msg.Button {
 	case tea.MouseButtonLeft:
-		if tab.name == "" || tab.name == m.session {
+		if tab.id == "" || tab.id == m.sessionID {
 			return m, nil
 		}
-		return switchSession(m, sessionSwitchMsg{name: tab.name})
+		return switchSession(m, sessionSwitchMsg{id: tab.id, label: tab.label})
 	case tea.MouseButtonMiddle:
-		if tab.name == "" {
+		if tab.id == "" {
 			return m, nil
 		}
 		m.statusMsg = "kill sent"
 		m.statusUntil = time.Now().Add(2 * time.Second)
-		return m, killCmd(m.client, tab.name)
+		return m, killCmd(m.client, tab.id)
 	default:
 		return m, nil
 	}
@@ -1068,9 +1131,9 @@ func handleInputKey(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
 		return m, nil
 	}
 	if len(data) > 0 {
-		return m, sendBytesCmd(m.client, m.session, data)
+		return m, sendBytesCmd(m.client, m.sessionID, data)
 	}
-	return m, sendKeyCmd(m.client, m.session, key)
+	return m, sendKeyCmd(m.client, m.sessionID, key)
 }
 
 func inputForKey(msg tea.KeyMsg) (string, []byte, bool) {
@@ -1164,7 +1227,7 @@ func updateSessionList(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
 			return m, nil
 		}
 		m.listActive = false
-		return switchSession(m, sessionSwitchMsg{name: selected.name})
+		return switchSession(m, sessionSwitchMsg{id: selected.id, label: selected.label})
 	}
 	var cmd tea.Cmd
 	m.sessionList, cmd = m.sessionList.Update(msg)
@@ -1227,7 +1290,7 @@ func switchSession(m attachModel, msg sessionSwitchMsg) (attachModel, tea.Cmd) {
 		m.statusUntil = time.Now().Add(2 * time.Second)
 		return m, nil
 	}
-	if msg.name == "" || msg.name == m.session {
+	if msg.id == "" || msg.id == m.sessionID {
 		m.statusMsg = "switch: no other sessions"
 		m.statusUntil = time.Now().Add(2 * time.Second)
 		return m, nil
@@ -1237,7 +1300,8 @@ func switchSession(m attachModel, msg sessionSwitchMsg) (attachModel, tea.Cmd) {
 		m.streamCancel = nil
 	}
 	m.streamID++
-	m.session = msg.name
+	m.sessionID = msg.id
+	m.sessionLabel = msg.label
 	m.screen = nil
 	m.frameID = 0
 	m.exited = false
@@ -1246,35 +1310,43 @@ func switchSession(m attachModel, msg sessionSwitchMsg) (attachModel, tea.Cmd) {
 	m.listActive = false
 	m.createActive = false
 	m.createInput.Blur()
-	m.statusMsg = fmt.Sprintf("attached to %s", msg.name)
+	if msg.label != "" {
+		m.statusMsg = fmt.Sprintf("attached to %s", msg.label)
+	} else {
+		m.statusMsg = "attached"
+	}
 	m.statusUntil = time.Now().Add(2 * time.Second)
-	m.sessionItems = ensureSessionItem(m.sessionItems, m.session, false, 0)
-	cmds := []tea.Cmd{startSubscribeCmd(m.client, m.session, m.streamID)}
+	m.sessionItems = ensureSessionItem(m.sessionItems, m.sessionID, m.sessionLabel, false, 0)
+	cmds := []tea.Cmd{startSubscribeCmd(m.client, m.sessionID, m.streamID)}
 	if m.viewportWidth > 0 && m.viewportHeight > 0 {
-		cmds = append(cmds, resizeCmd(m.client, m.session, m.viewportWidth, m.viewportHeight))
+		cmds = append(cmds, resizeCmd(m.client, m.sessionID, m.viewportWidth, m.viewportHeight))
 	}
 	cmds = append(cmds, loadSessionListCmd(m.client, false))
 	return m, tea.Batch(cmds...)
 }
 
-func applySessionIdle(m attachModel, name string, idle bool) (attachModel, tea.Cmd) {
-	if name == "" {
+func applySessionIdle(m attachModel, id, label string, idle bool) (attachModel, tea.Cmd) {
+	if id == "" {
 		return m, nil
 	}
-	if name != m.session {
-		m = applySessionRename(m, name)
+	if id == m.sessionID {
+		m = applySessionLabelUpdate(m, id, label)
 	}
 	updated := false
 	for i := range m.sessionItems {
-		if m.sessionItems[i].name == name {
+		if m.sessionItems[i].id == id {
 			m.sessionItems[i].idle = idle
+			if label != "" {
+				m.sessionItems[i].label = label
+			}
 			updated = true
 			break
 		}
 	}
 	if !updated {
 		m.sessionItems = append(m.sessionItems, sessionListItem{
-			name:   name,
+			id:     id,
+			label:  label,
 			status: proto.SessionStatus_SESSION_STATUS_RUNNING,
 			idle:   idle,
 			order:  0,
@@ -1284,15 +1356,18 @@ func applySessionIdle(m attachModel, name string, idle bool) (attachModel, tea.C
 	return m, m.sessionList.SetItems(sessionItemsToListItems(visibleSessionItems(m)))
 }
 
-func ensureSessionItem(items []sessionListItem, name string, exited bool, exitCode int32) []sessionListItem {
-	if name == "" {
+func ensureSessionItem(items []sessionListItem, id, label string, exited bool, exitCode int32) []sessionListItem {
+	if id == "" {
 		return items
 	}
 	for i := range items {
-		if items[i].name == name {
+		if items[i].id == id {
 			if exited {
 				items[i].status = proto.SessionStatus_SESSION_STATUS_EXITED
 				items[i].exitCode = exitCode
+			}
+			if label != "" {
+				items[i].label = label
 			}
 			return items
 		}
@@ -1301,22 +1376,22 @@ func ensureSessionItem(items []sessionListItem, name string, exited bool, exitCo
 	if exited {
 		status = proto.SessionStatus_SESSION_STATUS_EXITED
 	}
-	items = append(items, sessionListItem{name: name, status: status, exitCode: exitCode, order: 0})
+	items = append(items, sessionListItem{id: id, label: label, status: status, exitCode: exitCode, order: 0})
 	sortSessionListItems(items)
 	return items
 }
 
 func visibleSessionItems(m attachModel) []sessionListItem {
-	return filterVisibleSessionItems(m.sessionItems, m.showExited, m.session)
+	return filterVisibleSessionItems(m.sessionItems, m.showExited, m.sessionID)
 }
 
-func filterVisibleSessionItems(items []sessionListItem, showExited bool, active string) []sessionListItem {
+func filterVisibleSessionItems(items []sessionListItem, showExited bool, activeID string) []sessionListItem {
 	if showExited {
 		return items
 	}
 	out := make([]sessionListItem, 0, len(items))
 	for _, item := range items {
-		if item.status == proto.SessionStatus_SESSION_STATUS_EXITED && item.name != active {
+		if item.status == proto.SessionStatus_SESSION_STATUS_EXITED && item.id != activeID {
 			continue
 		}
 		out = append(out, item)
@@ -1334,7 +1409,7 @@ func sessionItemsToListItems(items []sessionListItem) []list.Item {
 
 func currentSessionItem(m attachModel) sessionListItem {
 	for _, item := range m.sessionItems {
-		if item.name == m.session {
+		if item.id == m.sessionID {
 			if m.exited {
 				item.status = proto.SessionStatus_SESSION_STATUS_EXITED
 				item.exitCode = m.exitCode
@@ -1346,7 +1421,7 @@ func currentSessionItem(m attachModel) sessionListItem {
 	if m.exited {
 		status = proto.SessionStatus_SESSION_STATUS_EXITED
 	}
-	return sessionListItem{name: m.session, status: status, exitCode: m.exitCode}
+	return sessionListItem{id: m.sessionID, label: m.sessionLabel, status: status, exitCode: m.exitCode}
 }
 
 func applyScreenUpdate(m attachModel, update *proto.ScreenUpdate) (attachModel, tea.Cmd) {
@@ -1355,8 +1430,17 @@ func applyScreenUpdate(m attachModel, update *proto.ScreenUpdate) (attachModel, 
 	}
 	if update.IsKeyframe {
 		if update.Screen != nil {
-			if name := strings.TrimSpace(update.Screen.Name); name != "" && name != m.session {
-				m = applySessionRename(m, name)
+			screenID := strings.TrimSpace(update.Screen.Id)
+			if screenID != "" {
+				if m.sessionID != "" && screenID != m.sessionID {
+					return resubscribe(m, "session id changed")
+				}
+				if m.sessionID == "" {
+					m.sessionID = screenID
+				}
+			}
+			if label := strings.TrimSpace(update.Screen.Name); label != "" {
+				m = applySessionLabelUpdate(m, m.sessionID, label)
 			}
 			m.screen = update.Screen
 		}
@@ -1378,40 +1462,26 @@ func applyScreenUpdate(m attachModel, update *proto.ScreenUpdate) (attachModel, 
 	return m, nil
 }
 
-func applySessionRename(m attachModel, newName string) attachModel {
-	oldName := m.session
-	if newName == "" || oldName == "" || newName == oldName {
+func applySessionLabelUpdate(m attachModel, id, label string) attachModel {
+	if id == "" || label == "" || id != m.sessionID || label == m.sessionLabel {
 		return m
 	}
-	m.session = newName
-	m.statusMsg = fmt.Sprintf("session renamed to %s", newName)
+	m.sessionLabel = label
+	m.statusMsg = fmt.Sprintf("session renamed to %s", label)
 	m.statusUntil = time.Now().Add(2 * time.Second)
-	m.sessionItems = renameSessionItems(m.sessionItems, oldName, newName)
-	m.sessionItems = ensureSessionItem(m.sessionItems, newName, m.exited, m.exitCode)
-	if m.hoverTab == oldName {
-		m.hoverTab = newName
-	}
+	m.sessionItems = updateSessionLabel(m.sessionItems, id, label)
+	m.sessionItems = ensureSessionItem(m.sessionItems, id, label, m.exited, m.exitCode)
 	return m
 }
 
-func renameSessionItems(items []sessionListItem, oldName, newName string) []sessionListItem {
-	if oldName == "" || newName == "" || oldName == newName {
+func updateSessionLabel(items []sessionListItem, id, label string) []sessionListItem {
+	if id == "" || label == "" {
 		return items
-	}
-	newExists := false
-	for _, item := range items {
-		if item.name == newName {
-			newExists = true
-			break
-		}
 	}
 	out := make([]sessionListItem, 0, len(items))
 	for _, item := range items {
-		if item.name == oldName {
-			if newExists {
-				continue
-			}
-			item.name = newName
+		if item.id == id {
+			item.label = label
 		}
 		out = append(out, item)
 	}
@@ -1455,9 +1525,9 @@ func resubscribe(m attachModel, reason string) (attachModel, tea.Cmd) {
 		m.statusMsg = fmt.Sprintf("resync: %s", reason)
 		m.statusUntil = time.Now().Add(2 * time.Second)
 	}
-	cmds := []tea.Cmd{startSubscribeCmd(m.client, m.session, m.streamID)}
+	cmds := []tea.Cmd{startSubscribeCmd(m.client, m.sessionID, m.streamID)}
 	if m.viewportWidth > 0 && m.viewportHeight > 0 {
-		cmds = append(cmds, resizeCmd(m.client, m.session, m.viewportWidth, m.viewportHeight))
+		cmds = append(cmds, resizeCmd(m.client, m.sessionID, m.viewportWidth, m.viewportHeight))
 	}
 	return m, tea.Batch(cmds...)
 }
@@ -1693,13 +1763,14 @@ func clampViewHeight(view string, height int) string {
 }
 
 type headerView struct {
-	sessions []sessionListItem
-	active   string
-	width    int
-	exited   bool
-	exitCode int32
-	hoverTab string
-	hoverNew bool
+	sessions    []sessionListItem
+	activeID    string
+	activeLabel string
+	width       int
+	exited      bool
+	exitCode    int32
+	hoverTabID  string
+	hoverNew    bool
 }
 type footerView struct {
 	width       int
@@ -1771,7 +1842,7 @@ func renderFooterSegments(view footerView) (string, string) {
 	if view.coordinator != "" {
 		leftSegments = append(leftSegments, attachFooterTagStyle.Render(" "+view.coordinator+" "))
 	}
-	if view.active.name != "" {
+	if view.active.label != "" {
 		state := sessionStateLabel(view.active)
 		if state != "" {
 			leftSegments = append(leftSegments, attachFooterTagStyle.Render(" "+state+" "))
@@ -1889,7 +1960,7 @@ func truncateTabName(name string, max int) string {
 }
 
 type tabItem struct {
-	name     string
+	id       string
 	label    string
 	width    int
 	active   bool
@@ -1945,14 +2016,14 @@ func headerTabItems(view headerView) []tabItem {
 	}
 	return append(sessionTabs, plus)
 }
-func collectTabSessions(items []sessionListItem, active string, exited bool, exitCode int32) []sessionListItem {
-	if active == "" && len(items) == 0 {
+func collectTabSessions(items []sessionListItem, activeID, activeLabel string, exited bool, exitCode int32) []sessionListItem {
+	if activeID == "" && len(items) == 0 {
 		return nil
 	}
 	out := append([]sessionListItem(nil), items...)
 	found := false
 	for i := range out {
-		if out[i].name == active {
+		if out[i].id == activeID {
 			found = true
 			if exited {
 				out[i].status = proto.SessionStatus_SESSION_STATUS_EXITED
@@ -1961,20 +2032,20 @@ func collectTabSessions(items []sessionListItem, active string, exited bool, exi
 			break
 		}
 	}
-	if !found && active != "" {
+	if !found && activeID != "" {
 		status := proto.SessionStatus_SESSION_STATUS_RUNNING
 		if exited {
 			status = proto.SessionStatus_SESSION_STATUS_EXITED
 		}
-		out = append(out, sessionListItem{name: active, status: status, exitCode: exitCode, order: 0})
+		out = append(out, sessionListItem{id: activeID, label: activeLabel, status: status, exitCode: exitCode, order: 0})
 	}
 	sortSessionListItems(out)
 	return out
 }
 
 func renderTabLabel(item sessionListItem, active, hovered bool) string {
-	name := stripCoordinatorPrefix(item.name)
-	name = truncateTabName(name, tabNameMaxWidth)
+	label := stripCoordinatorPrefix(item.label)
+	label = truncateTabName(label, tabNameMaxWidth)
 	tabStyle := attachTabStyle
 	if active {
 		tabStyle = attachTabActiveStyle
@@ -1998,25 +2069,25 @@ func renderTabLabel(item sessionListItem, active, hovered bool) string {
 	b.WriteString(padStyle.Render(" "))
 	b.WriteString(statusStyle.Render(sessionStatusGlyph(item)))
 	b.WriteString(padStyle.Render(" "))
-	b.WriteString(textStyle.Render(name))
+	b.WriteString(textStyle.Render(label))
 	b.WriteString(padStyle.Render(" "))
 	return b.String()
 }
 func buildTabItems(view headerView) ([]tabItem, int) {
-	sessions := collectTabSessions(view.sessions, view.active, view.exited, view.exitCode)
+	sessions := collectTabSessions(view.sessions, view.activeID, view.activeLabel, view.exited, view.exitCode)
 	if len(sessions) == 0 || view.width <= 0 {
 		return nil, 0
 	}
 	tabs := make([]tabItem, 0, len(sessions))
 	activeIdx := 0
 	for i, session := range sessions {
-		active := session.name == view.active
+		active := session.id == view.activeID
 		if active {
 			activeIdx = i
 		}
-		label := renderTabLabel(session, active, session.name == view.hoverTab)
+		label := renderTabLabel(session, active, session.id == view.hoverTabID)
 		tabs = append(tabs, tabItem{
-			name:   session.name,
+			id:     session.id,
 			label:  label,
 			width:  lipgloss.Width(label),
 			active: active,
@@ -2054,7 +2125,7 @@ func tabAtOffsetX(view headerView, offset int) (tabItem, bool) {
 			if tab.newTab {
 				return tab, true
 			}
-			if tab.name == "" {
+			if tab.id == "" {
 				return tabItem{}, false
 			}
 			return tab, true

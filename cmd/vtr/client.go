@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -157,7 +158,11 @@ func newInfoCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 			defer cancel()
 			return withCoordinator(ctx, target, cfg, func(client proto.VTRClient) error {
-				resp, err := client.Info(ctx, &proto.InfoRequest{Name: args[0]})
+				sessionID, _, err := resolveSessionID(ctx, client, args[0])
+				if err != nil {
+					return err
+				}
+				resp, err := client.Info(ctx, &proto.InfoRequest{Id: sessionID})
 				if err != nil {
 					return err
 				}
@@ -192,7 +197,11 @@ func newScreenCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 			defer cancel()
 			return withCoordinator(ctx, target, cfg, func(client proto.VTRClient) error {
-				resp, err := client.GetScreen(ctx, &proto.GetScreenRequest{Name: args[0]})
+				sessionID, _, err := resolveSessionID(ctx, client, args[0])
+				if err != nil {
+					return err
+				}
+				resp, err := client.GetScreen(ctx, &proto.GetScreenRequest{Id: sessionID})
 				if err != nil {
 					return err
 				}
@@ -242,7 +251,11 @@ func newSendCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 			defer cancel()
 			return withCoordinator(ctx, target, cfg, func(client proto.VTRClient) error {
-				_, err := client.SendText(ctx, &proto.SendTextRequest{Name: args[0], Text: text})
+				sessionID, _, err := resolveSessionID(ctx, client, args[0])
+				if err != nil {
+					return err
+				}
+				_, err = client.SendText(ctx, &proto.SendTextRequest{Id: sessionID, Text: text})
 				if err != nil {
 					return err
 				}
@@ -272,7 +285,11 @@ func newKeyCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 			defer cancel()
 			return withCoordinator(ctx, target, cfg, func(client proto.VTRClient) error {
-				_, err := client.SendKey(ctx, &proto.SendKeyRequest{Name: args[0], Key: args[1]})
+				sessionID, _, err := resolveSessionID(ctx, client, args[0])
+				if err != nil {
+					return err
+				}
+				_, err = client.SendKey(ctx, &proto.SendKeyRequest{Id: sessionID, Key: args[1]})
 				if err != nil {
 					return err
 				}
@@ -306,7 +323,11 @@ func newRawCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 			defer cancel()
 			return withCoordinator(ctx, target, cfg, func(client proto.VTRClient) error {
-				_, err := client.SendBytes(ctx, &proto.SendBytesRequest{Name: args[0], Data: data})
+				sessionID, _, err := resolveSessionID(ctx, client, args[0])
+				if err != nil {
+					return err
+				}
+				_, err = client.SendBytes(ctx, &proto.SendBytesRequest{Id: sessionID, Data: data})
 				if err != nil {
 					return err
 				}
@@ -344,7 +365,11 @@ func newResizeCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 			defer cancel()
 			return withCoordinator(ctx, target, cfg, func(client proto.VTRClient) error {
-				_, err := client.Resize(ctx, &proto.ResizeRequest{Name: args[0], Cols: int32(cols), Rows: int32(rows)})
+				sessionID, _, err := resolveSessionID(ctx, client, args[0])
+				if err != nil {
+					return err
+				}
+				_, err = client.Resize(ctx, &proto.ResizeRequest{Id: sessionID, Cols: int32(cols), Rows: int32(rows)})
 				if err != nil {
 					return err
 				}
@@ -375,7 +400,11 @@ func newKillCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 			defer cancel()
 			return withCoordinator(ctx, target, cfg, func(client proto.VTRClient) error {
-				_, err := client.Kill(ctx, &proto.KillRequest{Name: args[0], Signal: signal})
+				sessionID, _, err := resolveSessionID(ctx, client, args[0])
+				if err != nil {
+					return err
+				}
+				_, err = client.Kill(ctx, &proto.KillRequest{Id: sessionID, Signal: signal})
 				if err != nil {
 					return err
 				}
@@ -406,7 +435,11 @@ func newRemoveCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 			defer cancel()
 			return withCoordinator(ctx, target, cfg, func(client proto.VTRClient) error {
-				_, err := client.Remove(ctx, &proto.RemoveRequest{Name: args[0]})
+				sessionID, _, err := resolveSessionID(ctx, client, args[0])
+				if err != nil {
+					return err
+				}
+				_, err = client.Remove(ctx, &proto.RemoveRequest{Id: sessionID})
 				if err != nil {
 					return err
 				}
@@ -451,8 +484,12 @@ func newGrepCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 			defer cancel()
 			return withCoordinator(ctx, target, cfg, func(client proto.VTRClient) error {
+				sessionID, _, err := resolveSessionID(ctx, client, args[0])
+				if err != nil {
+					return err
+				}
 				resp, err := client.Grep(ctx, &proto.GrepRequest{
-					Name:          args[0],
+					Id:            sessionID,
 					Pattern:       pattern,
 					ContextBefore: int32(before),
 					ContextAfter:  int32(after),
@@ -497,8 +534,12 @@ func newWaitCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), ctxTimeout)
 			defer cancel()
 			return withCoordinator(ctx, target, cfg, func(client proto.VTRClient) error {
+				sessionID, _, err := resolveSessionID(ctx, client, args[0])
+				if err != nil {
+					return err
+				}
 				resp, err := client.WaitFor(ctx, &proto.WaitForRequest{
-					Name:    args[0],
+					Id:      sessionID,
 					Pattern: pattern,
 					Timeout: durationpb.New(timeout),
 				})
@@ -541,8 +582,12 @@ func newIdleCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), ctxTimeout)
 			defer cancel()
 			return withCoordinator(ctx, target, cfg, func(client proto.VTRClient) error {
+				sessionID, _, err := resolveSessionID(ctx, client, args[0])
+				if err != nil {
+					return err
+				}
 				resp, err := client.WaitForIdle(ctx, &proto.WaitForIdleRequest{
-					Name:         args[0],
+					Id:           sessionID,
 					IdleDuration: durationpb.New(idle),
 					Timeout:      durationpb.New(timeout),
 				})
@@ -579,6 +624,21 @@ func withCoordinator(ctx context.Context, coord coordinatorRef, cfg *clientConfi
 	defer conn.Close()
 	client := proto.NewVTRClient(conn)
 	return fn(client)
+}
+
+func resolveSessionID(ctx context.Context, client proto.VTRClient, ref string) (string, string, error) {
+	resp, err := client.List(ctx, &proto.ListRequest{})
+	if err != nil {
+		return "", "", err
+	}
+	id, label, err := matchSessionRef(ref, resp.Sessions)
+	if err != nil {
+		if errors.Is(err, errSessionNotFound) {
+			return "", "", fmt.Errorf("session %q not found", ref)
+		}
+		return "", "", err
+	}
+	return id, label, nil
 }
 
 func dialClient(ctx context.Context, target string, cfg *clientConfig) (*grpc.ClientConn, error) {

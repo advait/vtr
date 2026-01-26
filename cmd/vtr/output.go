@@ -21,6 +21,7 @@ const (
 
 type jsonSession struct {
 	Coordinator string `json:"coordinator,omitempty"`
+	ID          string `json:"id,omitempty"`
 	Name        string `json:"name"`
 	Status      string `json:"status"`
 	Cols        int32  `json:"cols"`
@@ -44,6 +45,7 @@ type jsonSessionEnvelope struct {
 }
 
 type jsonScreen struct {
+	ID         string          `json:"id,omitempty"`
 	Name       string          `json:"name"`
 	Cols       int32           `json:"cols"`
 	Rows       int32           `json:"rows"`
@@ -125,6 +127,7 @@ func sessionToJSON(session *proto.Session, coordinator string) jsonSession {
 	}
 	out := jsonSession{
 		Coordinator: coordinator,
+		ID:          session.GetId(),
 		Name:        session.Name,
 		Status:      statusString(session.Status),
 		Cols:        session.Cols,
@@ -283,6 +286,7 @@ func screenToJSON(resp *proto.GetScreenResponse) jsonScreen {
 		rows[i] = jsonScreenRow{Cells: cells}
 	}
 	return jsonScreen{
+		ID:         resp.GetId(),
 		Name:       resp.Name,
 		Cols:       resp.Cols,
 		Rows:       resp.Rows,

@@ -37,7 +37,8 @@ const statusVariants: Record<
 };
 
 function sessionKey(coord: string, session: SessionInfo) {
-  return `${coord}:${session.name}`;
+  const ref = session.id || session.name;
+  return `${coord}:${ref}`;
 }
 
 function normalizeStatusFilter(value: string): SessionInfo["status"] | null {

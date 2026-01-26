@@ -118,12 +118,13 @@ export function SessionTabs({
               {group.tabs.map(({ key, session }) => {
                 const isActive = activeSession === key;
                 const label = session.name;
+                const title = `${group.coordinator}:${label}`;
                 return (
                   <div
                     key={key}
                     role="button"
                     tabIndex={0}
-                    title={key}
+                    title={title}
                     className={cn(
                       "group flex shrink-0 items-center gap-2 rounded-t-md rounded-b-none border border-b-0 px-3 py-2 text-xs transition-colors",
                       "cursor-pointer border-tn-border bg-tn-panel text-tn-text",

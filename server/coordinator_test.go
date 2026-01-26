@@ -19,13 +19,13 @@ func newTestCoordinator() *Coordinator {
 	})
 }
 
-func waitForDumpContains(t *testing.T, coord *Coordinator, name, want string, timeout time.Duration) {
+func waitForDumpContains(t *testing.T, coord *Coordinator, id, want string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	var lastDump string
 	var lastErr error
 	for time.Now().Before(deadline) {
-		dump, err := coord.Dump(name, DumpViewport, false)
+		dump, err := coord.Dump(id, DumpViewport, false)
 		if err == nil {
 			normalized := strings.ReplaceAll(dump, "\r", "")
 			if strings.Contains(normalized, want) {
@@ -44,13 +44,13 @@ func waitForDumpContains(t *testing.T, coord *Coordinator, name, want string, ti
 	t.Fatalf("timeout waiting for %q: last dump: %q", want, lastDump)
 }
 
-func waitForState(t *testing.T, coord *Coordinator, name string, want SessionState, timeout time.Duration) SessionInfo {
+func waitForState(t *testing.T, coord *Coordinator, id string, want SessionState, timeout time.Duration) SessionInfo {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	var lastInfo *SessionInfo
 	var lastErr error
 	for time.Now().Before(deadline) {
-		info, err := coord.Info(name)
+		info, err := coord.Info(id)
 		if err == nil {
 			if info.State == want {
 				return *info
@@ -92,20 +92,21 @@ func TestSpawnEcho(t *testing.T) {
 	coord := newTestCoordinator()
 	defer coord.CloseAll()
 
-	_, err := coord.Spawn("echo", SpawnOptions{
+	info, err := coord.Spawn("echo", SpawnOptions{
 		Command: []string{"/bin/sh", "-c", "printf 'ready\\n'; read line; printf 'got:%s\\n' \"$line\"; sleep 0.1"},
 	})
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
+	sessionID := info.ID
 
-	waitForDumpContains(t, coord, "echo", "ready", 2*time.Second)
+	waitForDumpContains(t, coord, sessionID, "ready", 2*time.Second)
 
-	if err := coord.Send("echo", []byte("hello\n")); err != nil {
+	if err := coord.Send(sessionID, []byte("hello\n")); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
-	waitForDumpContains(t, coord, "echo", "got:hello", 2*time.Second)
+	waitForDumpContains(t, coord, sessionID, "got:hello", 2*time.Second)
 }
 
 func TestExitCode(t *testing.T) {
@@ -116,16 +117,16 @@ func TestExitCode(t *testing.T) {
 	coord := newTestCoordinator()
 	defer coord.CloseAll()
 
-	_, err := coord.Spawn("exit", SpawnOptions{
+	info, err := coord.Spawn("exit", SpawnOptions{
 		Command: []string{"/bin/sh", "-c", "exit 7"},
 	})
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
 
-	info := waitForState(t, coord, "exit", SessionExited, 2*time.Second)
-	if info.ExitCode != 7 {
-		t.Fatalf("exit code=%d", info.ExitCode)
+	sessionInfo := waitForState(t, coord, info.ID, SessionExited, 2*time.Second)
+	if sessionInfo.ExitCode != 7 {
+		t.Fatalf("exit code=%d", sessionInfo.ExitCode)
 	}
 }
 
@@ -137,20 +138,21 @@ func TestKillSession(t *testing.T) {
 	coord := newTestCoordinator()
 	defer coord.CloseAll()
 
-	_, err := coord.Spawn("kill", SpawnOptions{
+	info, err := coord.Spawn("kill", SpawnOptions{
 		Command: []string{"/bin/sh", "-c", "printf 'ready\\n'; trap 'exit 0' TERM; while true; do sleep 0.1; done"},
 	})
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
+	sessionID := info.ID
 
-	waitForDumpContains(t, coord, "kill", "ready", 2*time.Second)
+	waitForDumpContains(t, coord, sessionID, "ready", 2*time.Second)
 
-	if err := coord.Kill("kill", nil); err != nil {
+	if err := coord.Kill(sessionID, nil); err != nil {
 		t.Fatalf("Kill: %v", err)
 	}
 
-	waitForState(t, coord, "kill", SessionExited, 2*time.Second)
+	waitForState(t, coord, sessionID, SessionExited, 2*time.Second)
 }
 
 func TestRemoveSession(t *testing.T) {
@@ -161,19 +163,20 @@ func TestRemoveSession(t *testing.T) {
 	coord := newTestCoordinator()
 	defer coord.CloseAll()
 
-	_, err := coord.Spawn("remove", SpawnOptions{
+	info, err := coord.Spawn("remove", SpawnOptions{
 		Command: []string{"/bin/sh", "-c", "printf 'ready\\n'; trap 'exit 0' TERM; while true; do sleep 0.1; done"},
 	})
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
+	sessionID := info.ID
 
-	waitForDumpContains(t, coord, "remove", "ready", 2*time.Second)
+	waitForDumpContains(t, coord, sessionID, "ready", 2*time.Second)
 
-	if err := coord.Remove("remove"); err != nil {
+	if err := coord.Remove(sessionID); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
-	if _, err := coord.Info("remove"); !errors.Is(err, ErrSessionNotFound) {
+	if _, err := coord.Info(sessionID); !errors.Is(err, ErrSessionNotFound) {
 		t.Fatalf("expected ErrSessionNotFound, got %v", err)
 	}
 }
@@ -186,16 +189,17 @@ func TestScreenCapture(t *testing.T) {
 	coord := newTestCoordinator()
 	defer coord.CloseAll()
 
-	_, err := coord.Spawn("screen", SpawnOptions{
+	info, err := coord.Spawn("screen", SpawnOptions{
 		Command: []string{"/bin/sh", "-c", "printf 'hi'; sleep 0.2"},
 	})
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
+	sessionID := info.ID
 
-	waitForDumpContains(t, coord, "screen", "hi", 2*time.Second)
+	waitForDumpContains(t, coord, sessionID, "hi", 2*time.Second)
 
-	snap, err := coord.Snapshot("screen")
+	snap, err := coord.Snapshot(sessionID)
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}
@@ -249,12 +253,12 @@ func TestSpawnDefaultWorkingDir(t *testing.T) {
 	coord := newTestCoordinator()
 	defer coord.CloseAll()
 
-	_, err := coord.Spawn("cwd", SpawnOptions{
+	info, err := coord.Spawn("cwd", SpawnOptions{
 		Command: []string{"/bin/sh", "-c", "pwd; sleep 0.1"},
 	})
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
 
-	waitForDumpContains(t, coord, "cwd", tmpDir, 2*time.Second)
+	waitForDumpContains(t, coord, info.ID, tmpDir, 2*time.Second)
 }

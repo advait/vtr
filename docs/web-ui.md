@@ -31,7 +31,7 @@ WebSocket:
 Frames are protobuf `google.protobuf.Any` messages.
 
 `/api/ws`:
-1. Client sends `SubscribeRequest` (Any).
+1. Client sends `SubscribeRequest` (Any). Prefer `id` (stable UUID). `name` is legacy (label) lookup.
 2. Client may send `ResizeRequest`, `SendTextRequest`, `SendKeyRequest`, or `SendBytesRequest` (Any).
 3. Server streams `SubscribeEvent` (Any) until session exit or error.
 
@@ -40,6 +40,11 @@ Frames are protobuf `google.protobuf.Any` messages.
 2. Server streams `SessionsSnapshot` (Any) whenever the list changes.
 
 Errors are returned as `google.rpc.Status` (Any) and then the socket closes.
+
+### Session identity
+
+- `Session.id` is the stable UUID; `Session.name` is a mutable label.
+- For hubs with multiple coordinators, pass a `coordinator:session-id` reference (e.g. `alpha:uuid`) in `SubscribeRequest.id` or request `id` fields so the server can route correctly.
 
 ## Rendering model
 

@@ -4,6 +4,7 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "./
 import { Badge } from "./ui/Badge";
 
 export type SessionInfo = {
+  id: string;
   name: string;
   status: "running" | "closing" | "exited" | "unknown";
   cols: number;
@@ -97,7 +98,8 @@ export function CoordinatorTree({
           <AccordionContent>
             <div className="flex flex-col gap-2">
               {coord.sessions.map((session) => {
-                const sessionKey = `${coord.name}:${session.name}`;
+                const ref = session.id || session.name;
+                const sessionKey = `${coord.name}:${ref}`;
                 return (
                   <button
                     key={sessionKey}
