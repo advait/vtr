@@ -4,11 +4,11 @@
 
 vtr (short for vtrpc) is a terminal multiplexer for the agent era. It supports:
 
-- Headless [ghosty](https://mitchellh.com/writing/libghostty-is-coming) vt that exposes screen state
+- Headless [ghostty](https://mitchellh.com/writing/libghostty-is-coming) VT that exposes screen state
   via gRPC
 - Multi-client terminal control including Web UI, TUI, and agent-first CLI
 - Ability to run multiple coordinators (terminal engines) on different machines, VMs, and docker
-  containers; registration to a hub is supported, while proxying is planned
+  containers; spokes register to a hub and the hub proxies requests via tunnel
 
 > ⚠️ **Alpha software** - vtr is under active development and not yet ready for production
 > workloads. APIs may change, and there will be bugs. Use at your own risk.
@@ -115,21 +115,22 @@ or sleep hacks required.
 
 ## Hub/Spoke Federation
 
-Spokes can register to a hub today, but the hub does not proxy requests yet.
-Use `vtr web` with multiple coordinators for a multi-coordinator UI.
+Spokes connect to the hub via a tunnel; the hub proxies requests and aggregates
+session lists so clients can use the hub as a single entry point.
 
 ```bash
 # On the hub machine (central control + web UI)
 vtr hub --addr 127.0.0.1:4620
 
 # On container/VM A
-vtr spoke --hub hub.internal:4621 --name container-a
+vtr spoke --hub hub.internal:4620 --name container-a
 
 # On container/VM B
-vtr spoke --hub hub.internal:4621 --name container-b
+vtr spoke --hub hub.internal:4620 --name container-b
 ```
 
-For a multi-coordinator web UI, point `vtr web` at multiple sockets:
+For a multi-coordinator web UI, point `vtr web` at the hub (recommended) or pass
+multiple coordinators directly:
 
 ```bash
 vtr web --coordinator /path/to/a.sock --coordinator /path/to/b.sock

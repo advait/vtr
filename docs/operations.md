@@ -44,7 +44,7 @@ Notes:
 ## Spoke runtime
 
 ```
-vtr spoke --hub host:4621 [--name spoke-a]
+vtr spoke --hub host:4620 [--name spoke-a]
          [--serve-socket --socket /path/to.sock]
          [--grpc-addr 127.0.0.1:4621]
 ```

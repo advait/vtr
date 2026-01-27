@@ -12,6 +12,7 @@ Federation is tunnel-only:
 In practice today:
 - `vtr hub` runs a local coordinator + web UI.
 - `vtr spoke` opens a tunnel so the hub routes requests to it.
+- `vtr hub --no-coordinator` runs a hub-only aggregator (no local sessions).
 
 ## What works now
 
@@ -37,8 +38,8 @@ In practice today:
 vtr hub --addr 127.0.0.1:4620
 
 # Spoke (tunnel, no listeners)
-vtr spoke --hub hub.internal:4621 --name spoke-a
+vtr spoke --hub hub.internal:4620 --name spoke-a
 
 # Spoke with local Unix socket
-vtr spoke --hub hub.internal:4621 --serve-socket --socket /tmp/vtrpc.sock
+vtr spoke --hub hub.internal:4620 --serve-socket --socket /tmp/vtrpc.sock
 ```
