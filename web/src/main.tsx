@@ -7,7 +7,7 @@ import { loadPreferences } from "./lib/preferences";
 import { applyTheme, getTheme } from "./lib/theme";
 
 const nerdFontRegularUrl = new URL(
-  "./assets/fonts/jetbrains-mono-nerd/JetBrainsMonoNerdFont-Regular.ttf",
+  "./assets/fonts/jetbrains-mono-nerd/JetBrainsMonoNerdFont-Regular.woff2",
   import.meta.url,
 ).href;
 
@@ -27,7 +27,7 @@ function preloadFont(href: string, type: string) {
   document.head.appendChild(link);
 }
 
-preloadFont(nerdFontRegularUrl, "font/ttf");
+preloadFont(nerdFontRegularUrl, "font/woff2");
 
 applyTheme(getTheme(loadPreferences().themeId));
 

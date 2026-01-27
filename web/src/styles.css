@@ -43,8 +43,8 @@
   font-style: normal;
   font-display: block;
   font-weight: 400;
-  src: url("./assets/fonts/jetbrains-mono-nerd/JetBrainsMonoNerdFont-Regular.ttf")
-    format("truetype");
+  src: url("./assets/fonts/jetbrains-mono-nerd/JetBrainsMonoNerdFont-Regular.woff2")
+    format("woff2");
   unicode-range: U+E000-F8FF;
 }
 
@@ -53,8 +53,8 @@
   font-style: italic;
   font-display: block;
   font-weight: 400;
-  src: url("./assets/fonts/jetbrains-mono-nerd/JetBrainsMonoNerdFont-Italic.ttf")
-    format("truetype");
+  src: url("./assets/fonts/jetbrains-mono-nerd/JetBrainsMonoNerdFont-Italic.woff2")
+    format("woff2");
   unicode-range: U+E000-F8FF;
 }
 
@@ -63,8 +63,8 @@
   font-style: normal;
   font-display: block;
   font-weight: 600;
-  src: url("./assets/fonts/jetbrains-mono-nerd/JetBrainsMonoNerdFont-Bold.ttf")
-    format("truetype");
+  src: url("./assets/fonts/jetbrains-mono-nerd/JetBrainsMonoNerdFont-Bold.woff2")
+    format("woff2");
   unicode-range: U+E000-F8FF;
 }
 
@@ -73,8 +73,8 @@
   font-style: italic;
   font-display: block;
   font-weight: 600;
-  src: url("./assets/fonts/jetbrains-mono-nerd/JetBrainsMonoNerdFont-BoldItalic.ttf")
-    format("truetype");
+  src: url("./assets/fonts/jetbrains-mono-nerd/JetBrainsMonoNerdFont-BoldItalic.woff2")
+    format("woff2");
   unicode-range: U+E000-F8FF;
 }
 
