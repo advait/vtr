@@ -175,6 +175,22 @@ func (s sessionListHeader) FilterValue() string {
 	return s.filter
 }
 
+type sessionCreateItem struct {
+	coord coordinatorRef
+}
+
+func (s sessionCreateItem) Title() string {
+	return fmt.Sprintf("%s%s create session", sessionListIndent, attachListCreateStyle.Render(tabNewGlyph))
+}
+
+func (s sessionCreateItem) Description() string {
+	return sessionListIndent + "press enter to create"
+}
+
+func (s sessionCreateItem) FilterValue() string {
+	return fmt.Sprintf("%s create session new", s.coord.Name)
+}
+
 func sortSessionListItems(items []sessionListItem) {
 	sort.Slice(items, func(i, j int) bool {
 		left := items[i]
@@ -287,6 +303,9 @@ var (
 				Bold(true)
 	attachListHeaderCountStyle = lipgloss.NewStyle().
 					Foreground(lipgloss.Color("240"))
+	attachListCreateStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("120")).
+				Bold(true)
 	attachOverflowStyle = attachTabBaseStyle.Copy().
 				Foreground(lipgloss.Color("244"))
 	attachModalStyle = lipgloss.NewStyle().
@@ -294,6 +313,8 @@ var (
 				BorderForeground(lipgloss.Color("240")).
 				Padding(1, 2)
 )
+
+var errNoSessions = errors.New("no sessions found")
 
 func newTuiCmd() *cobra.Command {
 	var hub string
@@ -314,13 +335,16 @@ func newTuiCmd() *cobra.Command {
 			if len(args) == 0 {
 				target, err = resolveFirstSessionTarget(context.Background(), targetCoord, cfg)
 				if err != nil {
-					return err
+					if !errors.Is(err, errNoSessions) {
+						return err
+					}
+					target = sessionTarget{Coordinator: targetCoord}
 				}
 			} else {
 				target.Label = args[0]
 			}
 
-			coords := []coordinatorRef{targetCoord}
+			coords := initialCoordinatorRefs(cfg, targetCoord)
 			coordIdx := 0
 
 			conn, err := dialClient(context.Background(), targetCoord.Path, cfg)
@@ -328,13 +352,18 @@ func newTuiCmd() *cobra.Command {
 				return err
 			}
 			client := proto.NewVTRClient(conn)
-			if target.ID == "" {
+			if target.ID == "" && strings.TrimSpace(target.Label) != "" {
 				resolved, err := ensureSessionExists(client, target.Label)
 				if err != nil {
 					_ = conn.Close()
 					return err
 				}
 				target = resolved
+			}
+
+			listActive := false
+			if target.ID == "" && strings.TrimSpace(target.Label) == "" {
+				listActive = true
 			}
 
 			model := attachModel{
@@ -350,6 +379,7 @@ func newTuiCmd() *cobra.Command {
 				createInput:      newCreateInput(),
 				createCoordIdx:   coordIdx,
 				createFocusInput: true,
+				listActive:       listActive,
 				now:              time.Now(),
 				lastListAt:       time.Now(),
 			}
@@ -372,6 +402,18 @@ func newTuiCmd() *cobra.Command {
 	}
 	addHubFlag(cmd, &hub)
 	return cmd
+}
+
+func initialCoordinatorRefs(cfg *clientConfig, target coordinatorRef) []coordinatorRef {
+	coords := []coordinatorRef{target}
+	if cfg == nil || len(cfg.Coordinators) == 0 {
+		return coords
+	}
+	resolved, err := resolveCoordinatorRefs(cfg)
+	if err != nil || len(resolved) == 0 {
+		return coords
+	}
+	return ensureCoordinator(resolved, target)
 }
 
 func resolveFirstSessionTarget(ctx context.Context, coord coordinatorRef, cfg *clientConfig) (sessionTarget, error) {
@@ -419,9 +461,9 @@ func resolveFirstSessionTarget(ctx context.Context, coord coordinatorRef, cfg *c
 		return sessionTarget{}, fmt.Errorf("unable to list sessions: %s", strings.Join(errs, "; "))
 	}
 	if len(errs) > 0 && hadSuccess {
-		return sessionTarget{}, fmt.Errorf("no sessions found (errors: %s)", strings.Join(errs, "; "))
+		return sessionTarget{}, fmt.Errorf("%w (errors: %s)", errNoSessions, strings.Join(errs, "; "))
 	}
-	return sessionTarget{}, fmt.Errorf("no sessions found")
+	return sessionTarget{}, errNoSessions
 }
 
 func ensureSessionExists(client proto.VTRClient, ref string) (sessionTarget, error) {
@@ -488,11 +530,14 @@ func confirmCreateSession(name string) (bool, error) {
 }
 
 func (m attachModel) Init() tea.Cmd {
-	return tea.Batch(
-		startSubscribeCmd(m.client, m.sessionID, m.sessionLabel, m.streamID),
+	cmds := []tea.Cmd{
 		loadSessionListCmd(m.client, false, m.coordinator.Name),
 		tickCmd(),
-	)
+	}
+	if strings.TrimSpace(m.sessionID) != "" || strings.TrimSpace(m.sessionLabel) != "" {
+		cmds = append(cmds, startSubscribeCmd(m.client, m.sessionID, m.sessionLabel, m.streamID))
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -549,7 +594,7 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.streamCancel()
 				m.streamCancel = nil
 			}
-			cmd := m.sessionList.SetItems(sessionItemsToListItems(visibleSessionItems(m), m.coordinator.Name))
+			cmd := m.sessionList.SetItems(sessionItemsToListItems(visibleSessionItems(m), m.coords, m.coordinator.Name))
 			skipSessionListHeaders(&m.sessionList, 1)
 			return m, cmd
 		}
@@ -607,7 +652,7 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.lastListAt = time.Now()
-		cmd := m.sessionList.SetItems(sessionItemsToListItems(visibleSessionItems(m), m.coordinator.Name))
+		cmd := m.sessionList.SetItems(sessionItemsToListItems(visibleSessionItems(m), m.coords, m.coordinator.Name))
 		skipSessionListHeaders(&m.sessionList, 1)
 		if msg.activate {
 			m.listActive = true
@@ -1022,7 +1067,7 @@ func handleLeaderKey(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
 			m.statusMsg = "hiding closed sessions"
 		}
 		m.statusUntil = time.Now().Add(2 * time.Second)
-		cmd := m.sessionList.SetItems(sessionItemsToListItems(visibleSessionItems(m), m.coordinator.Name))
+		cmd := m.sessionList.SetItems(sessionItemsToListItems(visibleSessionItems(m), m.coords, m.coordinator.Name))
 		skipSessionListHeaders(&m.sessionList, 1)
 		return m, cmd
 	case "w":
@@ -1316,6 +1361,17 @@ func beginCreateModal(m attachModel) (attachModel, tea.Cmd) {
 	return m, nil
 }
 
+func beginCreateModalForCoord(m attachModel, coord coordinatorRef) (attachModel, tea.Cmd) {
+	m, cmd := beginCreateModal(m)
+	if !m.createActive {
+		return m, cmd
+	}
+	if idx := coordinatorIndex(m.coords, coord); idx >= 0 {
+		m.createCoordIdx = idx
+	}
+	return m, cmd
+}
+
 func updateSessionList(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
@@ -1328,12 +1384,15 @@ func updateSessionList(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
 		if item == nil {
 			return m, nil
 		}
-		selected, ok := item.(sessionListItem)
-		if !ok {
+		switch selected := item.(type) {
+		case sessionListItem:
+			m.listActive = false
+			return switchSession(m, sessionSwitchMsg{id: selected.id, label: selected.label})
+		case sessionCreateItem:
+			return beginCreateModalForCoord(m, selected.coord)
+		default:
 			return m, nil
 		}
-		m.listActive = false
-		return switchSession(m, sessionSwitchMsg{id: selected.id, label: selected.label})
 	}
 	var cmd tea.Cmd
 	m.sessionList, cmd = m.sessionList.Update(msg)
@@ -1348,6 +1407,15 @@ func updateSessionList(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
 	return m, cmd
 }
 
+func isSessionListSelectable(item list.Item) bool {
+	switch item.(type) {
+	case sessionListItem, sessionCreateItem:
+		return true
+	default:
+		return false
+	}
+}
+
 func skipSessionListHeaders(model *list.Model, direction int) {
 	if model == nil {
 		return
@@ -1356,14 +1424,14 @@ func skipSessionListHeaders(model *list.Model, direction int) {
 	if len(items) == 0 {
 		return
 	}
-	hasSessions := false
+	hasSelectable := false
 	for _, item := range items {
-		if _, ok := item.(sessionListItem); ok {
-			hasSessions = true
+		if isSessionListSelectable(item) {
+			hasSelectable = true
 			break
 		}
 	}
-	if !hasSessions {
+	if !hasSelectable {
 		return
 	}
 	if direction == 0 {
@@ -1374,7 +1442,7 @@ func skipSessionListHeaders(model *list.Model, direction int) {
 		idx = 0
 		model.Select(0)
 	}
-	if _, ok := items[idx].(sessionListItem); ok {
+	if isSessionListSelectable(items[idx]) {
 		return
 	}
 	for step := 1; step <= len(items); step++ {
@@ -1382,7 +1450,7 @@ func skipSessionListHeaders(model *list.Model, direction int) {
 		if next < 0 || next >= len(items) {
 			break
 		}
-		if _, ok := items[next].(sessionListItem); ok {
+		if isSessionListSelectable(items[next]) {
 			model.Select(next)
 			return
 		}
@@ -1392,7 +1460,7 @@ func skipSessionListHeaders(model *list.Model, direction int) {
 		if next < 0 || next >= len(items) {
 			break
 		}
-		if _, ok := items[next].(sessionListItem); ok {
+		if isSessionListSelectable(items[next]) {
 			model.Select(next)
 			return
 		}
@@ -1520,7 +1588,7 @@ func applySessionIdle(m attachModel, id, label string, idle bool) (attachModel, 
 		})
 		sortSessionListItems(m.sessionItems)
 	}
-	cmd := m.sessionList.SetItems(sessionItemsToListItems(visibleSessionItems(m), m.coordinator.Name))
+	cmd := m.sessionList.SetItems(sessionItemsToListItems(visibleSessionItems(m), m.coords, m.coordinator.Name))
 	skipSessionListHeaders(&m.sessionList, 1)
 	return m, cmd
 }
@@ -1569,11 +1637,30 @@ func filterVisibleSessionItems(items []sessionListItem, showExited bool, activeI
 	return out
 }
 
-func sessionItemsToListItems(items []sessionListItem, fallbackCoord string) []list.Item {
+func sessionItemsToListItems(items []sessionListItem, coords []coordinatorRef, fallbackCoord string) []list.Item {
 	if len(items) == 0 {
-		return nil
+		return coordinatorCreateItems(coords)
 	}
 	return groupSessionListItems(items, fallbackCoord)
+}
+
+func coordinatorCreateItems(coords []coordinatorRef) []list.Item {
+	if len(coords) == 0 {
+		return nil
+	}
+	out := make([]list.Item, 0, len(coords)*2)
+	for _, coord := range coords {
+		if strings.TrimSpace(coord.Name) == "" {
+			continue
+		}
+		out = append(out, sessionListHeader{
+			name:   coord.Name,
+			count:  0,
+			filter: coord.Name,
+		})
+		out = append(out, sessionCreateItem{coord: coord})
+	}
+	return out
 }
 
 func groupSessionListItems(items []sessionListItem, fallbackCoord string) []list.Item {
