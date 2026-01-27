@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -25,11 +24,10 @@ func startGRPCTestServer(t *testing.T) (proto.VTRClient, func()) {
 	t.Helper()
 
 	coord := newTestCoordinator()
-	socketPath := filepath.Join(t.TempDir(), "vtr.sock")
-	listener, err := ListenUnix(socketPath)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		coord.CloseAll()
-		t.Fatalf("ListenUnix: %v", err)
+		t.Fatalf("Listen: %v", err)
 	}
 
 	grpcServer := grpc.NewServer()
@@ -39,9 +37,8 @@ func startGRPCTestServer(t *testing.T) (proto.VTRClient, func()) {
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	conn, err := grpc.DialContext(ctx, socketPath,
+	conn, err := grpc.DialContext(ctx, listener.Addr().String(),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithContextDialer(unixDialer),
 	)
 	cancel()
 	if err != nil {
@@ -52,17 +49,12 @@ func startGRPCTestServer(t *testing.T) (proto.VTRClient, func()) {
 
 	client := proto.NewVTRClient(conn)
 	cleanup := func() {
-		_ = conn.Close()
-		grpcServer.GracefulStop()
-		_ = listener.Close()
-		_ = coord.CloseAll()
+	_ = conn.Close()
+	grpcServer.GracefulStop()
+	_ = listener.Close()
+	_ = coord.CloseAll()
 	}
 	return client, cleanup
-}
-
-func unixDialer(ctx context.Context, addr string) (net.Conn, error) {
-	var d net.Dialer
-	return d.DialContext(ctx, "unix", addr)
 }
 
 func waitForScreenContains(t *testing.T, client proto.VTRClient, id, want string, timeout time.Duration) {

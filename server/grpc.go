@@ -156,95 +156,6 @@ func NewGRPCServerWithTokenAndService(service proto.VTRServer, token string) *gr
 	return grpcServer
 }
 
-// ListenUnix creates a Unix socket listener, removing any stale socket file.
-func ListenUnix(socketPath string) (net.Listener, error) {
-	if strings.TrimSpace(socketPath) == "" {
-		return nil, errors.New("grpc: socket path is required")
-	}
-	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
-		return nil, err
-	}
-	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
-		return nil, err
-	}
-	return net.Listen("unix", socketPath)
-}
-
-// ServeUnix runs the gRPC server on a Unix socket until ctx is canceled.
-func ServeUnix(ctx context.Context, coord *Coordinator, socketPath string) error {
-	listener, err := ListenUnix(socketPath)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		_ = listener.Close()
-		_ = os.Remove(socketPath)
-	}()
-
-	grpcServer := grpc.NewServer(
-		grpc.KeepaliveParams(grpcKeepaliveParams),
-		grpc.KeepaliveEnforcementPolicy(grpcKeepalivePolicy),
-	)
-	service := NewGRPCServer(coord)
-	service.SetCoordinatorInfo("", socketPath)
-	proto.RegisterVTRServer(grpcServer, service)
-
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- grpcServer.Serve(listener)
-	}()
-
-	select {
-	case <-ctx.Done():
-		gracefulStopWithTimeout(grpcServer, grpcGracefulShutdownTimeout)
-		err := <-errCh
-		if err != nil && !errors.Is(err, grpc.ErrServerStopped) {
-			return err
-		}
-		return ctx.Err()
-	case err := <-errCh:
-		return err
-	}
-}
-
-// ServeUnixWithService runs the provided gRPC service on a Unix socket until ctx is canceled.
-func ServeUnixWithService(ctx context.Context, service proto.VTRServer, socketPath string) error {
-	if service == nil {
-		return errors.New("grpc: service is required")
-	}
-	listener, err := ListenUnix(socketPath)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		_ = listener.Close()
-		_ = os.Remove(socketPath)
-	}()
-
-	grpcServer := grpc.NewServer(
-		grpc.KeepaliveParams(grpcKeepaliveParams),
-		grpc.KeepaliveEnforcementPolicy(grpcKeepalivePolicy),
-	)
-	proto.RegisterVTRServer(grpcServer, service)
-
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- grpcServer.Serve(listener)
-	}()
-
-	select {
-	case <-ctx.Done():
-		gracefulStopWithTimeout(grpcServer, grpcGracefulShutdownTimeout)
-		err := <-errCh
-		if err != nil && !errors.Is(err, grpc.ErrServerStopped) {
-			return err
-		}
-		return ctx.Err()
-	case err := <-errCh:
-		return err
-	}
-}
-
 // ServeTCP runs the gRPC server on a TCP address until ctx is canceled.
 // TLS is required when binding to a non-loopback address.
 func ServeTCP(ctx context.Context, coord *Coordinator, addr string, tlsConfig *tls.Config, token string) error {
@@ -480,12 +391,22 @@ func (s *GRPCServer) coordinatorInfo() (string, string) {
 }
 
 func coordinatorNameFromPath(path string) string {
-	base := filepath.Base(strings.TrimSpace(path))
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(trimmed); err == nil {
+		host = strings.Trim(host, "[]")
+		if host != "" {
+			return host
+		}
+	}
+	base := filepath.Base(trimmed)
 	if strings.HasSuffix(base, ".sock") {
 		base = strings.TrimSuffix(base, ".sock")
 	}
 	if base == "" {
-		return strings.TrimSpace(path)
+		return trimmed
 	}
 	return base
 }

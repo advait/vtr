@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -16,16 +17,13 @@ import (
 	"google.golang.org/grpc"
 )
 
-const testSocketPath = "/tmp/vtrpc.sock"
-
-func setupCLIConfig(t *testing.T, socketPath string) {
+func setupCLIConfig(t *testing.T, hubAddr string) {
 	t.Helper()
 	configDir := t.TempDir()
 	t.Setenv("VTRPC_CONFIG_DIR", configDir)
 	config := strings.Join([]string{
 		"[hub]",
-		fmt.Sprintf("grpc_socket = %q", socketPath),
-		fmt.Sprintf("addr = %q", "127.0.0.1:4620"),
+		fmt.Sprintf("addr = %q", hubAddr),
 		"web_enabled = true",
 		"",
 	}, "\n")
@@ -34,7 +32,7 @@ func setupCLIConfig(t *testing.T, socketPath string) {
 	}
 }
 
-func startCLITestServer(t *testing.T, socketPath string) (string, func()) {
+func startCLITestServer(t *testing.T) (string, func()) {
 	t.Helper()
 
 	coord := server.NewCoordinator(server.CoordinatorOptions{
@@ -44,10 +42,10 @@ func startCLITestServer(t *testing.T, socketPath string) (string, func()) {
 		Scrollback:   2000,
 		KillTimeout:  500 * time.Millisecond,
 	})
-	listener, err := server.ListenUnix(socketPath)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		coord.CloseAll()
-		t.Fatalf("ListenUnix: %v", err)
+		t.Fatalf("Listen: %v", err)
 	}
 
 	grpcServer := grpc.NewServer()
@@ -60,9 +58,8 @@ func startCLITestServer(t *testing.T, socketPath string) (string, func()) {
 		grpcServer.GracefulStop()
 		_ = listener.Close()
 		_ = coord.CloseAll()
-		_ = os.Remove(socketPath)
 	}
-	return socketPath, cleanup
+	return listener.Addr().String(), cleanup
 }
 
 func TestCLIEndToEnd(t *testing.T) {
@@ -70,23 +67,23 @@ func TestCLIEndToEnd(t *testing.T) {
 		t.Skip("pty tests not supported on windows")
 	}
 
-	setupCLIConfig(t, testSocketPath)
-	socketPath, cleanup := startCLITestServer(t, testSocketPath)
+	hubAddr, cleanup := startCLITestServer(t)
+	setupCLIConfig(t, hubAddr)
 	t.Cleanup(cleanup)
 
-	_, err := runCLICommand(t, "agent", "spawn", "--hub", socketPath, "--cmd", "printf 'ready\\n'; read line; printf 'got:%s\\n' \"$line\"; sleep 0.1", "cli-e2e")
+	_, err := runCLICommand(t, "agent", "spawn", "--hub", hubAddr, "--cmd", "printf 'ready\\n'; read line; printf 'got:%s\\n' \"$line\"; sleep 0.1", "cli-e2e")
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
 
-	waitForCLIScreenContains(t, socketPath, "cli-e2e", "ready", 2*time.Second)
+	waitForCLIScreenContains(t, hubAddr, "cli-e2e", "ready", 2*time.Second)
 
-	_, err = runCLICommand(t, "agent", "send", "--hub", socketPath, "cli-e2e", "hello\n")
+	_, err = runCLICommand(t, "agent", "send", "--hub", hubAddr, "cli-e2e", "hello\n")
 	if err != nil {
 		t.Fatalf("send: %v", err)
 	}
 
-	waitForCLIScreenContains(t, socketPath, "cli-e2e", "got:hello", 2*time.Second)
+	waitForCLIScreenContains(t, hubAddr, "cli-e2e", "got:hello", 2*time.Second)
 }
 
 func TestCLIGrep(t *testing.T) {
@@ -94,18 +91,18 @@ func TestCLIGrep(t *testing.T) {
 		t.Skip("pty tests not supported on windows")
 	}
 
-	setupCLIConfig(t, testSocketPath)
-	socketPath, cleanup := startCLITestServer(t, testSocketPath)
+	hubAddr, cleanup := startCLITestServer(t)
+	setupCLIConfig(t, hubAddr)
 	t.Cleanup(cleanup)
 
-	_, err := runCLICommand(t, "agent", "spawn", "--hub", socketPath, "--cmd", "printf 'zero\\none\\nerror here\\nthree\\n'; sleep 0.1", "cli-grep")
+	_, err := runCLICommand(t, "agent", "spawn", "--hub", hubAddr, "--cmd", "printf 'zero\\none\\nerror here\\nthree\\n'; sleep 0.1", "cli-grep")
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
 
-	waitForCLIScreenContains(t, socketPath, "cli-grep", "error here", 2*time.Second)
+	waitForCLIScreenContains(t, hubAddr, "cli-grep", "error here", 2*time.Second)
 
-	out, err := runCLICommand(t, "agent", "grep", "--hub", socketPath, "-C", "1", "cli-grep", "error")
+	out, err := runCLICommand(t, "agent", "grep", "--hub", hubAddr, "-C", "1", "cli-grep", "error")
 	if err != nil {
 		t.Fatalf("grep: %v", err)
 	}
@@ -137,16 +134,16 @@ func TestCLIWait(t *testing.T) {
 		t.Skip("pty tests not supported on windows")
 	}
 
-	setupCLIConfig(t, testSocketPath)
-	socketPath, cleanup := startCLITestServer(t, testSocketPath)
+	hubAddr, cleanup := startCLITestServer(t)
+	setupCLIConfig(t, hubAddr)
 	t.Cleanup(cleanup)
 
-	_, err := runCLICommand(t, "agent", "spawn", "--hub", socketPath, "--cmd", "sleep 0.2; printf 'done\\n'; sleep 0.1", "cli-wait")
+	_, err := runCLICommand(t, "agent", "spawn", "--hub", hubAddr, "--cmd", "sleep 0.2; printf 'done\\n'; sleep 0.1", "cli-wait")
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
 
-	out, err := runCLICommand(t, "agent", "wait", "--hub", socketPath, "--timeout", "1s", "cli-wait", "done")
+	out, err := runCLICommand(t, "agent", "wait", "--hub", hubAddr, "--timeout", "1s", "cli-wait", "done")
 	if err != nil {
 		t.Fatalf("wait: %v", err)
 	}
@@ -162,12 +159,12 @@ func TestCLIWait(t *testing.T) {
 		t.Fatalf("matched line=%q", resp.MatchedLine)
 	}
 
-	_, err = runCLICommand(t, "agent", "spawn", "--hub", socketPath, "--cmd", "sleep 0.3", "cli-wait-timeout")
+	_, err = runCLICommand(t, "agent", "spawn", "--hub", hubAddr, "--cmd", "sleep 0.3", "cli-wait-timeout")
 	if err != nil {
 		t.Fatalf("spawn timeout: %v", err)
 	}
 
-	out, err = runCLICommand(t, "agent", "wait", "--hub", socketPath, "--timeout", "200ms", "cli-wait-timeout", "never")
+	out, err = runCLICommand(t, "agent", "wait", "--hub", hubAddr, "--timeout", "200ms", "cli-wait-timeout", "never")
 	if err != nil {
 		t.Fatalf("wait timeout: %v", err)
 	}
@@ -184,18 +181,18 @@ func TestCLIIdle(t *testing.T) {
 		t.Skip("pty tests not supported on windows")
 	}
 
-	setupCLIConfig(t, testSocketPath)
-	socketPath, cleanup := startCLITestServer(t, testSocketPath)
+	hubAddr, cleanup := startCLITestServer(t)
+	setupCLIConfig(t, hubAddr)
 	t.Cleanup(cleanup)
 
-	_, err := runCLICommand(t, "agent", "spawn", "--hub", socketPath, "--cmd", "printf 'ready\\n'; sleep 0.4", "cli-idle")
+	_, err := runCLICommand(t, "agent", "spawn", "--hub", hubAddr, "--cmd", "printf 'ready\\n'; sleep 0.4", "cli-idle")
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
 
-	waitForCLIScreenContains(t, socketPath, "cli-idle", "ready", 2*time.Second)
+	waitForCLIScreenContains(t, hubAddr, "cli-idle", "ready", 2*time.Second)
 
-	out, err := runCLICommand(t, "agent", "idle", "--hub", socketPath, "--idle", "100ms", "--timeout", "1s", "cli-idle")
+	out, err := runCLICommand(t, "agent", "idle", "--hub", hubAddr, "--idle", "100ms", "--timeout", "1s", "cli-idle")
 	if err != nil {
 		t.Fatalf("idle: %v", err)
 	}
@@ -220,13 +217,13 @@ func runCLICommand(t *testing.T, args ...string) (string, error) {
 	return buf.String(), err
 }
 
-func waitForCLIScreenContains(t *testing.T, socketPath, name, want string, timeout time.Duration) {
+func waitForCLIScreenContains(t *testing.T, hubAddr, name, want string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	var lastOutput string
 	var lastErr error
 	for time.Now().Before(deadline) {
-		out, err := runCLICommand(t, "agent", "screen", "--json", "--hub", socketPath, name)
+		out, err := runCLICommand(t, "agent", "screen", "--json", "--hub", hubAddr, name)
 		if err == nil {
 			var resp jsonScreenEnvelope
 			if err := json.Unmarshal([]byte(out), &resp); err != nil {

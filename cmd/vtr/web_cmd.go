@@ -32,50 +32,21 @@ import (
 
 type webOptions struct {
 	addr         string
-	socket       string
-	coordinators []string
+	hub          string
 	dev          bool
 	devServer    string
 }
 
 type webResolver struct {
-	coords       []coordinatorRef
-	allowDefault bool
 	cfg          *clientConfig
-	coordsFn     func() ([]coordinatorRef, error)
-	hubFn        func() (coordinatorRef, error)
-}
-
-func (r webResolver) coordinators() ([]coordinatorRef, error) {
-	if r.coordsFn != nil {
-		return r.coordsFn()
-	}
-	if len(r.coords) == 0 && !r.allowDefault {
-		return nil, errors.New("no coordinators configured")
-	}
-	if r.allowDefault {
-		return coordinatorsOrDefault(r.coords), nil
-	}
-	return r.coords, nil
+	hub          coordinatorRef
 }
 
 func (r webResolver) hubTarget() (coordinatorRef, error) {
-	if r.hubFn != nil {
-		return r.hubFn()
+	if strings.TrimSpace(r.hub.Path) != "" {
+		return r.hub, nil
 	}
-	if r.cfg != nil {
-		if hub, err := resolveHubTarget(r.cfg, ""); err == nil {
-			return hub, nil
-		}
-	}
-	coords, err := r.coordinators()
-	if err != nil {
-		return coordinatorRef{}, err
-	}
-	if len(coords) == 0 {
-		return coordinatorRef{}, errors.New("no coordinators configured")
-	}
-	return coords[0], nil
+	return resolveHubTarget(r.cfg, "")
 }
 
 type wsProtocolError struct {
@@ -122,8 +93,7 @@ func newWebCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.addr, "listen", "127.0.0.1:8080", "address to listen on")
 	cmd.Flags().StringVar(&opts.addr, "addr", "127.0.0.1:8080", "address to listen on (deprecated)")
 	_ = cmd.Flags().MarkDeprecated("addr", "use --listen")
-	cmd.Flags().StringVar(&opts.socket, "socket", "", "path to coordinator socket")
-	cmd.Flags().StringArrayVar(&opts.coordinators, "coordinator", nil, "coordinator socket path or glob (repeatable)")
+	cmd.Flags().StringVar(&opts.hub, "hub", "", "hub address (host:port)")
 	cmd.Flags().BoolVar(&opts.dev, "dev", opts.dev, "serve the web UI via the Vite dev server (HMR)")
 	cmd.Flags().StringVar(&opts.devServer, "dev-server", opts.devServer, "Vite dev server URL for --dev")
 
@@ -303,17 +273,19 @@ func handleWebsocket(resolver webResolver) http.HandlerFunc {
 			return
 		}
 
-		sessionRef := strings.TrimSpace(hello.GetId())
-		if sessionRef == "" {
-			sessionRef = strings.TrimSpace(hello.GetName())
+		sessionID := strings.TrimSpace(hello.GetId())
+		if sessionID == "" && strings.TrimSpace(hello.GetName()) == "" {
+			_ = sendWSError(ctx, sender, wsProtocolError{Code: codes.InvalidArgument, Message: "session is required"})
+			return
 		}
-		target, err := resolveWebTarget(ctx, sessionRef, resolver)
+
+		hubTarget, err := resolver.hubTarget()
 		if err != nil {
 			_ = sendWSError(ctx, sender, err)
 			return
 		}
 
-		grpcConn, err := dialClient(ctx, target.Coordinator.Path, resolver.cfg)
+		grpcConn, err := dialClient(ctx, hubTarget.Path, resolver.cfg)
 		if err != nil {
 			_ = sendWSError(ctx, sender, err)
 			return
@@ -321,13 +293,18 @@ func handleWebsocket(resolver webResolver) http.HandlerFunc {
 		defer grpcConn.Close()
 
 		client := proto.NewVTRClient(grpcConn)
+		if sessionID == "" {
+			sessionID, _, err = resolveSessionID(ctx, client, strings.TrimSpace(hello.GetName()))
+			if err != nil {
+				_ = sendWSError(ctx, sender, wrapResolveError(err))
+				return
+			}
+		}
 
 		streamCtx, streamCancel := context.WithCancel(ctx)
 		defer streamCancel()
-		targetName := strings.TrimSpace(target.Label)
 		stream, err := client.Subscribe(streamCtx, &proto.SubscribeRequest{
-			Name:                 targetName,
-			Id:                   target.ID,
+			Id:                   sessionID,
 			IncludeScreenUpdates: hello.GetIncludeScreenUpdates(),
 			IncludeRawOutput:     hello.GetIncludeRawOutput(),
 		})
@@ -341,7 +318,7 @@ func handleWebsocket(resolver webResolver) http.HandlerFunc {
 			errCh <- streamToWeb(ctx, sender, stream)
 		}()
 		go func() {
-			errCh <- handleWebInput(ctx, conn, client, target.ID, targetName)
+			errCh <- handleWebInput(ctx, conn, client, sessionID)
 		}()
 
 		err = <-errCh
@@ -587,20 +564,16 @@ func handleWebSessionCreate(w http.ResponseWriter, r *http.Request, resolver web
 		return
 	}
 
-	coords, err := resolver.coordinators()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	coord, err := selectCoordinator(coords, strings.TrimSpace(req.Coordinator))
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
+	coordName := strings.TrimSpace(req.Coordinator)
 
 	ctx, cancel := context.WithTimeout(r.Context(), rpcTimeout)
-	conn, err := dialClient(ctx, coord.Path, resolver.cfg)
+	hubTarget, err := resolver.hubTarget()
+	if err != nil {
+		cancel()
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	conn, err := dialClient(ctx, hubTarget.Path, resolver.cfg)
 	cancel()
 	if err != nil {
 		writeWebError(w, err)
@@ -610,8 +583,8 @@ func handleWebSessionCreate(w http.ResponseWriter, r *http.Request, resolver web
 
 	client := proto.NewVTRClient(conn)
 	spawnName := name
-	if coord.SessionPrefix != "" {
-		prefix := coord.SessionPrefix + ":"
+	if coordName != "" {
+		prefix := coordName + ":"
 		if !strings.HasPrefix(spawnName, prefix) {
 			spawnName = prefix + spawnName
 		}
@@ -630,8 +603,11 @@ func handleWebSessionCreate(w http.ResponseWriter, r *http.Request, resolver web
 		return
 	}
 
+	if coordName == "" {
+		coordName = hubTarget.Name
+	}
 	writeWebJSON(w, webSessionCreateResponse{
-		Coordinator: coord.Name,
+		Coordinator: coordName,
 		Session:     webSessionFromProto(resp.GetSession()),
 	})
 }
@@ -650,7 +626,8 @@ func handleWebSessionAction(resolver webResolver) http.HandlerFunc {
 		}
 
 		action := strings.ToLower(strings.TrimSpace(req.Action))
-		sessionRef := strings.TrimSpace(req.ID)
+		targetID := strings.TrimSpace(req.ID)
+		sessionRef := targetID
 		if sessionRef == "" {
 			sessionRef = strings.TrimSpace(req.Name)
 		}
@@ -663,14 +640,14 @@ func handleWebSessionAction(resolver webResolver) http.HandlerFunc {
 			return
 		}
 
-		target, err := resolveWebTarget(r.Context(), sessionRef, resolver)
+		hubTarget, err := resolver.hubTarget()
 		if err != nil {
 			writeWebError(w, err)
 			return
 		}
 
 		ctx, cancel := context.WithTimeout(r.Context(), rpcTimeout)
-		conn, err := dialClient(ctx, target.Coordinator.Path, resolver.cfg)
+		conn, err := dialClient(ctx, hubTarget.Path, resolver.cfg)
 		cancel()
 		if err != nil {
 			writeWebError(w, err)
@@ -679,7 +656,14 @@ func handleWebSessionAction(resolver webResolver) http.HandlerFunc {
 		defer conn.Close()
 
 		client := proto.NewVTRClient(conn)
-		targetName := strings.TrimSpace(target.Label)
+		if targetID == "" {
+			targetID, _, err = resolveSessionID(r.Context(), client, sessionRef)
+			if err != nil {
+				writeWebError(w, wrapResolveError(err))
+				return
+			}
+		}
+		targetID = strings.TrimSpace(targetID)
 		switch action {
 		case "send_key":
 			key := strings.TrimSpace(req.Key)
@@ -689,9 +673,8 @@ func handleWebSessionAction(resolver webResolver) http.HandlerFunc {
 			}
 			ctx, cancel = context.WithTimeout(r.Context(), rpcTimeout)
 			_, err = client.SendKey(ctx, &proto.SendKeyRequest{
-				Name: targetName,
-				Id:   target.ID,
-				Key:  key,
+				Id:  targetID,
+				Key: key,
 			})
 			cancel()
 		case "signal":
@@ -701,18 +684,17 @@ func handleWebSessionAction(resolver webResolver) http.HandlerFunc {
 			}
 			ctx, cancel = context.WithTimeout(r.Context(), rpcTimeout)
 			_, err = client.Kill(ctx, &proto.KillRequest{
-				Name:   targetName,
-				Id:     target.ID,
+				Id:     targetID,
 				Signal: sig,
 			})
 			cancel()
 		case "close":
 			ctx, cancel = context.WithTimeout(r.Context(), rpcTimeout)
-			_, err = client.Close(ctx, &proto.CloseRequest{Name: targetName, Id: target.ID})
+			_, err = client.Close(ctx, &proto.CloseRequest{Id: targetID})
 			cancel()
 		case "remove":
 			ctx, cancel = context.WithTimeout(r.Context(), rpcTimeout)
-			_, err = client.Remove(ctx, &proto.RemoveRequest{Name: targetName, Id: target.ID})
+			_, err = client.Remove(ctx, &proto.RemoveRequest{Id: targetID})
 			cancel()
 		case "rename":
 			newName := strings.TrimSpace(req.NewName)
@@ -721,7 +703,7 @@ func handleWebSessionAction(resolver webResolver) http.HandlerFunc {
 				return
 			}
 			ctx, cancel = context.WithTimeout(r.Context(), rpcTimeout)
-			_, err = client.Rename(ctx, &proto.RenameRequest{Name: targetName, Id: target.ID, NewName: newName})
+			_, err = client.Rename(ctx, &proto.RenameRequest{Id: targetID, NewName: newName})
 			cancel()
 		default:
 			http.Error(w, fmt.Sprintf("unknown action %q", action), http.StatusBadRequest)
@@ -734,19 +716,6 @@ func handleWebSessionAction(resolver webResolver) http.HandlerFunc {
 
 		writeWebJSON(w, webSessionActionResponse{OK: true})
 	}
-}
-
-func selectCoordinator(coords []coordinatorRef, name string) (coordinatorRef, error) {
-	if name != "" {
-		return findCoordinatorByName(coords, name)
-	}
-	if len(coords) == 1 {
-		return coords[0], nil
-	}
-	if len(coords) == 0 {
-		return coordinatorRef{}, errors.New("no coordinators configured")
-	}
-	return coordinatorRef{}, errors.New("multiple coordinators configured; select a coordinator")
 }
 
 func webSessionFromProto(session *proto.Session) webSession {
@@ -884,70 +853,16 @@ func unmarshalAny(data []byte) (goproto.Message, error) {
 	return msg, nil
 }
 
-func resolveWebTarget(ctx context.Context, sessionRef string, resolver webResolver) (sessionTarget, error) {
-	coords, err := resolver.coordinators()
-	if err != nil {
-		return sessionTarget{}, err
-	}
-	sessionRef = strings.TrimSpace(sessionRef)
-	if sessionRef == "" {
-		return sessionTarget{}, wsProtocolError{Code: codes.InvalidArgument, Message: "session is required"}
-	}
-	target, err := resolveSessionTargetWithConfig(ctx, coords, "", sessionRef, resolver.cfg)
-	if err != nil {
-		return sessionTarget{}, wrapResolveError(err)
-	}
-	return target, nil
-}
-
 func newWebResolver(opts webOptions) (webResolver, error) {
 	cfg, _, err := loadConfigWithPath()
 	if err != nil {
 		return webResolver{}, err
 	}
-	if opts.socket != "" && len(opts.coordinators) > 0 {
-		return webResolver{}, errors.New("cannot use --socket with --coordinator")
-	}
-	if opts.socket != "" {
-		ref := coordinatorRef{
-			Name: coordinatorName(opts.socket),
-			Path: opts.socket,
-		}
-		return webResolver{
-			coords: []coordinatorRef{ref},
-			cfg:    cfg,
-			hubFn: func() (coordinatorRef, error) {
-				return ref, nil
-			},
-		}, nil
-	}
-	if len(opts.coordinators) > 0 {
-		coords, err := resolveCoordinatorOverrides(opts.coordinators)
-		if err != nil {
-			return webResolver{}, err
-		}
-		resolver := webResolver{coords: coords, cfg: cfg}
-		if len(coords) == 1 {
-			target := coords[0]
-			resolver.hubFn = func() (coordinatorRef, error) {
-				return target, nil
-			}
-		}
-		return resolver, nil
-	}
-	coords, err := resolveCoordinatorRefs(cfg)
+	hub, err := resolveHubTarget(cfg, opts.hub)
 	if err != nil {
 		return webResolver{}, err
 	}
-	return webResolver{coords: coords, allowDefault: true, cfg: cfg}, nil
-}
-
-func resolveCoordinatorOverrides(paths []string) ([]coordinatorRef, error) {
-	cfg := &clientConfig{Coordinators: make([]coordinatorConfig, 0, len(paths))}
-	for _, path := range paths {
-		cfg.Coordinators = append(cfg.Coordinators, coordinatorConfig{Path: path})
-	}
-	return resolveCoordinatorRefs(cfg)
+	return webResolver{hub: hub, cfg: cfg}, nil
 }
 
 func wrapResolveError(err error) error {
@@ -968,14 +883,13 @@ func wrapResolveError(err error) error {
 	}
 }
 
-func resizeSession(ctx context.Context, client proto.VTRClient, sessionID string, sessionName string, cols, rows int32) error {
+func resizeSession(ctx context.Context, client proto.VTRClient, sessionID string, cols, rows int32) error {
 	if cols <= 0 || rows <= 0 {
 		return wsProtocolError{Code: codes.InvalidArgument, Message: "resize requires cols and rows"}
 	}
 	ctxTimeout, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
 	_, err := client.Resize(ctxTimeout, &proto.ResizeRequest{
-		Name: sessionName,
 		Id:   sessionID,
 		Cols: cols,
 		Rows: rows,
@@ -983,7 +897,7 @@ func resizeSession(ctx context.Context, client proto.VTRClient, sessionID string
 	return err
 }
 
-func handleWebInput(ctx context.Context, conn *websocket.Conn, client proto.VTRClient, sessionID string, sessionName string) error {
+func handleWebInput(ctx context.Context, conn *websocket.Conn, client proto.VTRClient, sessionID string) error {
 	for {
 		msgType, data, err := conn.Read(ctx)
 		if err != nil {
@@ -1000,7 +914,6 @@ func handleWebInput(ctx context.Context, conn *websocket.Conn, client proto.VTRC
 		case *proto.SendTextRequest:
 			ctxTimeout, cancel := context.WithTimeout(ctx, rpcTimeout)
 			_, err := client.SendText(ctxTimeout, &proto.SendTextRequest{
-				Name: sessionName,
 				Id:   sessionID,
 				Text: m.GetText(),
 			})
@@ -1011,7 +924,6 @@ func handleWebInput(ctx context.Context, conn *websocket.Conn, client proto.VTRC
 		case *proto.SendKeyRequest:
 			ctxTimeout, cancel := context.WithTimeout(ctx, rpcTimeout)
 			_, err := client.SendKey(ctxTimeout, &proto.SendKeyRequest{
-				Name: sessionName,
 				Id:   sessionID,
 				Key:  m.GetKey(),
 			})
@@ -1022,7 +934,6 @@ func handleWebInput(ctx context.Context, conn *websocket.Conn, client proto.VTRC
 		case *proto.SendBytesRequest:
 			ctxTimeout, cancel := context.WithTimeout(ctx, rpcTimeout)
 			_, err := client.SendBytes(ctxTimeout, &proto.SendBytesRequest{
-				Name: sessionName,
 				Id:   sessionID,
 				Data: m.GetData(),
 			})
@@ -1034,7 +945,7 @@ func handleWebInput(ctx context.Context, conn *websocket.Conn, client proto.VTRC
 			if envBool("VTR_LOG_RESIZE", false) {
 				log.Printf("resize web session=%s cols=%d rows=%d", sessionID, m.GetCols(), m.GetRows())
 			}
-			if err := resizeSession(ctx, client, sessionID, sessionName, m.GetCols(), m.GetRows()); err != nil {
+			if err := resizeSession(ctx, client, sessionID, m.GetCols(), m.GetRows()); err != nil {
 				return err
 			}
 		default:

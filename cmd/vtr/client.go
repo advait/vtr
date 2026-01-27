@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -730,12 +728,6 @@ func dialClient(ctx context.Context, target string, cfg *clientConfig) (*grpc.Cl
 		ctx, cancel = context.WithTimeout(ctx, dialTimeout)
 		defer cancel()
 	}
-	if isUnixTarget(target) {
-		return grpc.DialContext(ctx, target,
-			grpc.WithTransportCredentials(insecure.NewCredentials()),
-			grpc.WithContextDialer(unixDialer),
-		)
-	}
 	return dialTCP(ctx, target, cfg)
 }
 
@@ -769,30 +761,12 @@ func dialTCP(ctx context.Context, addr string, cfg *clientConfig) (*grpc.ClientC
 	return grpc.DialContext(ctx, addr, opts...)
 }
 
-func unixDialer(ctx context.Context, addr string) (net.Conn, error) {
-	var d net.Dialer
-	return d.DialContext(ctx, "unix", addr)
-}
-
 func addHubFlag(cmd *cobra.Command, target *string) {
-	cmd.Flags().StringVar(target, "hub", "", "hub address (host:port) or unix socket path")
+	cmd.Flags().StringVar(target, "hub", "", "hub address (host:port)")
 }
 
 func writeOK(w io.Writer) error {
 	return writeJSON(w, jsonOK{OK: true})
-}
-
-func isUnixTarget(target string) bool {
-	if strings.HasPrefix(target, "unix://") {
-		return true
-	}
-	if strings.HasPrefix(target, "~") || strings.HasPrefix(target, ".") {
-		return true
-	}
-	if filepath.IsAbs(target) {
-		return true
-	}
-	return strings.Contains(target, string(filepath.Separator))
 }
 
 func decodeHex(value string) ([]byte, error) {

@@ -19,7 +19,7 @@ func newConfigResolveCmd() *cobra.Command {
 	var jsonOut bool
 	cmd := &cobra.Command{
 		Use:   "resolve",
-		Short: "Show resolved coordinator sockets",
+		Short: "Show resolved coordinator addresses",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, _, output, err := loadConfigAndOutput(jsonOut)
 			if err != nil {
@@ -30,7 +30,7 @@ func newConfigResolveCmd() *cobra.Command {
 				return err
 			}
 			if len(coords) == 0 {
-				coords = []coordinatorRef{{Name: coordinatorName(defaultSocketPath), Path: defaultSocketPath}}
+				coords = []coordinatorRef{{Name: hubName(defaultHubAddr), Path: defaultHubAddr}}
 			}
 			if output == outputJSON {
 				items := make([]jsonCoordinator, 0, len(coords))

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -22,9 +21,6 @@ import (
 
 type spokeOptions struct {
 	name          string
-	socket        string
-	serveSocket   bool
-	grpcAddr      string
 	hubAddr       string
 	shell         string
 	cols          int
@@ -46,9 +42,6 @@ func newSpokeCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&opts.name, "name", "", "spoke name (defaults to hostname)")
-	cmd.Flags().BoolVar(&opts.serveSocket, "serve-socket", false, "serve a local Unix socket for the spoke coordinator")
-	cmd.Flags().StringVar(&opts.socket, "socket", "", "path to Unix socket when --serve-socket is set")
-	cmd.Flags().StringVar(&opts.grpcAddr, "grpc-addr", "", "TCP gRPC address to expose (disabled by default)")
 	cmd.Flags().StringVar(&opts.hubAddr, "hub", "", "hub address to register against")
 	cmd.Flags().StringVar(&opts.shell, "shell", "", "default shell path")
 	cmd.Flags().IntVar(&opts.cols, "cols", 80, "default columns")
@@ -77,19 +70,11 @@ func runSpoke(opts spokeOptions) error {
 		cfg = &clientConfig{}
 	}
 
-	serveSocket := opts.serveSocket || strings.TrimSpace(opts.socket) != ""
-	socketPath := strings.TrimSpace(opts.socket)
-	if serveSocket && socketPath == "" {
-		socketPath = defaultSocketPath
+	hubTarget, err := resolveHubTarget(cfg, opts.hubAddr)
+	if err != nil {
+		return err
 	}
-	grpcAddr := strings.TrimSpace(opts.grpcAddr)
-	hubAddr := strings.TrimSpace(opts.hubAddr)
-	if hubAddr == "" {
-		hubAddr = strings.TrimSpace(cfg.Hub.Addr)
-	}
-	if hubAddr != "" {
-		hubAddr = expandPath(hubAddr)
-	}
+	hubAddr := strings.TrimSpace(hubTarget.Path)
 
 	if opts.cols <= 0 || opts.cols > int(^uint16(0)) {
 		return fmt.Errorf("cols must be between 1 and %d", int(^uint16(0)))
@@ -102,24 +87,17 @@ func runSpoke(opts spokeOptions) error {
 	}
 
 	authMode := strings.ToLower(strings.TrimSpace(cfg.Auth.Mode))
-	requireToken, requireClientCert, err := parseAuthMode(authMode)
+	requireToken, _, err := parseAuthMode(authMode)
 	if err != nil {
 		return err
 	}
 	token := ""
-	if requireToken && (hubAddr != "" || grpcAddr != "") {
+	if requireToken && hubAddr != "" {
 		loaded, err := readToken(cfg.Auth.TokenFile)
 		if err != nil {
 			return err
 		}
 		token = loaded
-	}
-	var tlsConfig = (*tls.Config)(nil)
-	if grpcAddr != "" {
-		tlsConfig, err = buildServerTLSConfig(cfg.Server, cfg.Auth, requireClientCert)
-		if err != nil {
-			return err
-		}
 	}
 
 	coord := server.NewCoordinator(server.CoordinatorOptions{
@@ -137,9 +115,6 @@ func runSpoke(opts spokeOptions) error {
 	defer stop()
 
 	spokeName := strings.TrimSpace(opts.name)
-	if spokeName == "" && socketPath != "" {
-		spokeName = coordinatorName(socketPath)
-	}
 	if spokeName == "" {
 		if host, err := os.Hostname(); err == nil && host != "" {
 			spokeName = host
@@ -150,36 +125,12 @@ func runSpoke(opts spokeOptions) error {
 
 	logger.Info("spoke starting",
 		"name", spokeName,
-		"serve_socket", serveSocket,
-		"socket", socketPath,
-		"grpc_addr", grpcAddr,
 		"hub", hubAddr,
 		"log_level", strings.ToLower(opts.logLevel),
 	)
 
-	if hubAddr == "" && !serveSocket && grpcAddr == "" {
-		return errors.New("hub address is required when not serving locally")
-	}
-
-	errCh := make(chan error, 2)
-	servers := 0
-	start := func(fn func() error) {
-		servers++
-		go func() {
-			errCh <- fn()
-		}()
-	}
-
-	if serveSocket {
-		start(func() error {
-			return server.ServeUnix(ctx, coord, socketPath)
-		})
-	}
-
-	if grpcAddr != "" {
-		start(func() error {
-			return server.ServeTCP(ctx, coord, grpcAddr, tlsConfig, token)
-		})
+	if hubAddr == "" {
+		return errors.New("hub address is required")
 	}
 
 	if hubAddr != "" {
@@ -190,25 +141,11 @@ func runSpoke(opts spokeOptions) error {
 		go runSpokeTunnelLoop(ctx, hubAddr, cfg, token, info, localService, logger)
 	}
 
-	if servers == 0 {
-		start(func() error {
-			<-ctx.Done()
-			return ctx.Err()
-		})
+	<-ctx.Done()
+	if errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return nil
 	}
-
-	var firstErr error
-	for i := 0; i < servers; i++ {
-		err := <-errCh
-		if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			continue
-		}
-		if firstErr == nil {
-			firstErr = err
-			stop()
-		}
-	}
-	return firstErr
+	return ctx.Err()
 }
 
 func dialHub(ctx context.Context, addr string, cfg *clientConfig, token string) (*grpc.ClientConn, error) {
@@ -219,23 +156,6 @@ func dialHub(ctx context.Context, addr string, cfg *clientConfig, token string) 
 		Time:                30 * time.Second,
 		Timeout:             10 * time.Second,
 		PermitWithoutStream: true,
-	}
-	if isUnixTarget(addr) {
-		opts := []grpc.DialOption{
-			grpc.WithTransportCredentials(insecure.NewCredentials()),
-			grpc.WithContextDialer(unixDialer),
-			grpc.WithKeepaliveParams(keepaliveParams),
-		}
-		requireToken, _, err := parseAuthMode(cfg.Auth.Mode)
-		if err != nil {
-			return nil, err
-		}
-		if requireToken && token != "" {
-			opts = append(opts, grpc.WithPerRPCCredentials(tokenAuth{token: token, requireTransport: false}))
-		}
-		return grpc.DialContext(ctx, addr,
-			opts...,
-		)
 	}
 	var opts []grpc.DialOption
 	loopback := isLoopbackHost(addr)

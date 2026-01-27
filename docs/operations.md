@@ -8,7 +8,6 @@ Config file: `$VTRPC_CONFIG_DIR/vtrpc.toml` (default: `~/.config/vtrpc/vtrpc.tom
 
 ```toml
 [hub]
-grpc_socket = "/var/run/vtrpc.sock"
 addr = "127.0.0.1:4620"   # unified gRPC + web listener
 web_enabled = true
 coordinator_enabled = true
@@ -30,7 +29,7 @@ key_file = "~/.config/vtrpc/server.key"
 ## Hub runtime
 
 ```
-vtr hub [--socket /path/to.sock] [--addr 127.0.0.1:4620] [--no-web] [--no-coordinator]
+vtr hub [--addr 127.0.0.1:4620] [--no-web] [--no-coordinator]
         [--shell /bin/bash] [--cols 80] [--rows 24] [--scrollback 10000]
         [--kill-timeout 5s] [--idle-threshold 5s]
 ```
@@ -45,18 +44,13 @@ Notes:
 
 ```
 vtr spoke --hub host:4620 [--name spoke-a]
-         [--serve-socket --socket /path/to.sock]
-         [--grpc-addr 127.0.0.1:4621]
 ```
 
 Behavior:
-- By default, a spoke registers to the hub and opens a tunnel for hub-initiated RPCs (no local listener required).
-- Use `--serve-socket` to expose a local Unix socket for direct access.
-- Use `--grpc-addr` to expose TCP gRPC (disabled by default).
+- A spoke registers to the hub and opens a tunnel for hub-initiated RPCs.
 
 ## Auth
 
-- Unix sockets: access is controlled by filesystem permissions.
 - TCP gRPC: TLS is required for non-loopback addresses.
 - Token auth is enabled via `auth.mode` and is required when configured.
 

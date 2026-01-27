@@ -19,7 +19,7 @@ In practice today:
 - Spoke registration via tunnel hello (name/version/labels).
 - Hub retains last-seen metadata (name, version, labels).
 - Hub routes List/Info/Send/Subscribe/Wait via tunnel-connected spokes.
-- Tunnel mode works without TCP/Unix listeners on the spoke.
+- Tunnel mode works without any spoke-side listeners.
 - Hub aggregates session lists across spokes.
 
 ## What is not implemented yet
@@ -40,6 +40,6 @@ vtr hub --addr 127.0.0.1:4620
 # Spoke (tunnel, no listeners)
 vtr spoke --hub hub.internal:4620 --name spoke-a
 
-# Spoke with local Unix socket
-vtr spoke --hub hub.internal:4620 --serve-socket --socket /tmp/vtrpc.sock
+# Spoke (tunnel only)
+vtr spoke --hub hub.internal:4620 --name spoke-a
 ```

@@ -46,7 +46,7 @@ func newFederatedServer(local *server.GRPCServer, localName string, localPath st
 	localName = strings.TrimSpace(localName)
 	localPath = strings.TrimSpace(localPath)
 	if localName == "" && localPath != "" {
-		localName = coordinatorName(localPath)
+		localName = hubName(localPath)
 	}
 	return &federatedServer{
 		local:        local,
@@ -72,43 +72,6 @@ func (s *federatedServer) localNameForTargets() string {
 
 func (s *federatedServer) localDisabledError() error {
 	return status.Error(codes.FailedPrecondition, "hub coordinator is disabled")
-}
-
-func federatedCoordinatorRefs(localSocket string, localEnabled bool, hubAddr string, registry *server.SpokeRegistry, tunnels *tunnelRegistry) []coordinatorRef {
-	refs := make([]coordinatorRef, 0, 1)
-	socketPath := strings.TrimSpace(localSocket)
-	if localEnabled && socketPath != "" {
-		refs = append(refs, coordinatorRef{
-			Name: coordinatorName(socketPath),
-			Path: socketPath,
-		})
-	}
-	seen := make(map[string]struct{}, len(refs))
-	for _, ref := range refs {
-		seen[ref.Name] = struct{}{}
-	}
-	hubAddr = strings.TrimSpace(hubAddr)
-	targets := mergeSpokeTargets(registry, "", tunnelNames(tunnels))
-	for _, target := range targets {
-		if _, ok := seen[target.Name]; ok {
-			continue
-		}
-		addr := strings.TrimSpace(target.Addr)
-		if addr != "" {
-			refs = append(refs, coordinatorRef{Name: target.Name, Path: addr})
-			seen[target.Name] = struct{}{}
-			continue
-		}
-		if hubAddr != "" {
-			refs = append(refs, coordinatorRef{
-				Name:          target.Name,
-				Path:          hubAddr,
-				SessionPrefix: target.Name,
-			})
-			seen[target.Name] = struct{}{}
-		}
-	}
-	return refs
 }
 
 func mergeSpokeTargets(registry *server.SpokeRegistry, localName string, tunnels []string) []spokeTarget {
@@ -234,7 +197,7 @@ func (s *federatedServer) Spawn(ctx context.Context, req *proto.SpawnRequest) (*
 		}
 		return s.local.Spawn(ctx, req)
 	}
-	spoke, session, routed, err := s.routeSession(req.Name)
+	spoke, session, routed, _, err := s.routeSession(req.Name, "")
 	if err != nil {
 		return nil, err
 	}
@@ -367,13 +330,13 @@ func (s *federatedServer) watchLocalSessions(ctx context.Context, excludeExited 
 }
 
 func (s *federatedServer) Info(ctx context.Context, req *proto.InfoRequest) (*proto.InfoResponse, error) {
-	if req == nil || strings.TrimSpace(req.Name) == "" {
+	if req == nil || (strings.TrimSpace(req.Name) == "" && strings.TrimSpace(req.Id) == "") {
 		if !s.localActive() {
 			return nil, s.localDisabledError()
 		}
 		return s.local.Info(ctx, req)
 	}
-	spoke, session, routed, err := s.routeSession(req.Name)
+	spoke, session, routed, useID, err := s.routeSession(req.Name, req.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -381,9 +344,25 @@ func (s *federatedServer) Info(ctx context.Context, req *proto.InfoRequest) (*pr
 		if !s.localActive() {
 			return nil, s.localDisabledError()
 		}
-		return s.local.Info(ctx, req)
+		reqCopy := *req
+		if useID {
+			reqCopy.Id = session
+			reqCopy.Name = ""
+		} else {
+			reqCopy.Name = session
+			reqCopy.Id = ""
+		}
+		return s.local.Info(ctx, &reqCopy)
 	}
-	resp, err := s.callInfo(ctx, spoke, session)
+	reqCopy := *req
+	if useID {
+		reqCopy.Id = session
+		reqCopy.Name = ""
+	} else {
+		reqCopy.Name = session
+		reqCopy.Id = ""
+	}
+	resp, err := s.callInfo(ctx, spoke, &reqCopy)
 	if err != nil {
 		return nil, err
 	}
@@ -394,13 +373,13 @@ func (s *federatedServer) Info(ctx context.Context, req *proto.InfoRequest) (*pr
 }
 
 func (s *federatedServer) Kill(ctx context.Context, req *proto.KillRequest) (*proto.KillResponse, error) {
-	if req == nil || strings.TrimSpace(req.Name) == "" {
+	if req == nil || (strings.TrimSpace(req.Name) == "" && strings.TrimSpace(req.Id) == "") {
 		if !s.localActive() {
 			return nil, s.localDisabledError()
 		}
 		return s.local.Kill(ctx, req)
 	}
-	spoke, session, routed, err := s.routeSession(req.Name)
+	spoke, session, routed, useID, err := s.routeSession(req.Name, req.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -408,21 +387,35 @@ func (s *federatedServer) Kill(ctx context.Context, req *proto.KillRequest) (*pr
 		if !s.localActive() {
 			return nil, s.localDisabledError()
 		}
-		return s.local.Kill(ctx, req)
+		reqCopy := *req
+		if useID {
+			reqCopy.Id = session
+			reqCopy.Name = ""
+		} else {
+			reqCopy.Name = session
+			reqCopy.Id = ""
+		}
+		return s.local.Kill(ctx, &reqCopy)
 	}
 	reqCopy := *req
-	reqCopy.Name = session
+	if useID {
+		reqCopy.Id = session
+		reqCopy.Name = ""
+	} else {
+		reqCopy.Name = session
+		reqCopy.Id = ""
+	}
 	return s.callKill(ctx, spoke, &reqCopy)
 }
 
 func (s *federatedServer) Close(ctx context.Context, req *proto.CloseRequest) (*proto.CloseResponse, error) {
-	if req == nil || strings.TrimSpace(req.Name) == "" {
+	if req == nil || (strings.TrimSpace(req.Name) == "" && strings.TrimSpace(req.Id) == "") {
 		if !s.localActive() {
 			return nil, s.localDisabledError()
 		}
 		return s.local.Close(ctx, req)
 	}
-	spoke, session, routed, err := s.routeSession(req.Name)
+	spoke, session, routed, useID, err := s.routeSession(req.Name, req.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -430,21 +423,35 @@ func (s *federatedServer) Close(ctx context.Context, req *proto.CloseRequest) (*
 		if !s.localActive() {
 			return nil, s.localDisabledError()
 		}
-		return s.local.Close(ctx, req)
+		reqCopy := *req
+		if useID {
+			reqCopy.Id = session
+			reqCopy.Name = ""
+		} else {
+			reqCopy.Name = session
+			reqCopy.Id = ""
+		}
+		return s.local.Close(ctx, &reqCopy)
 	}
 	reqCopy := *req
-	reqCopy.Name = session
+	if useID {
+		reqCopy.Id = session
+		reqCopy.Name = ""
+	} else {
+		reqCopy.Name = session
+		reqCopy.Id = ""
+	}
 	return s.callClose(ctx, spoke, &reqCopy)
 }
 
 func (s *federatedServer) Remove(ctx context.Context, req *proto.RemoveRequest) (*proto.RemoveResponse, error) {
-	if req == nil || strings.TrimSpace(req.Name) == "" {
+	if req == nil || (strings.TrimSpace(req.Name) == "" && strings.TrimSpace(req.Id) == "") {
 		if !s.localActive() {
 			return nil, s.localDisabledError()
 		}
 		return s.local.Remove(ctx, req)
 	}
-	spoke, session, routed, err := s.routeSession(req.Name)
+	spoke, session, routed, useID, err := s.routeSession(req.Name, req.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -452,21 +459,35 @@ func (s *federatedServer) Remove(ctx context.Context, req *proto.RemoveRequest) 
 		if !s.localActive() {
 			return nil, s.localDisabledError()
 		}
-		return s.local.Remove(ctx, req)
+		reqCopy := *req
+		if useID {
+			reqCopy.Id = session
+			reqCopy.Name = ""
+		} else {
+			reqCopy.Name = session
+			reqCopy.Id = ""
+		}
+		return s.local.Remove(ctx, &reqCopy)
 	}
 	reqCopy := *req
-	reqCopy.Name = session
+	if useID {
+		reqCopy.Id = session
+		reqCopy.Name = ""
+	} else {
+		reqCopy.Name = session
+		reqCopy.Id = ""
+	}
 	return s.callRemove(ctx, spoke, &reqCopy)
 }
 
 func (s *federatedServer) Rename(ctx context.Context, req *proto.RenameRequest) (*proto.RenameResponse, error) {
-	if req == nil || strings.TrimSpace(req.Name) == "" {
+	if req == nil || (strings.TrimSpace(req.Name) == "" && strings.TrimSpace(req.Id) == "") {
 		if !s.localActive() {
 			return nil, s.localDisabledError()
 		}
 		return s.local.Rename(ctx, req)
 	}
-	spoke, session, routed, err := s.routeSession(req.Name)
+	spoke, session, routed, useID, err := s.routeSession(req.Name, req.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -474,7 +495,15 @@ func (s *federatedServer) Rename(ctx context.Context, req *proto.RenameRequest) 
 		if !s.localActive() {
 			return nil, s.localDisabledError()
 		}
-		return s.local.Rename(ctx, req)
+		reqCopy := *req
+		if useID {
+			reqCopy.Id = session
+			reqCopy.Name = ""
+		} else {
+			reqCopy.Name = session
+			reqCopy.Id = ""
+		}
+		return s.local.Rename(ctx, &reqCopy)
 	}
 	newName := strings.TrimSpace(req.NewName)
 	if newName == "" {
@@ -487,19 +516,25 @@ func (s *federatedServer) Rename(ctx context.Context, req *proto.RenameRequest) 
 		newName = name
 	}
 	reqCopy := *req
-	reqCopy.Name = session
+	if useID {
+		reqCopy.Id = session
+		reqCopy.Name = ""
+	} else {
+		reqCopy.Name = session
+		reqCopy.Id = ""
+	}
 	reqCopy.NewName = newName
 	return s.callRename(ctx, spoke, &reqCopy)
 }
 
 func (s *federatedServer) GetScreen(ctx context.Context, req *proto.GetScreenRequest) (*proto.GetScreenResponse, error) {
-	if req == nil || strings.TrimSpace(req.Name) == "" {
+	if req == nil || (strings.TrimSpace(req.Name) == "" && strings.TrimSpace(req.Id) == "") {
 		if !s.localActive() {
 			return nil, s.localDisabledError()
 		}
 		return s.local.GetScreen(ctx, req)
 	}
-	spoke, session, routed, err := s.routeSession(req.Name)
+	spoke, session, routed, useID, err := s.routeSession(req.Name, req.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -507,28 +542,43 @@ func (s *federatedServer) GetScreen(ctx context.Context, req *proto.GetScreenReq
 		if !s.localActive() {
 			return nil, s.localDisabledError()
 		}
-		return s.local.GetScreen(ctx, req)
+		reqCopy := *req
+		if useID {
+			reqCopy.Id = session
+			reqCopy.Name = ""
+		} else {
+			reqCopy.Name = session
+			reqCopy.Id = ""
+		}
+		return s.local.GetScreen(ctx, &reqCopy)
 	}
 	reqCopy := *req
-	reqCopy.Name = session
+	if useID {
+		reqCopy.Id = session
+		reqCopy.Name = ""
+	} else {
+		reqCopy.Name = session
+		reqCopy.Id = ""
+	}
 	resp, err := s.callGetScreen(ctx, spoke, &reqCopy)
 	if err != nil {
 		return nil, err
 	}
 	if resp != nil {
 		resp.Name = prefixName(spoke, resp.Name)
+		resp.Id = prefixID(spoke, resp.Id)
 	}
 	return resp, nil
 }
 
 func (s *federatedServer) Grep(ctx context.Context, req *proto.GrepRequest) (*proto.GrepResponse, error) {
-	if req == nil || strings.TrimSpace(req.Name) == "" {
+	if req == nil || (strings.TrimSpace(req.Name) == "" && strings.TrimSpace(req.Id) == "") {
 		if !s.localActive() {
 			return nil, s.localDisabledError()
 		}
 		return s.local.Grep(ctx, req)
 	}
-	spoke, session, routed, err := s.routeSession(req.Name)
+	spoke, session, routed, useID, err := s.routeSession(req.Name, req.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -536,21 +586,35 @@ func (s *federatedServer) Grep(ctx context.Context, req *proto.GrepRequest) (*pr
 		if !s.localActive() {
 			return nil, s.localDisabledError()
 		}
-		return s.local.Grep(ctx, req)
+		reqCopy := *req
+		if useID {
+			reqCopy.Id = session
+			reqCopy.Name = ""
+		} else {
+			reqCopy.Name = session
+			reqCopy.Id = ""
+		}
+		return s.local.Grep(ctx, &reqCopy)
 	}
 	reqCopy := *req
-	reqCopy.Name = session
+	if useID {
+		reqCopy.Id = session
+		reqCopy.Name = ""
+	} else {
+		reqCopy.Name = session
+		reqCopy.Id = ""
+	}
 	return s.callGrep(ctx, spoke, &reqCopy)
 }
 
 func (s *federatedServer) SendText(ctx context.Context, req *proto.SendTextRequest) (*proto.SendTextResponse, error) {
-	if req == nil || strings.TrimSpace(req.Name) == "" {
+	if req == nil || (strings.TrimSpace(req.Name) == "" && strings.TrimSpace(req.Id) == "") {
 		if !s.localActive() {
 			return nil, s.localDisabledError()
 		}
 		return s.local.SendText(ctx, req)
 	}
-	spoke, session, routed, err := s.routeSession(req.Name)
+	spoke, session, routed, useID, err := s.routeSession(req.Name, req.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -558,21 +622,35 @@ func (s *federatedServer) SendText(ctx context.Context, req *proto.SendTextReque
 		if !s.localActive() {
 			return nil, s.localDisabledError()
 		}
-		return s.local.SendText(ctx, req)
+		reqCopy := *req
+		if useID {
+			reqCopy.Id = session
+			reqCopy.Name = ""
+		} else {
+			reqCopy.Name = session
+			reqCopy.Id = ""
+		}
+		return s.local.SendText(ctx, &reqCopy)
 	}
 	reqCopy := *req
-	reqCopy.Name = session
+	if useID {
+		reqCopy.Id = session
+		reqCopy.Name = ""
+	} else {
+		reqCopy.Name = session
+		reqCopy.Id = ""
+	}
 	return s.callSendText(ctx, spoke, &reqCopy)
 }
 
 func (s *federatedServer) SendKey(ctx context.Context, req *proto.SendKeyRequest) (*proto.SendKeyResponse, error) {
-	if req == nil || strings.TrimSpace(req.Name) == "" {
+	if req == nil || (strings.TrimSpace(req.Name) == "" && strings.TrimSpace(req.Id) == "") {
 		if !s.localActive() {
 			return nil, s.localDisabledError()
 		}
 		return s.local.SendKey(ctx, req)
 	}
-	spoke, session, routed, err := s.routeSession(req.Name)
+	spoke, session, routed, useID, err := s.routeSession(req.Name, req.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -580,21 +658,35 @@ func (s *federatedServer) SendKey(ctx context.Context, req *proto.SendKeyRequest
 		if !s.localActive() {
 			return nil, s.localDisabledError()
 		}
-		return s.local.SendKey(ctx, req)
+		reqCopy := *req
+		if useID {
+			reqCopy.Id = session
+			reqCopy.Name = ""
+		} else {
+			reqCopy.Name = session
+			reqCopy.Id = ""
+		}
+		return s.local.SendKey(ctx, &reqCopy)
 	}
 	reqCopy := *req
-	reqCopy.Name = session
+	if useID {
+		reqCopy.Id = session
+		reqCopy.Name = ""
+	} else {
+		reqCopy.Name = session
+		reqCopy.Id = ""
+	}
 	return s.callSendKey(ctx, spoke, &reqCopy)
 }
 
 func (s *federatedServer) SendBytes(ctx context.Context, req *proto.SendBytesRequest) (*proto.SendBytesResponse, error) {
-	if req == nil || strings.TrimSpace(req.Name) == "" {
+	if req == nil || (strings.TrimSpace(req.Name) == "" && strings.TrimSpace(req.Id) == "") {
 		if !s.localActive() {
 			return nil, s.localDisabledError()
 		}
 		return s.local.SendBytes(ctx, req)
 	}
-	spoke, session, routed, err := s.routeSession(req.Name)
+	spoke, session, routed, useID, err := s.routeSession(req.Name, req.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -602,21 +694,35 @@ func (s *federatedServer) SendBytes(ctx context.Context, req *proto.SendBytesReq
 		if !s.localActive() {
 			return nil, s.localDisabledError()
 		}
-		return s.local.SendBytes(ctx, req)
+		reqCopy := *req
+		if useID {
+			reqCopy.Id = session
+			reqCopy.Name = ""
+		} else {
+			reqCopy.Name = session
+			reqCopy.Id = ""
+		}
+		return s.local.SendBytes(ctx, &reqCopy)
 	}
 	reqCopy := *req
-	reqCopy.Name = session
+	if useID {
+		reqCopy.Id = session
+		reqCopy.Name = ""
+	} else {
+		reqCopy.Name = session
+		reqCopy.Id = ""
+	}
 	return s.callSendBytes(ctx, spoke, &reqCopy)
 }
 
 func (s *federatedServer) Resize(ctx context.Context, req *proto.ResizeRequest) (*proto.ResizeResponse, error) {
-	if req == nil || strings.TrimSpace(req.Name) == "" {
+	if req == nil || (strings.TrimSpace(req.Name) == "" && strings.TrimSpace(req.Id) == "") {
 		if !s.localActive() {
 			return nil, s.localDisabledError()
 		}
 		return s.local.Resize(ctx, req)
 	}
-	spoke, session, routed, err := s.routeSession(req.Name)
+	spoke, session, routed, useID, err := s.routeSession(req.Name, req.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -624,21 +730,35 @@ func (s *federatedServer) Resize(ctx context.Context, req *proto.ResizeRequest) 
 		if !s.localActive() {
 			return nil, s.localDisabledError()
 		}
-		return s.local.Resize(ctx, req)
+		reqCopy := *req
+		if useID {
+			reqCopy.Id = session
+			reqCopy.Name = ""
+		} else {
+			reqCopy.Name = session
+			reqCopy.Id = ""
+		}
+		return s.local.Resize(ctx, &reqCopy)
 	}
 	reqCopy := *req
-	reqCopy.Name = session
+	if useID {
+		reqCopy.Id = session
+		reqCopy.Name = ""
+	} else {
+		reqCopy.Name = session
+		reqCopy.Id = ""
+	}
 	return s.callResize(ctx, spoke, &reqCopy)
 }
 
 func (s *federatedServer) WaitFor(ctx context.Context, req *proto.WaitForRequest) (*proto.WaitForResponse, error) {
-	if req == nil || strings.TrimSpace(req.Name) == "" {
+	if req == nil || (strings.TrimSpace(req.Name) == "" && strings.TrimSpace(req.Id) == "") {
 		if !s.localActive() {
 			return nil, s.localDisabledError()
 		}
 		return s.local.WaitFor(ctx, req)
 	}
-	spoke, session, routed, err := s.routeSession(req.Name)
+	spoke, session, routed, useID, err := s.routeSession(req.Name, req.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -646,21 +766,35 @@ func (s *federatedServer) WaitFor(ctx context.Context, req *proto.WaitForRequest
 		if !s.localActive() {
 			return nil, s.localDisabledError()
 		}
-		return s.local.WaitFor(ctx, req)
+		reqCopy := *req
+		if useID {
+			reqCopy.Id = session
+			reqCopy.Name = ""
+		} else {
+			reqCopy.Name = session
+			reqCopy.Id = ""
+		}
+		return s.local.WaitFor(ctx, &reqCopy)
 	}
 	reqCopy := *req
-	reqCopy.Name = session
+	if useID {
+		reqCopy.Id = session
+		reqCopy.Name = ""
+	} else {
+		reqCopy.Name = session
+		reqCopy.Id = ""
+	}
 	return s.callWaitFor(ctx, spoke, &reqCopy)
 }
 
 func (s *federatedServer) WaitForIdle(ctx context.Context, req *proto.WaitForIdleRequest) (*proto.WaitForIdleResponse, error) {
-	if req == nil || strings.TrimSpace(req.Name) == "" {
+	if req == nil || (strings.TrimSpace(req.Name) == "" && strings.TrimSpace(req.Id) == "") {
 		if !s.localActive() {
 			return nil, s.localDisabledError()
 		}
 		return s.local.WaitForIdle(ctx, req)
 	}
-	spoke, session, routed, err := s.routeSession(req.Name)
+	spoke, session, routed, useID, err := s.routeSession(req.Name, req.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -668,21 +802,35 @@ func (s *federatedServer) WaitForIdle(ctx context.Context, req *proto.WaitForIdl
 		if !s.localActive() {
 			return nil, s.localDisabledError()
 		}
-		return s.local.WaitForIdle(ctx, req)
+		reqCopy := *req
+		if useID {
+			reqCopy.Id = session
+			reqCopy.Name = ""
+		} else {
+			reqCopy.Name = session
+			reqCopy.Id = ""
+		}
+		return s.local.WaitForIdle(ctx, &reqCopy)
 	}
 	reqCopy := *req
-	reqCopy.Name = session
+	if useID {
+		reqCopy.Id = session
+		reqCopy.Name = ""
+	} else {
+		reqCopy.Name = session
+		reqCopy.Id = ""
+	}
 	return s.callWaitForIdle(ctx, spoke, &reqCopy)
 }
 
 func (s *federatedServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_SubscribeServer) error {
-	if req == nil || strings.TrimSpace(req.Name) == "" {
+	if req == nil || (strings.TrimSpace(req.Name) == "" && strings.TrimSpace(req.Id) == "") {
 		if !s.localActive() {
 			return s.localDisabledError()
 		}
 		return s.local.Subscribe(req, stream)
 	}
-	spoke, session, routed, err := s.routeSession(req.Name)
+	spoke, session, routed, useID, err := s.routeSession(req.Name, req.Id)
 	if err != nil {
 		return err
 	}
@@ -690,11 +838,25 @@ func (s *federatedServer) Subscribe(req *proto.SubscribeRequest, stream proto.VT
 		if !s.localActive() {
 			return s.localDisabledError()
 		}
-		return s.local.Subscribe(req, stream)
+		reqCopy := *req
+		if useID {
+			reqCopy.Id = session
+			reqCopy.Name = ""
+		} else {
+			reqCopy.Name = session
+			reqCopy.Id = ""
+		}
+		return s.local.Subscribe(&reqCopy, stream)
 	}
 
 	reqCopy := *req
-	reqCopy.Name = session
+	if useID {
+		reqCopy.Id = session
+		reqCopy.Name = ""
+	} else {
+		reqCopy.Name = session
+		reqCopy.Id = ""
+	}
 	tunnel, err := s.requireTunnel(spoke)
 	if err != nil {
 		return err
@@ -710,13 +872,13 @@ func (s *federatedServer) Subscribe(req *proto.SubscribeRequest, stream proto.VT
 }
 
 func (s *federatedServer) DumpAsciinema(ctx context.Context, req *proto.DumpAsciinemaRequest) (*proto.DumpAsciinemaResponse, error) {
-	if req == nil || strings.TrimSpace(req.Name) == "" {
+	if req == nil || (strings.TrimSpace(req.Name) == "" && strings.TrimSpace(req.Id) == "") {
 		if !s.localActive() {
 			return nil, s.localDisabledError()
 		}
 		return s.local.DumpAsciinema(ctx, req)
 	}
-	spoke, session, routed, err := s.routeSession(req.Name)
+	spoke, session, routed, useID, err := s.routeSession(req.Name, req.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -724,28 +886,65 @@ func (s *federatedServer) DumpAsciinema(ctx context.Context, req *proto.DumpAsci
 		if !s.localActive() {
 			return nil, s.localDisabledError()
 		}
-		return s.local.DumpAsciinema(ctx, req)
+		reqCopy := *req
+		if useID {
+			reqCopy.Id = session
+			reqCopy.Name = ""
+		} else {
+			reqCopy.Name = session
+			reqCopy.Id = ""
+		}
+		return s.local.DumpAsciinema(ctx, &reqCopy)
 	}
 	reqCopy := *req
-	reqCopy.Name = session
+	if useID {
+		reqCopy.Id = session
+		reqCopy.Name = ""
+	} else {
+		reqCopy.Name = session
+		reqCopy.Id = ""
+	}
 	return s.callDumpAsciinema(ctx, spoke, &reqCopy)
 }
 
-func (s *federatedServer) routeSession(name string) (string, string, bool, error) {
-	coord, session, ok := parseSessionRef(name)
-	if !ok {
-		return "", name, false, nil
-	}
-	if coord != "" && coord == s.localName {
-		if s.localActive() {
-			return "", session, false, nil
+func (s *federatedServer) routeSession(name string, id string) (string, string, bool, bool, error) {
+	id = strings.TrimSpace(id)
+	if id != "" {
+		if coord, session, ok := parseSessionRef(id); ok {
+			if coord != "" && coord == s.localName {
+				if s.localActive() {
+					return "", session, false, true, nil
+				}
+				return "", "", false, true, s.localDisabledError()
+			}
+			if _, ok := s.resolveSpoke(coord); ok {
+				return coord, session, true, true, nil
+			}
+			return "", "", false, true, status.Error(codes.NotFound, fmt.Sprintf("unknown coordinator %q", coord))
 		}
-		return "", "", false, s.localDisabledError()
+		if s.localActive() {
+			return "", id, false, true, nil
+		}
+		return "", "", false, true, s.localDisabledError()
 	}
-	if _, ok := s.resolveSpoke(coord); ok {
-		return coord, session, true, nil
+
+	name = strings.TrimSpace(name)
+	if coord, session, ok := parseSessionRef(name); ok {
+		if coord != "" && coord == s.localName {
+			if s.localActive() {
+				return "", session, false, false, nil
+			}
+			return "", "", false, false, s.localDisabledError()
+		}
+		if _, ok := s.resolveSpoke(coord); ok {
+			return coord, session, true, false, nil
+		}
+		return "", "", false, false, status.Error(codes.NotFound, fmt.Sprintf("unknown coordinator %q", coord))
 	}
-	return "", "", false, status.Error(codes.NotFound, fmt.Sprintf("unknown coordinator %q", coord))
+	if s.localActive() {
+		return "", name, false, false, nil
+	}
+	return "", "", false, false, s.localDisabledError()
 }
 
 func (s *federatedServer) resolveSpoke(name string) (spokeTarget, bool) {
@@ -800,13 +999,13 @@ func (s *federatedServer) callSpawn(ctx context.Context, spoke string, req *prot
 	return resp, nil
 }
 
-func (s *federatedServer) callInfo(ctx context.Context, spoke, session string) (*proto.InfoResponse, error) {
+func (s *federatedServer) callInfo(ctx context.Context, spoke string, req *proto.InfoRequest) (*proto.InfoResponse, error) {
 	tunnel, err := s.requireTunnel(spoke)
 	if err != nil {
 		return nil, err
 	}
 	resp := &proto.InfoResponse{}
-	if err := tunnel.CallUnary(ctx, tunnelMethodInfo, &proto.InfoRequest{Name: session}, resp); err != nil {
+	if err := tunnel.CallUnary(ctx, tunnelMethodInfo, req, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
@@ -1199,6 +1398,7 @@ func prefixSession(spoke string, session *proto.Session) *proto.Session {
 	}
 	clone := *session
 	clone.Name = prefixName(spoke, clone.Name)
+	clone.Id = prefixID(spoke, clone.Id)
 	return &clone
 }
 
@@ -1225,6 +1425,14 @@ func prefixName(spoke, name string) string {
 		return name
 	}
 	return fmt.Sprintf("%s:%s", spoke, name)
+}
+
+func prefixID(spoke, id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return id
+	}
+	return fmt.Sprintf("%s:%s", spoke, id)
 }
 
 func filterSessions(sessions []*proto.Session, excludeExited bool) []*proto.Session {
@@ -1281,10 +1489,16 @@ func prefixSubscribeEvent(spoke string, event *proto.SubscribeEvent) {
 	case *proto.SubscribeEvent_ScreenUpdate:
 		if payload.ScreenUpdate != nil && payload.ScreenUpdate.Screen != nil {
 			payload.ScreenUpdate.Screen.Name = prefixName(spoke, payload.ScreenUpdate.Screen.Name)
+			payload.ScreenUpdate.Screen.Id = prefixID(spoke, payload.ScreenUpdate.Screen.Id)
+		}
+	case *proto.SubscribeEvent_SessionExited:
+		if payload.SessionExited != nil {
+			payload.SessionExited.Id = prefixID(spoke, payload.SessionExited.Id)
 		}
 	case *proto.SubscribeEvent_SessionIdle:
 		if payload.SessionIdle != nil {
 			payload.SessionIdle.Name = prefixName(spoke, payload.SessionIdle.Name)
+			payload.SessionIdle.Id = prefixID(spoke, payload.SessionIdle.Id)
 		}
 	}
 }

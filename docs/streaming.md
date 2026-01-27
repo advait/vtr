@@ -80,4 +80,4 @@ emit a fresh snapshot whenever membership or sessions change.
 
 - `/api/ws` carries `SubscribeRequest` and `SubscribeEvent` wrapped in `Any`.
 - `/api/ws/sessions` carries `SubscribeSessionsRequest` and `SessionsSnapshot` wrapped in `Any`.
-- Errors are sent as `google.rpc.Status` then the socket closes.
+- Errors are sent as `google.rpc.Status` then the WebSocket closes.

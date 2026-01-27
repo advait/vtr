@@ -13,10 +13,11 @@ const __dirname = path.dirname(__filename);
 
 const repoRoot = path.resolve(__dirname, "..", "..");
 const tmpDir = process.env.TMPDIR ?? "/tmp";
-const socketPath = path.join(tmpDir, `vtr-playwright-${process.pid}.sock`);
 const vtrBinary = path.join(tmpDir, `vtr-playwright-${process.pid}`);
 const port = 19080 + (process.pid % 1000);
 const baseURL = `http://127.0.0.1:${port}`;
+const hubAddr = `127.0.0.1:${port}`;
+let configDir = "";
 const sessionName = "web-shot";
 const bootTimeoutMs = Number.parseInt(process.env.E2E_BOOT_TIMEOUT_MS ?? "10000", 10);
 const outputTimeoutMs = Number.parseInt(process.env.E2E_OUTPUT_TIMEOUT_MS ?? "3000", 10);
@@ -35,17 +36,6 @@ function startProcess(cmd: string, args: string[], cwd: string) {
     env: process.env,
     stdio: ["ignore", "pipe", "pipe"],
   });
-}
-
-async function waitForFile(filePath: string, timeoutMs: number) {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (existsSync(filePath)) {
-      return;
-    }
-    await delay(200);
-  }
-  throw new Error(`Timed out waiting for ${filePath}`);
 }
 
 async function waitForHttp(url: string, timeoutMs: number) {
@@ -83,17 +73,17 @@ async function stopProcess(proc: ManagedProcess | null) {
 async function sendCommand(command: string) {
   await runCommand(
     vtrBinary,
-    ["agent", "resize", "--hub", socketPath, sessionName, "120", "40"],
+    ["agent", "resize", "--hub", hubAddr, sessionName, "120", "40"],
     repoRoot,
   );
-  await runCommand(vtrBinary, ["agent", "send", "--hub", socketPath, sessionName, command], repoRoot);
-  await runCommand(vtrBinary, ["agent", "key", "--hub", socketPath, sessionName, "enter"], repoRoot);
+  await runCommand(vtrBinary, ["agent", "send", "--hub", hubAddr, sessionName, command], repoRoot);
+  await runCommand(vtrBinary, ["agent", "key", "--hub", hubAddr, sessionName, "enter"], repoRoot);
 }
 
 async function waitForOutput(pattern: string) {
   await runCommand(
     vtrBinary,
-    ["agent", "wait", "--hub", socketPath, "--timeout", `${outputTimeoutMs}ms`, sessionName, pattern],
+    ["agent", "wait", "--hub", hubAddr, "--timeout", `${outputTimeoutMs}ms`, sessionName, pattern],
     repoRoot,
   );
 }
@@ -102,9 +92,8 @@ test.describe("web UI screenshots", () => {
   test.skip(!process.env.CAPTURE_SCREENSHOTS, "set CAPTURE_SCREENSHOTS=1 to run");
 
   test.beforeAll(async () => {
-    if (existsSync(socketPath)) {
-      await fsPromises.unlink(socketPath);
-    }
+    configDir = await fsPromises.mkdtemp(path.join(tmpDir, `vtr-config-${process.pid}-`));
+    process.env.VTRPC_CONFIG_DIR = configDir;
     await runCommand("bun", ["install"], path.join(repoRoot, "web"));
     await runCommand("bun", ["run", "build"], path.join(repoRoot, "web"));
     await runCommand("go", ["build", "-o", vtrBinary, "./cmd/vtr"], repoRoot);
@@ -112,24 +101,21 @@ test.describe("web UI screenshots", () => {
       vtrBinary,
       [
         "hub",
-        "--socket",
-        socketPath,
         "--addr",
-        `127.0.0.1:${port}`,
+        hubAddr,
       ],
       repoRoot,
     );
-    await waitForFile(socketPath, bootTimeoutMs);
     await waitForHttp(baseURL, bootTimeoutMs);
-  await runCommand(
-    vtrBinary,
-    [
-      "agent",
-      "spawn",
-      "--hub",
-      socketPath,
-      "--cols",
-      "120",
+    await runCommand(
+      vtrBinary,
+      [
+        "agent",
+        "spawn",
+        "--hub",
+        hubAddr,
+        "--cols",
+        "120",
         "--rows",
         "40",
         "--cmd",
@@ -142,8 +128,8 @@ test.describe("web UI screenshots", () => {
 
   test.afterAll(async () => {
     await stopProcess(hubProc);
-    if (existsSync(socketPath)) {
-      await fsPromises.unlink(socketPath);
+    if (configDir) {
+      await fsPromises.rm(configDir, { recursive: true, force: true });
     }
     if (existsSync(vtrBinary)) {
       await fsPromises.unlink(vtrBinary);
@@ -156,11 +142,11 @@ test.describe("web UI screenshots", () => {
 
     await page.getByRole("button", { name: new RegExp(sessionName) }).first().click();
     await expect(page.locator("header").getByText("live", { exact: true })).toBeVisible();
-  await runCommand(
-    vtrBinary,
-    ["agent", "resize", "--hub", socketPath, sessionName, "120", "40"],
-    repoRoot,
-  );
+    await runCommand(
+      vtrBinary,
+      ["agent", "resize", "--hub", hubAddr, sessionName, "120", "40"],
+      repoRoot,
+    );
 
     await sendCommand("printf 'vtr web ui\\n'");
     await sendCommand("printf '\\x1b[31mRED\\x1b[0m \\x1b[32mGREEN\\x1b[0m\\n'");

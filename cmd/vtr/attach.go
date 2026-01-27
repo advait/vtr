@@ -344,6 +344,8 @@ var (
 				Padding(1, 2)
 )
 
+const resolveTimeout = 5 * time.Second
+
 var errNoSessions = errors.New("no sessions found")
 
 func newTuiCmd() *cobra.Command {
@@ -436,15 +438,7 @@ func newTuiCmd() *cobra.Command {
 }
 
 func initialCoordinatorRefs(cfg *clientConfig, target coordinatorRef) []coordinatorRef {
-	coords := []coordinatorRef{target}
-	if cfg == nil || len(cfg.Coordinators) == 0 {
-		return coords
-	}
-	resolved, err := resolveCoordinatorRefs(cfg)
-	if err != nil || len(resolved) == 0 {
-		return coords
-	}
-	return ensureCoordinator(resolved, target)
+	return []coordinatorRef{target}
 }
 
 func resolveFirstSessionTarget(ctx context.Context, coord coordinatorRef, cfg *clientConfig) (sessionTarget, error) {

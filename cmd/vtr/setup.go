@@ -21,11 +21,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const (
-	setupSocketDefault  = "/var/run/vtrpc.sock"
-	setupSocketFallback = "/tmp/vtrpc.sock"
-)
-
 type setupOptions struct{}
 
 func newSetupCmd() *cobra.Command {
@@ -68,17 +63,6 @@ func runSetup(_ setupOptions) error {
 
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		return fmt.Errorf("unable to create config dir %s: %w", configDir, err)
-	}
-
-	socketPath := setupSocketDefault
-	if !canWriteDir(filepath.Dir(socketPath)) {
-		confirm, err := promptConfirm("/var/run is not writable; use /tmp/vtrpc.sock instead?", true)
-		if err != nil {
-			return err
-		}
-		if confirm {
-			socketPath = setupSocketFallback
-		}
 	}
 
 	caCert, caKey, err := generateCA("vtrpc")
@@ -125,7 +109,7 @@ func runSetup(_ setupOptions) error {
 		return err
 	}
 
-	config := buildSetupConfig(socketPath, configDir)
+	config := buildSetupConfig(configDir)
 	if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {
 		return err
 	}
@@ -253,10 +237,9 @@ func rgbTo256(r, g, b int) int {
 	return 16 + (36 * ri) + (6 * gi) + bi
 }
 
-func buildSetupConfig(socketPath, configDir string) string {
+func buildSetupConfig(configDir string) string {
 	lines := []string{
 		"[hub]",
-		fmt.Sprintf("grpc_socket = %q", socketPath),
 		fmt.Sprintf("addr = %q", defaultHubAddr),
 		"web_enabled = true",
 		"",

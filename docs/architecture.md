@@ -32,7 +32,7 @@
 |              +------^------+                               |
 +---------------------|--------------------------------------+
                       |
-          Unix socket or TCP (+ WebSocket for Web UI)
+          TCP (+ WebSocket for Web UI)
                       |
       +---------------+---------------+
       |               |               |
@@ -90,6 +90,5 @@ Not responsible for:
 
 ## Security model (high-level)
 
-- Unix sockets rely on filesystem permissions.
 - TCP gRPC requires TLS for non-loopback addresses.
 - Token auth can be enabled via config.

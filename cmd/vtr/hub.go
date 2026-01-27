@@ -20,7 +20,6 @@ import (
 )
 
 type hubOptions struct {
-	socket        string
 	addr          string
 	noWeb         bool
 	noCoordinator bool
@@ -43,7 +42,6 @@ func newHubCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&opts.socket, "socket", "", "path to Unix socket (default from vtrpc.toml)")
 	cmd.Flags().StringVar(&opts.addr, "addr", "", "single listener for gRPC + web (default from vtrpc.toml)")
 	cmd.Flags().BoolVar(&opts.noWeb, "no-web", false, "disable the web UI")
 	cmd.Flags().BoolVar(&opts.noCoordinator, "no-coordinator", false, "disable the local coordinator (hub-only mode)")
@@ -74,13 +72,12 @@ func runHub(opts hubOptions) error {
 		cfg = &clientConfig{}
 	}
 
-	socketPath := opts.socket
-	if strings.TrimSpace(socketPath) == "" {
-		socketPath = cfg.Hub.GrpcSocket
-	}
 	addr := opts.addr
 	if strings.TrimSpace(addr) == "" {
 		addr = cfg.Hub.Addr
+	}
+	if strings.TrimSpace(addr) == "" {
+		addr = defaultHubAddr
 	}
 	webEnabled := true
 	if cfg.Hub.WebEnabled != nil {
@@ -140,10 +137,11 @@ func runHub(opts hubOptions) error {
 	}
 
 	localService := server.NewGRPCServer(coord)
+	dialAddr := hubDialAddr(addr)
 	federated := newFederatedServer(
 		localService,
-		coordinatorName(socketPath),
-		socketPath,
+		hubName(dialAddr),
+		dialAddr,
 		coordinatorEnabled,
 		localService.SpokeRegistry(),
 		logger,
@@ -153,109 +151,76 @@ func runHub(opts hubOptions) error {
 	defer stop()
 
 	logger.Info("hub starting",
-		"socket", socketPath,
 		"addr", addr,
 		"web_enabled", webEnabled,
 		"coordinator_enabled", coordinatorEnabled,
 		"log_level", strings.ToLower(opts.logLevel),
 	)
 
-	errCh := make(chan error, 3)
-	servers := 0
-	start := func(fn func() error) {
-		servers++
-		go func() {
-			errCh <- fn()
-		}()
+	if !isLoopbackHost(addr) && tlsConfig == nil {
+		return errors.New("addr requires TLS when binding to a non-loopback address")
 	}
-
-	start(func() error {
-		if coordinatorEnabled {
-			return server.ServeUnix(ctx, coord, socketPath)
+	resolver := webResolver{
+		cfg: cfg,
+		hub: coordinatorRef{Name: hubName(dialAddr), Path: dialAddr},
+		// coords are now derived from federation snapshots via the hub.
+	}
+	webHandler := http.NotFoundHandler()
+	if webEnabled {
+		webOpts := webOptions{
+			addr:      addr,
+			dev:       envBool("VTR_WEB_DEV", false),
+			devServer: envString("VTR_WEB_DEV_SERVER", defaultViteDevServer),
 		}
-		return server.ServeUnixWithService(ctx, federated, socketPath)
-	})
-
-	if strings.TrimSpace(addr) != "" {
-		if !isLoopbackHost(addr) && tlsConfig == nil {
-			return errors.New("addr requires TLS when binding to a non-loopback address")
-		}
-		resolver := webResolver{
-			cfg: cfg,
-			coordsFn: func() ([]coordinatorRef, error) {
-				return federatedCoordinatorRefs(socketPath, coordinatorEnabled, hubDialAddr(addr), localService.SpokeRegistry(), federated.tunnels), nil
-			},
-			hubFn: func() (coordinatorRef, error) {
-				if strings.TrimSpace(socketPath) != "" {
-					return coordinatorRef{Name: coordinatorName(socketPath), Path: socketPath}, nil
-				}
-				hubAddr := hubDialAddr(addr)
-				if hubAddr == "" {
-					return coordinatorRef{}, errors.New("hub address is required")
-				}
-				return coordinatorRef{Name: hubName(hubAddr), Path: hubAddr}, nil
-			},
-		}
-		webHandler := http.NotFoundHandler()
-		if webEnabled {
-			webOpts := webOptions{
-				addr:      addr,
-				socket:    socketPath,
-				dev:       envBool("VTR_WEB_DEV", false),
-				devServer: envString("VTR_WEB_DEV_SERVER", defaultViteDevServer),
-			}
-			handler, err := newWebHandler(webOpts, resolver)
-			if err != nil {
-				return err
-			}
-			webHandler = handler
-		}
-		grpcServer := server.NewGRPCServerWithTokenAndService(federated, token)
-		handler := grpcOrHTTPHandler(grpcServer, webHandler)
-		srv := &http.Server{
-			Addr: addr,
-		}
-		if tlsConfig == nil {
-			srv.Handler = h2c.NewHandler(handler, &http2.Server{})
-		} else {
-			srv.TLSConfig = tlsConfig
-			srv.Handler = handler
-		}
-		logger.Info("unified listener", "addr", addr, "web_enabled", webEnabled, "tls", tlsConfig != nil)
-		go func() {
-			<-ctx.Done()
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_ = srv.Shutdown(shutdownCtx)
-		}()
-		start(func() error {
-			if tlsConfig != nil {
-				err := srv.ListenAndServeTLS("", "")
-				if errors.Is(err, http.ErrServerClosed) {
-					return nil
-				}
-				return err
-			}
-			err := srv.ListenAndServe()
-			if errors.Is(err, http.ErrServerClosed) {
-				return nil
-			}
+		handler, err := newWebHandler(webOpts, resolver)
+		if err != nil {
 			return err
-		})
-	} else if webEnabled {
-		return errors.New("web UI requires addr")
+		}
+		webHandler = handler
 	}
+	grpcServer := server.NewGRPCServerWithTokenAndService(federated, token)
+	handler := grpcOrHTTPHandler(grpcServer, webHandler)
+	srv := &http.Server{
+		Addr: addr,
+	}
+	if tlsConfig == nil {
+		srv.Handler = h2c.NewHandler(handler, &http2.Server{})
+	} else {
+		srv.TLSConfig = tlsConfig
+		srv.Handler = handler
+	}
+	logger.Info("unified listener", "addr", addr, "web_enabled", webEnabled, "tls", tlsConfig != nil)
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	}()
+
+	errCh := make(chan error, 1)
+	go func() {
+		if tlsConfig != nil {
+			err := srv.ListenAndServeTLS("", "")
+			if errors.Is(err, http.ErrServerClosed) {
+				errCh <- nil
+				return
+			}
+			errCh <- err
+			return
+		}
+		err := srv.ListenAndServe()
+		if errors.Is(err, http.ErrServerClosed) {
+			errCh <- nil
+			return
+		}
+		errCh <- err
+	}()
 
 	var firstErr error
-	for i := 0; i < servers; i++ {
-		err := <-errCh
-		if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			continue
-		}
-		if firstErr == nil {
-			firstErr = err
-			stop()
-		}
+	err = <-errCh
+	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		firstErr = err
+		stop()
 	}
 	return firstErr
 }

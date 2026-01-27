@@ -190,7 +190,7 @@ dir = "./web"
 
 [tasks."hub:dev"]
 depends = ["proto"]
-run = "sh -c 'mkdir -p .logs && go run ./cmd/vtr hub --socket /tmp/vtrpc.sock --addr 127.0.0.1:8080 2>&1 | tee .logs/vtr-hub.log'"
+run = "sh -c 'mkdir -p .logs && go run ./cmd/vtr hub --addr 127.0.0.1:8080 2>&1 | tee .logs/vtr-hub.log'"
 env = { VTR_LOG_RESIZE = "1", VTR_WEB_DEV = "1" }
 
 [tasks.dev]

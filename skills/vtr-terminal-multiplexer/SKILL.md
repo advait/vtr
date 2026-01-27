@@ -14,7 +14,7 @@ VTR is a headless terminal multiplexer with hub/spoke architecture, providing CL
 There may be multiple hubs running simultaneously (e.g., one for vtr development, one stable hub for production work). **Determine the correct hub from context** — the user's request, the channel, or prior conversation will indicate which hub/container to target.
 
 **Common hub locations:**
-- Host: `localhost:8080` or unix socket `/tmp/vtrpc.sock`
+- Host: `localhost:8080`
 - Container: `docker exec <container> vtr agent --hub localhost:8080 ...`
 - Remote spoke: `hub-host:8080`
 
@@ -259,7 +259,7 @@ vtr agent screen --hub $HUB $SESSION --json | jq '.cells'
 
 ```bash
 # Start hub
-vtr hub --socket /tmp/vtrpc.sock --addr 0.0.0.0:8080
+vtr hub --addr 0.0.0.0:8080
 
 # Start spoke connecting to hub
 vtr spoke --hub hub-host:8080 --name my-machine

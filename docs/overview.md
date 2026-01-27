@@ -17,7 +17,7 @@ queryable terminal state and reliable input delivery.
 ## System sketch
 
 ```
-PTYs -> Coordinator -> gRPC (Unix/TCP) -> CLI/TUI
+PTYs -> Coordinator -> gRPC (TCP) -> CLI/TUI
                     -> WebSocket bridge -> Web UI
 ```
 

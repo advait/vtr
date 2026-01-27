@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,13 +16,11 @@ type clientConfig struct {
 	Server serverConfig `toml:"server"`
 
 	// Legacy client config fields (pre-vtrpc.toml).
-	Coordinators []coordinatorConfig `toml:"coordinators"`
-	Defaults     defaultsConfig      `toml:"defaults"`
+	Defaults defaultsConfig `toml:"defaults"`
 }
 
 type hubConfig struct {
 	Addr               string `toml:"addr"`
-	GrpcSocket         string `toml:"grpc_socket"`
 	WebEnabled         *bool  `toml:"web_enabled"`
 	CoordinatorEnabled *bool  `toml:"coordinator_enabled"`
 
@@ -44,10 +43,6 @@ type serverConfig struct {
 	KeyFile  string `toml:"key_file"`
 }
 
-type coordinatorConfig struct {
-	Path string `toml:"path"`
-}
-
 type defaultsConfig struct {
 	OutputFormat string `toml:"output_format"`
 }
@@ -56,7 +51,6 @@ const (
 	defaultConfigDirName  = "vtrpc"
 	defaultConfigFileName = "vtrpc.toml"
 
-	defaultHubGrpcSocket = "/var/run/vtrpc.sock"
 	defaultHubAddr       = "127.0.0.1:4620"
 )
 
@@ -108,9 +102,6 @@ func resolveConfigPaths(cfg *clientConfig, dir string) *clientConfig {
 }
 
 func resolveHubConfig(cfg hubConfig) hubConfig {
-	if strings.TrimSpace(cfg.GrpcSocket) == "" {
-		cfg.GrpcSocket = defaultHubGrpcSocket
-	}
 	if strings.TrimSpace(cfg.Addr) == "" {
 		switch {
 		case strings.TrimSpace(cfg.UnifiedAddr) != "":
@@ -131,7 +122,6 @@ func resolveHubConfig(cfg hubConfig) hubConfig {
 		value := true
 		cfg.CoordinatorEnabled = &value
 	}
-	cfg.GrpcSocket = expandPath(cfg.GrpcSocket)
 	return cfg
 }
 
@@ -189,46 +179,11 @@ func resolveCoordinatorPaths(cfg *clientConfig) ([]string, error) {
 	if cfg == nil {
 		return nil, nil
 	}
-	var out []string
-	seen := make(map[string]struct{})
-	if len(cfg.Coordinators) == 0 && strings.TrimSpace(cfg.Hub.GrpcSocket) != "" {
-		path := expandPath(cfg.Hub.GrpcSocket)
-		if path != "" {
-			seen[path] = struct{}{}
-			out = append(out, path)
-		}
+	addr := strings.TrimSpace(cfg.Hub.Addr)
+	if addr == "" {
+		return nil, nil
 	}
-	for _, entry := range cfg.Coordinators {
-		path := strings.TrimSpace(entry.Path)
-		if path == "" {
-			continue
-		}
-		var matches []string
-		if containsGlob(path) {
-			globMatches, err := filepath.Glob(path)
-			if err != nil {
-				return nil, err
-			}
-			matches = globMatches
-		} else {
-			matches = []string{path}
-		}
-		for _, match := range matches {
-			if match == "" {
-				continue
-			}
-			if _, ok := seen[match]; ok {
-				continue
-			}
-			seen[match] = struct{}{}
-			out = append(out, match)
-		}
-	}
-	return out, nil
-}
-
-func containsGlob(value string) bool {
-	return strings.ContainsAny(value, "*?[")
+	return []string{addr}, nil
 }
 
 func resolveOutputFormat(cfg *clientConfig, jsonFlag bool) (outputFormat, error) {
@@ -251,10 +206,23 @@ func resolveOutputFormat(cfg *clientConfig, jsonFlag bool) (outputFormat, error)
 	}
 }
 
-func coordinatorName(socketPath string) string {
-	base := filepath.Base(socketPath)
+func coordinatorName(pathOrAddr string) string {
+	value := strings.TrimSpace(pathOrAddr)
+	if value == "" {
+		return value
+	}
+	if host, _, err := net.SplitHostPort(value); err == nil {
+		host = strings.Trim(host, "[]")
+		if host != "" {
+			return host
+		}
+	}
+	base := filepath.Base(value)
 	if strings.HasSuffix(base, ".sock") {
 		base = strings.TrimSuffix(base, ".sock")
+	}
+	if base == "" {
+		return value
 	}
 	return base
 }

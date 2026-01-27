@@ -12,7 +12,7 @@ Browser
 vtr hub or vtr web
   |  gRPC
   v
-Coordinator (local socket or configured coordinator list)
+Coordinator (hub over TCP)
 ```
 
 `/api/ws/sessions` is a thin proxy over the hub's `SubscribeSessions` stream; it
@@ -42,7 +42,7 @@ Frames are protobuf `google.protobuf.Any` messages.
 1. Client sends `SubscribeSessionsRequest` (Any).
 2. Server streams `SessionsSnapshot` (Any) whenever the list changes.
 
-Errors are returned as `google.rpc.Status` (Any) and then the socket closes.
+Errors are returned as `google.rpc.Status` (Any) and then the WebSocket closes.
 
 ### Session identity
 
@@ -80,12 +80,12 @@ Minimal end-to-end checks:
 
 1. Start hub with web enabled:
    ```bash
-   vtr hub --socket /tmp/vtrpc.sock --addr 127.0.0.1:4620
+   vtr hub --addr 127.0.0.1:4620
    ```
 2. Open `http://127.0.0.1:4620`.
 3. Spawn a session:
    ```bash
-   vtr agent spawn web-smoke --hub /tmp/vtrpc.sock --cmd "bash"
+   vtr agent spawn web-smoke --hub 127.0.0.1:4620 --cmd "bash"
    ```
 4. Attach in the UI and verify:
    - Output renders with correct line breaks.

@@ -44,7 +44,7 @@ Sources (mosh)
 - Uses ECN hints, conservative MTU sizing, and disables PMTU discovery to reduce fragmentation risk.
 
 ## Comparison to vtr (current)
-- vtr uses gRPC over Unix sockets (ordered, reliable) with full ScreenUpdate snapshots today.
+- vtr uses gRPC over TCP (ordered, reliable) with full ScreenUpdate snapshots today.
 - Subscribe streams are throttled and designed for local or tailnet connections.
 - Row-level deltas are planned but not yet implemented.
 
