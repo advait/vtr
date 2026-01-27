@@ -41,7 +41,7 @@
 @font-face {
   font-family: "JetBrains Mono";
   font-style: normal;
-  font-display: swap;
+  font-display: block;
   font-weight: 400;
   src: url("./assets/fonts/jetbrains-mono-nerd/JetBrainsMonoNerdFont-Regular.ttf")
     format("truetype");
@@ -51,7 +51,7 @@
 @font-face {
   font-family: "JetBrains Mono";
   font-style: italic;
-  font-display: swap;
+  font-display: block;
   font-weight: 400;
   src: url("./assets/fonts/jetbrains-mono-nerd/JetBrainsMonoNerdFont-Italic.ttf")
     format("truetype");
@@ -61,7 +61,7 @@
 @font-face {
   font-family: "JetBrains Mono";
   font-style: normal;
-  font-display: swap;
+  font-display: block;
   font-weight: 600;
   src: url("./assets/fonts/jetbrains-mono-nerd/JetBrainsMonoNerdFont-Bold.ttf")
     format("truetype");
@@ -71,7 +71,7 @@
 @font-face {
   font-family: "JetBrains Mono";
   font-style: italic;
-  font-display: swap;
+  font-display: block;
   font-weight: 600;
   src: url("./assets/fonts/jetbrains-mono-nerd/JetBrainsMonoNerdFont-BoldItalic.ttf")
     format("truetype");
