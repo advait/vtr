@@ -15,7 +15,8 @@ import { SessionTabs } from "./components/SessionTabs";
 import { TerminalView } from "./components/TerminalView";
 import { Badge } from "./components/ui/Badge";
 import { Button } from "./components/ui/Button";
-import { createSession, sendSessionAction } from "./lib/api";
+import { ScrollArea } from "./components/ui/ScrollArea";
+import { createSession, fetchWebInfo, sendSessionAction, type WebInfoResponse } from "./lib/api";
 import { loadPreferences, type TerminalRenderer, updatePreferences } from "./lib/preferences";
 import type { SubscribeEvent } from "./lib/proto";
 import { applyScreenUpdate, type ScreenState } from "./lib/terminal";
@@ -102,6 +103,12 @@ type SelectedSession = {
   exitCode?: number;
 };
 
+type SessionDetails = {
+  key: string;
+  coordinator: string;
+  session: SessionInfo;
+};
+
 function sessionKey(coord: string, session: SessionInfo) {
   const ref = session.id || session.name;
   return `${coord}:${ref}`;
@@ -111,26 +118,35 @@ function formatSessionLabel(_coordinator: string, label: string) {
   return displaySessionName(label);
 }
 
-function findSession(
-  coordinators: CoordinatorInfo[],
-  key: string,
-): SelectedSession | null {
+function findSessionDetails(coordinators: CoordinatorInfo[], key: string): SessionDetails | null {
   for (const coord of coordinators) {
     for (const session of coord.sessions) {
       const idKey = sessionKey(coord.name, session);
       if (idKey === key || `${coord.name}:${session.name}` === key) {
-        return {
-          key: idKey,
-          id: session.id || session.name,
-          label: session.name,
-          coordinator: coord.name,
-          status: session.status,
-          exitCode: session.exitCode,
-        };
+        return { key: idKey, coordinator: coord.name, session };
       }
     }
   }
   return null;
+}
+
+function findSession(
+  coordinators: CoordinatorInfo[],
+  key: string,
+): SelectedSession | null {
+  const details = findSessionDetails(coordinators, key);
+  if (!details) {
+    return null;
+  }
+  const session = details.session;
+  return {
+    key: details.key,
+    id: session.id || session.name,
+    label: session.name,
+    coordinator: details.coordinator,
+    status: session.status,
+    exitCode: session.exitCode,
+  };
 }
 
 function splitSessionKey(sessionKey: string) {
@@ -147,12 +163,18 @@ export default function App() {
   const [exitCode, setExitCode] = useState<number | null>(null);
   const [ctrlArmed, setCtrlArmed] = useState(false);
   const [hashSession, setHashSession] = useState(() => readSessionHash());
-  const { coordinators: streamCoordinators, loaded: sessionsLoaded } = useVtrSessionsStream();
+  const {
+    coordinators: streamCoordinators,
+    loaded: sessionsLoaded,
+    state: sessionsState,
+  } = useVtrSessionsStream();
   const [themeId, setThemeId] = useState(() => getTheme(initialPreferences.themeId).id);
   const [terminalRenderer, setTerminalRenderer] = useState<TerminalRenderer>(() =>
     readRendererSetting(initialPreferences.terminalRenderer),
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [webInfo, setWebInfo] = useState<WebInfoResponse | null>(null);
+  const [webInfoError, setWebInfoError] = useState<string | null>(null);
   const [showClosedSessions, setShowClosedSessions] = useState(
     () => initialPreferences.showClosedSessions,
   );
@@ -215,6 +237,47 @@ export default function App() {
     return entries;
   }, [visibleCoordinators]);
 
+  const sessionStats = useMemo(() => {
+    const stats = {
+      total: 0,
+      running: 0,
+      closing: 0,
+      exited: 0,
+      unknown: 0,
+      idle: 0,
+    };
+    for (const coord of coordinators) {
+      for (const session of coord.sessions) {
+        stats.total += 1;
+        switch (session.status) {
+          case "running":
+            stats.running += 1;
+            if (session.idle) {
+              stats.idle += 1;
+            }
+            break;
+          case "closing":
+            stats.closing += 1;
+            break;
+          case "exited":
+            stats.exited += 1;
+            break;
+          default:
+            stats.unknown += 1;
+            break;
+        }
+      }
+    }
+    return stats;
+  }, [coordinators]);
+
+  const selectedSessionDetails = useMemo(() => {
+    if (!selectedSession) {
+      return null;
+    }
+    return findSessionDetails(coordinators, selectedSession.key);
+  }, [coordinators, selectedSession]);
+
   const { state, setEventHandler, sendText, sendKey, sendTextTo, sendKeyTo, resize, close } =
     useVtrStream(activeSession, {
       includeRawOutput: false,
@@ -259,6 +322,28 @@ export default function App() {
   useEffect(() => {
     applyTheme(activeTheme);
   }, [activeTheme]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchWebInfo()
+      .then((info) => {
+        if (cancelled) {
+          return;
+        }
+        setWebInfo(info);
+        setWebInfoError(null);
+      })
+      .catch((err) => {
+        if (cancelled) {
+          return;
+        }
+        const message = err instanceof Error ? err.message : "Unable to load hub info.";
+        setWebInfoError(message);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const applySessions = useCallback((data: CoordinatorInfo[]) => {
     setCoordinators(data);
@@ -729,6 +814,12 @@ export default function App() {
     ? formatSessionLabel(contextMenu.coordinator, contextMenu.sessionLabel)
     : "";
   const contextRunning = contextMenu?.status === "running" || contextMenu?.status === "closing";
+  const sessionsStreamStatus = statusLabels[sessionsState.status] || statusLabels.idle;
+  const activeStreamStatus = statusLabels[state.status] || statusLabels.idle;
+  const webAddress = typeof window === "undefined" ? "" : window.location.host;
+  const hubName = webInfo?.hub?.name?.trim() || "";
+  const hubPath = webInfo?.hub?.path?.trim() || "";
+  const hubError = webInfo?.errors?.hub || webInfoError;
 
   return (
     <div className="min-h-screen bg-tn-bg text-tn-text">
@@ -770,89 +861,257 @@ export default function App() {
               {settingsOpen && (
                 <div
                   id="settings-menu"
-                  className="absolute right-0 mt-2 w-64 rounded-lg border border-tn-border bg-tn-panel p-3 shadow-panel"
+                  className="absolute right-0 mt-2 w-[90vw] max-w-md rounded-lg border border-tn-border bg-tn-panel shadow-panel"
                 >
-                  <div className="flex flex-col gap-2">
-                    <span className="text-xs font-semibold uppercase tracking-wide text-tn-muted">
-                      Theme
-                    </span>
-                    <select
-                      className="h-9 w-full rounded-md border border-tn-border bg-tn-panel-2 px-3 text-sm text-tn-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tn-accent"
-                      value={activeTheme.id}
-                      onChange={(event) => {
-                        const next = event.target.value;
-                        setThemeId(next);
-                        updatePreferences({ themeId: next });
-                      }}
-                      aria-label="Select theme"
-                    >
-                      {sortedThemes.map((theme) => (
-                        <option key={theme.id} value={theme.id}>
-                          {theme.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="mt-4 flex flex-col gap-2">
-                    <span className="text-xs font-semibold uppercase tracking-wide text-tn-muted">
-                      Renderer
-                    </span>
-                    <select
-                      className="h-9 w-full rounded-md border border-tn-border bg-tn-panel-2 px-3 text-sm text-tn-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tn-accent"
-                      value={terminalRenderer}
-                      onChange={(event) => {
-                        const next = normalizeRenderer(event.target.value) ?? "dom";
-                        setTerminalRenderer(next);
-                        updatePreferences({ terminalRenderer: next });
-                      }}
-                      aria-label="Select terminal renderer"
-                    >
-                      <option value="dom">DOM (default)</option>
-                      <option value="canvas">Canvas (experimental)</option>
-                    </select>
-                    <span className="text-[11px] text-tn-text-dim">
-                      Use ?renderer=canvas for a URL override.
-                    </span>
-                  </div>
-                  <div className="mt-4 flex flex-col gap-2">
-                    <span className="text-xs font-semibold uppercase tracking-wide text-tn-muted">
-                      Resizing
-                    </span>
-                    <label className="flex items-center justify-between gap-3 text-sm text-tn-text">
-                      <span>Auto-resize terminal</span>
-                      <input
-                        type="checkbox"
-                        className="h-4 w-4 accent-tn-accent"
-                        checked={autoResize}
-                        onChange={(event) => {
-                          const next = event.target.checked;
-                          setAutoResize(next);
-                          updatePreferences({ autoResize: next });
-                        }}
-                      />
-                    </label>
-                    <span className="text-[11px] text-tn-text-dim">
-                      When off, the session keeps its current size.
-                    </span>
-                  </div>
-                  <div className="mt-4 flex flex-col gap-2">
-                    <span className="text-xs font-semibold uppercase tracking-wide text-tn-muted">
-                      Sessions
-                    </span>
-                    <label className="flex items-center justify-between gap-3 text-sm text-tn-text">
-                      <span>Show closed sessions</span>
-                      <input
-                        type="checkbox"
-                        className="h-4 w-4 accent-tn-accent"
-                        checked={showClosedSessions}
-                        onChange={(event) => {
-                          const next = event.target.checked;
-                          setShowClosedSessions(next);
-                          updatePreferences({ showClosedSessions: next });
-                        }}
-                      />
-                    </label>
-                  </div>
+                  <ScrollArea className="max-h-[75vh]">
+                    <div className="flex flex-col gap-4 p-4">
+                      <div className="flex flex-col gap-2">
+                        <span className="text-xs font-semibold uppercase tracking-wide text-tn-muted">
+                          Theme
+                        </span>
+                        <select
+                          className="h-9 w-full rounded-md border border-tn-border bg-tn-panel-2 px-3 text-sm text-tn-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tn-accent"
+                          value={activeTheme.id}
+                          onChange={(event) => {
+                            const next = event.target.value;
+                            setThemeId(next);
+                            updatePreferences({ themeId: next });
+                          }}
+                          aria-label="Select theme"
+                        >
+                          {sortedThemes.map((theme) => (
+                            <option key={theme.id} value={theme.id}>
+                              {theme.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <span className="text-xs font-semibold uppercase tracking-wide text-tn-muted">
+                          Renderer
+                        </span>
+                        <select
+                          className="h-9 w-full rounded-md border border-tn-border bg-tn-panel-2 px-3 text-sm text-tn-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tn-accent"
+                          value={terminalRenderer}
+                          onChange={(event) => {
+                            const next = normalizeRenderer(event.target.value) ?? "dom";
+                            setTerminalRenderer(next);
+                            updatePreferences({ terminalRenderer: next });
+                          }}
+                          aria-label="Select terminal renderer"
+                        >
+                          <option value="dom">DOM (default)</option>
+                          <option value="canvas">Canvas (experimental)</option>
+                        </select>
+                        <span className="text-[11px] text-tn-text-dim">
+                          Use ?renderer=canvas for a URL override.
+                        </span>
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <span className="text-xs font-semibold uppercase tracking-wide text-tn-muted">
+                          Resizing
+                        </span>
+                        <label className="flex items-center justify-between gap-3 text-sm text-tn-text">
+                          <span>Auto-resize terminal</span>
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 accent-tn-accent"
+                            checked={autoResize}
+                            onChange={(event) => {
+                              const next = event.target.checked;
+                              setAutoResize(next);
+                              updatePreferences({ autoResize: next });
+                            }}
+                          />
+                        </label>
+                        <span className="text-[11px] text-tn-text-dim">
+                          When off, the session keeps its current size.
+                        </span>
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <span className="text-xs font-semibold uppercase tracking-wide text-tn-muted">
+                          Sessions
+                        </span>
+                        <label className="flex items-center justify-between gap-3 text-sm text-tn-text">
+                          <span>Show closed sessions</span>
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 accent-tn-accent"
+                            checked={showClosedSessions}
+                            onChange={(event) => {
+                              const next = event.target.checked;
+                              setShowClosedSessions(next);
+                              updatePreferences({ showClosedSessions: next });
+                            }}
+                          />
+                        </label>
+                      </div>
+                      <div className="border-t border-tn-border pt-4">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-semibold uppercase tracking-wide text-tn-muted">
+                            Hub Info
+                          </span>
+                          <Badge variant={sessionsStreamStatus.variant}>
+                            {sessionsStreamStatus.label}
+                          </Badge>
+                        </div>
+                        <div className="mt-3 grid gap-3">
+                          <div className="rounded-lg border border-tn-border bg-tn-panel-2/80 p-3 text-sm">
+                            <div className="flex items-center justify-between">
+                              <span className="text-sm font-semibold text-tn-text">
+                                Connection
+                              </span>
+                              <Badge variant={activeStreamStatus.variant}>
+                                {activeStreamStatus.label}
+                              </Badge>
+                            </div>
+                            <div className="mt-2 grid gap-2 text-[11px] text-tn-text-dim">
+                              <div className="flex items-center justify-between gap-3">
+                                <span>Web address</span>
+                                <span className="font-mono text-tn-text">
+                                  {webAddress || "—"}
+                                </span>
+                              </div>
+                              <div className="flex items-center justify-between gap-3">
+                                <span>Hub name</span>
+                                <span className="font-mono text-tn-text">
+                                  {hubName || "—"}
+                                </span>
+                              </div>
+                              <div>
+                                <div className="text-tn-text-dim">Hub path</div>
+                                <div className="mt-1 font-mono text-tn-text break-all">
+                                  {hubPath || "—"}
+                                </div>
+                              </div>
+                              <div className="flex items-center justify-between gap-3">
+                                <span>vtr version</span>
+                                <span className="font-mono text-tn-text">
+                                  {webInfo?.version || "—"}
+                                </span>
+                              </div>
+                              {hubError && (
+                                <div className="text-[11px] text-tn-orange">
+                                  Hub info error: {hubError}
+                                </div>
+                              )}
+                              {sessionsState.error && (
+                                <div className="text-[11px] text-tn-orange">
+                                  Sessions stream: {sessionsState.error}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                          <div className="rounded-lg border border-tn-border bg-tn-panel-2/80 p-3 text-sm">
+                            <div className="flex items-center justify-between">
+                              <span className="text-sm font-semibold text-tn-text">
+                                Coordinators
+                              </span>
+                              <Badge>{coordinators.length}</Badge>
+                            </div>
+                            <div className="mt-2 flex flex-col gap-2 text-[11px] text-tn-text-dim">
+                              {coordinators.length === 0 ? (
+                                <span className="text-tn-muted">
+                                  {sessionsLoaded
+                                    ? "No coordinators reporting."
+                                    : "Waiting for coordinator snapshot..."}
+                                </span>
+                              ) : (
+                                coordinators.map((coord) => {
+                                  const running = coord.sessions.filter(
+                                    (session) => session.status === "running",
+                                  ).length;
+                                  const exited = coord.sessions.filter(
+                                    (session) => session.status === "exited",
+                                  ).length;
+                                  return (
+                                    <div
+                                      key={`${coord.name}:${coord.path}`}
+                                      className="rounded-md border border-tn-border bg-tn-panel px-2 py-2"
+                                    >
+                                      <div className="flex items-center justify-between">
+                                        <span className="text-sm font-semibold text-tn-text">
+                                          {coord.name || "unknown"}
+                                        </span>
+                                        <Badge>{coord.sessions.length}</Badge>
+                                      </div>
+                                      <div className="mt-1 font-mono text-[10px] text-tn-text-dim break-all">
+                                        {coord.path || "—"}
+                                      </div>
+                                      <div className="mt-1 text-[10px] text-tn-text-dim">
+                                        {running} running · {exited} exited
+                                      </div>
+                                    </div>
+                                  );
+                                })
+                              )}
+                            </div>
+                          </div>
+                          <div className="rounded-lg border border-tn-border bg-tn-panel-2/80 p-3 text-sm">
+                            <div className="flex items-center justify-between">
+                              <span className="text-sm font-semibold text-tn-text">
+                                Sessions
+                              </span>
+                              <Badge>{sessionStats.total}</Badge>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] text-tn-text-dim">
+                              <div className="rounded-md border border-tn-border bg-tn-panel px-2 py-2">
+                                <div className="text-sm font-semibold text-tn-text">
+                                  {sessionStats.running}
+                                </div>
+                                <div>running</div>
+                              </div>
+                              <div className="rounded-md border border-tn-border bg-tn-panel px-2 py-2">
+                                <div className="text-sm font-semibold text-tn-text">
+                                  {sessionStats.idle}
+                                </div>
+                                <div>idle</div>
+                              </div>
+                              <div className="rounded-md border border-tn-border bg-tn-panel px-2 py-2">
+                                <div className="text-sm font-semibold text-tn-text">
+                                  {sessionStats.closing}
+                                </div>
+                                <div>closing</div>
+                              </div>
+                              <div className="rounded-md border border-tn-border bg-tn-panel px-2 py-2">
+                                <div className="text-sm font-semibold text-tn-text">
+                                  {sessionStats.exited}
+                                </div>
+                                <div>exited</div>
+                              </div>
+                            </div>
+                            <div className="mt-3 rounded-md border border-tn-border bg-tn-panel px-2 py-2 text-[11px] text-tn-text-dim">
+                              <div className="flex items-center justify-between">
+                                <span>Active session</span>
+                                <Badge variant="default">
+                                  {selectedSessionDetails?.session.status || "none"}
+                                </Badge>
+                              </div>
+                              {selectedSessionDetails ? (
+                                <div className="mt-2 grid gap-1 text-[11px] text-tn-text-dim">
+                                  <div className="text-sm font-semibold text-tn-text">
+                                    {displaySessionName(selectedSessionDetails.session.name)}
+                                  </div>
+                                  <div>
+                                    {selectedSessionDetails.coordinator} ·{" "}
+                                    {selectedSessionDetails.session.cols}x
+                                    {selectedSessionDetails.session.rows}
+                                  </div>
+                                  {selectedSessionDetails.session.exitCode !== undefined && (
+                                    <div>exit code: {selectedSessionDetails.session.exitCode}</div>
+                                  )}
+                                </div>
+                              ) : (
+                                <div className="mt-2 text-[11px] text-tn-muted">
+                                  No session selected.
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </ScrollArea>
                 </div>
               )}
             </div>

@@ -32,6 +32,21 @@ export type SessionActionRequest = {
   newName?: string;
 };
 
+export type WebInfoResponse = {
+  version?: string;
+  web?: {
+    addr?: string;
+    dev?: boolean;
+  };
+  hub?: {
+    name?: string;
+    path?: string;
+  };
+  errors?: {
+    hub?: string;
+  };
+};
+
 function normalizeSession(session: SessionCreateResponse["session"]): SessionInfo {
   return {
     id: session.id,
@@ -89,4 +104,13 @@ export async function sendSessionAction(req: SessionActionRequest) {
     const message = (await resp.text()) || `session action failed: ${resp.status}`;
     throw new Error(message);
   }
+}
+
+export async function fetchWebInfo() {
+  const resp = await fetch("/api/info");
+  if (!resp.ok) {
+    const message = (await resp.text()) || `hub info failed: ${resp.status}`;
+    throw new Error(message);
+  }
+  return (await resp.json()) as WebInfoResponse;
 }

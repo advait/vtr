@@ -157,6 +157,7 @@ func newWebHandler(opts webOptions, resolver webResolver) (http.Handler, error) 
 	sessionsWsHandler := handleWebSessionsStream(resolver)
 	mux.HandleFunc("/api/ws/sessions", sessionsWsHandler)
 	mux.HandleFunc("/ws/sessions", sessionsWsHandler)
+	mux.HandleFunc("/api/info", handleWebInfo(opts, resolver))
 	mux.HandleFunc("/api/sessions", handleWebSessions(resolver))
 	mux.HandleFunc("/api/sessions/action", handleWebSessionAction(resolver))
 	if opts.dev {
@@ -454,6 +455,27 @@ type webSessionActionResponse struct {
 	OK bool `json:"ok"`
 }
 
+type webInfoResponse struct {
+	Version string        `json:"version"`
+	Web     webServerInfo `json:"web"`
+	Hub     webHubInfo    `json:"hub"`
+	Errors  webInfoErrors `json:"errors,omitempty"`
+}
+
+type webServerInfo struct {
+	Addr string `json:"addr"`
+	Dev  bool   `json:"dev"`
+}
+
+type webHubInfo struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+}
+
+type webInfoErrors struct {
+	Hub string `json:"hub,omitempty"`
+}
+
 func handleWebSessions(resolver webResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -464,6 +486,32 @@ func handleWebSessions(resolver webResolver) http.HandlerFunc {
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
+	}
+}
+
+func handleWebInfo(opts webOptions, resolver webResolver) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		resp := webInfoResponse{
+			Version: Version,
+			Web: webServerInfo{
+				Addr: opts.addr,
+				Dev:  opts.dev,
+			},
+		}
+		hub, err := resolver.hubTarget()
+		if err != nil {
+			resp.Errors.Hub = err.Error()
+		} else {
+			resp.Hub = webHubInfo{
+				Name: hub.Name,
+				Path: hub.Path,
+			}
+		}
+		writeWebJSON(w, resp)
 	}
 }
 
