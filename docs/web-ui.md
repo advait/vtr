@@ -15,6 +15,9 @@ vtr hub or vtr web
 Coordinator (local socket or configured coordinator list)
 ```
 
+`/api/ws/sessions` is a thin proxy over the hub's `SubscribeSessions` stream; it
+does not aggregate per-coordinator state itself.
+
 ## Endpoints
 
 HTTP:

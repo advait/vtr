@@ -31,6 +31,7 @@ type federatedServer struct {
 	proto.UnimplementedVTRServer
 	local     *server.GRPCServer
 	localName string
+	localPath string
 	static    []spokeTarget
 	registry  *server.SpokeRegistry
 	dialer    spokeDialer
@@ -38,13 +39,19 @@ type federatedServer struct {
 	logger    *slog.Logger
 }
 
-func newFederatedServer(local *server.GRPCServer, localName string, static []spokeTarget, registry *server.SpokeRegistry, dialer spokeDialer, logger *slog.Logger) *federatedServer {
+func newFederatedServer(local *server.GRPCServer, localName string, localPath string, static []spokeTarget, registry *server.SpokeRegistry, dialer spokeDialer, logger *slog.Logger) *federatedServer {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	localName = strings.TrimSpace(localName)
+	localPath = strings.TrimSpace(localPath)
+	if localName == "" && localPath != "" {
+		localName = coordinatorName(localPath)
+	}
 	return &federatedServer{
 		local:     local,
-		localName: strings.TrimSpace(localName),
+		localName: localName,
+		localPath: localPath,
 		static:    static,
 		registry:  registry,
 		dialer:    dialer,
@@ -278,13 +285,23 @@ func (s *federatedServer) SubscribeSessions(req *proto.SubscribeSessionsRequest,
 	state := newFederatedSessionState()
 	signal := newSignal()
 
-	if localSessions, err := s.local.List(ctx, &proto.ListRequest{}); err == nil {
-		state.setLocal(filterSessions(localSessions.GetSessions(), excludeExited))
+	if s.localName != "" {
+		state.ensureCoordinator(s.localName, s.localPath)
+		if localSessions, err := s.local.List(ctx, &proto.ListRequest{}); err == nil {
+			state.setCoordinatorSessions(s.localName, s.localPath, filterSessions(localSessions.GetSessions(), excludeExited))
+		} else {
+			state.setCoordinatorError(s.localName, s.localPath, err)
+		}
+	}
+
+	targets := s.spokeTargets()
+	for _, target := range targets {
+		state.ensureCoordinator(target.Name, target.Addr)
 	}
 
 	go s.watchLocalSessions(ctx, excludeExited, state, signal)
 
-	for _, target := range s.spokeTargets() {
+	for _, target := range targets {
 		go s.watchSpokeSessions(ctx, target, excludeExited, state, signal)
 	}
 
@@ -292,7 +309,7 @@ func (s *federatedServer) SubscribeSessions(req *proto.SubscribeSessionsRequest,
 		go s.watchRegistry(ctx, excludeExited, state, signal)
 	}
 
-	if err := stream.Send(&proto.SubscribeSessionsEvent{Sessions: state.snapshot()}); err != nil {
+	if err := stream.Send(state.snapshot()); err != nil {
 		return err
 	}
 
@@ -301,7 +318,7 @@ func (s *federatedServer) SubscribeSessions(req *proto.SubscribeSessionsRequest,
 		case <-ctx.Done():
 			return nil
 		case <-signal.ch:
-			if err := stream.Send(&proto.SubscribeSessionsEvent{Sessions: state.snapshot()}); err != nil {
+			if err := stream.Send(state.snapshot()); err != nil {
 				return err
 			}
 		}
@@ -311,16 +328,24 @@ func (s *federatedServer) SubscribeSessions(req *proto.SubscribeSessionsRequest,
 func (s *federatedServer) watchLocalSessions(ctx context.Context, excludeExited bool, state *federatedSessionState, signal *updateSignal) {
 	stream := &localSessionsStream{
 		ctx: ctx,
-		send: func(event *proto.SubscribeSessionsEvent) error {
-			if event == nil {
+		send: func(snapshot *proto.SessionsSnapshot) error {
+			if snapshot == nil {
 				return nil
 			}
-			state.setLocal(filterSessions(event.GetSessions(), excludeExited))
+			sessions := snapshotSessions(snapshot, s.localName)
+			if excludeExited {
+				sessions = filterSessions(sessions, true)
+			}
+			state.setCoordinatorSessions(s.localName, s.localPath, sessions)
 			signal.pulse()
 			return nil
 		},
 	}
-	_ = s.local.SubscribeSessions(&proto.SubscribeSessionsRequest{ExcludeExited: excludeExited}, stream)
+	err := s.local.SubscribeSessions(&proto.SubscribeSessionsRequest{ExcludeExited: excludeExited}, stream)
+	if err != nil && ctx.Err() == nil {
+		state.setCoordinatorError(s.localName, s.localPath, err)
+		signal.pulse()
+	}
 }
 
 func (s *federatedServer) Info(ctx context.Context, req *proto.InfoRequest) (*proto.InfoResponse, error) {
@@ -906,44 +931,108 @@ func callUnary[T any](ctx context.Context, spoke string, srv *federatedServer, f
 }
 
 type federatedSessionState struct {
-	mu     sync.RWMutex
-	local  []*proto.Session
-	spokes map[string][]*proto.Session
+	mu           sync.RWMutex
+	coordinators map[string]*coordinatorSessionState
 }
 
 func newFederatedSessionState() *federatedSessionState {
-	return &federatedSessionState{spokes: make(map[string][]*proto.Session)}
+	return &federatedSessionState{coordinators: make(map[string]*coordinatorSessionState)}
 }
 
-func (s *federatedSessionState) setLocal(sessions []*proto.Session) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.local = sessions
-}
-
-func (s *federatedSessionState) setSpoke(name string, sessions []*proto.Session) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if sessions == nil {
-		delete(s.spokes, name)
+func (s *federatedSessionState) ensureCoordinator(name, path string) {
+	name = strings.TrimSpace(name)
+	if name == "" {
 		return
 	}
-	s.spokes[name] = sessions
+	path = strings.TrimSpace(path)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry := s.coordinators[name]
+	if entry == nil {
+		entry = &coordinatorSessionState{name: name}
+		s.coordinators[name] = entry
+	}
+	if path != "" {
+		entry.path = path
+	}
 }
 
-func (s *federatedSessionState) snapshot() []*proto.Session {
+func (s *federatedSessionState) setCoordinatorSessions(name, path string, sessions []*proto.Session) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return
+	}
+	path = strings.TrimSpace(path)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry := s.coordinators[name]
+	if entry == nil {
+		entry = &coordinatorSessionState{name: name}
+		s.coordinators[name] = entry
+	}
+	if path != "" {
+		entry.path = path
+	}
+	entry.sessions = cloneProtoSessions(sessions)
+	entry.err = ""
+}
+
+func (s *federatedSessionState) setCoordinatorError(name, path string, err error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return
+	}
+	path = strings.TrimSpace(path)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry := s.coordinators[name]
+	if entry == nil {
+		entry = &coordinatorSessionState{name: name}
+		s.coordinators[name] = entry
+	}
+	if path != "" {
+		entry.path = path
+	}
+	if err == nil {
+		entry.err = ""
+		return
+	}
+	entry.err = err.Error()
+	entry.sessions = nil
+}
+
+func (s *federatedSessionState) snapshot() *proto.SessionsSnapshot {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	count := len(s.local)
-	for _, sessions := range s.spokes {
-		count += len(sessions)
+	names := make([]string, 0, len(s.coordinators))
+	for name := range s.coordinators {
+		names = append(names, name)
 	}
-	out := make([]*proto.Session, 0, count)
-	out = append(out, s.local...)
-	for _, sessions := range s.spokes {
-		out = append(out, sessions...)
+	s.mu.RUnlock()
+
+	sort.Strings(names)
+	out := make([]*proto.CoordinatorSessions, 0, len(names))
+	s.mu.RLock()
+	for _, name := range names {
+		entry := s.coordinators[name]
+		if entry == nil {
+			continue
+		}
+		out = append(out, &proto.CoordinatorSessions{
+			Name:     entry.name,
+			Path:     entry.path,
+			Sessions: cloneProtoSessions(entry.sessions),
+			Error:    entry.err,
+		})
 	}
-	return out
+	s.mu.RUnlock()
+	return &proto.SessionsSnapshot{Coordinators: out}
+}
+
+type coordinatorSessionState struct {
+	name     string
+	path     string
+	sessions []*proto.Session
+	err      string
 }
 
 type updateSignal struct {
@@ -964,6 +1053,31 @@ func (s *updateSignal) pulse() {
 	}
 }
 
+func nextBackoff(current time.Duration) time.Duration {
+	if current <= 0 {
+		return time.Second
+	}
+	next := current * 2
+	if next > 5*time.Second {
+		return 5 * time.Second
+	}
+	return next
+}
+
+func waitOrDone(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return ctx.Err() != nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
 func (s *federatedServer) watchSpokeSessions(ctx context.Context, target spokeTarget, excludeExited bool, state *federatedSessionState, signal *updateSignal) {
 	backoff := time.Second
 	for {
@@ -971,22 +1085,27 @@ func (s *federatedServer) watchSpokeSessions(ctx context.Context, target spokeTa
 			return
 		}
 		if tunnel := s.tunnel(target.Name); tunnel != nil {
-			state.setSpoke(target.Name, nil)
+			state.ensureCoordinator(target.Name, target.Addr)
+			state.setCoordinatorError(target.Name, target.Addr, nil)
 			signal.pulse()
 			err := tunnel.CallStream(ctx, tunnelMethodSubscribeSessions, &proto.SubscribeSessionsRequest{
 				ExcludeExited: excludeExited,
 			}, func(payload []byte) error {
-				event := &proto.SubscribeSessionsEvent{}
-				if err := goproto.Unmarshal(payload, event); err != nil {
+				snapshot := &proto.SessionsSnapshot{}
+				if err := goproto.Unmarshal(payload, snapshot); err != nil {
 					return err
 				}
-				state.setSpoke(target.Name, prefixSessions(target.Name, event.GetSessions(), excludeExited))
+				sessions := snapshotSessions(snapshot, target.Name)
+				if excludeExited {
+					sessions = filterSessions(sessions, true)
+				}
+				state.setCoordinatorSessions(target.Name, target.Addr, sessions)
 				signal.pulse()
 				return nil
 			})
-			state.setSpoke(target.Name, nil)
-			signal.pulse()
 			if err != nil {
+				state.setCoordinatorError(target.Name, target.Addr, err)
+				signal.pulse()
 				if waitOrDone(ctx, backoff) {
 					return
 				}
@@ -998,7 +1117,7 @@ func (s *federatedServer) watchSpokeSessions(ctx context.Context, target spokeTa
 		}
 
 		if s.dialer == nil {
-			state.setSpoke(target.Name, nil)
+			state.ensureCoordinator(target.Name, target.Addr)
 			signal.pulse()
 			return
 		}
@@ -1006,7 +1125,7 @@ func (s *federatedServer) watchSpokeSessions(ctx context.Context, target spokeTa
 		conn, err := s.dialer(dialCtx, target.Addr)
 		cancel()
 		if err != nil {
-			state.setSpoke(target.Name, nil)
+			state.setCoordinatorError(target.Name, target.Addr, err)
 			signal.pulse()
 			if waitOrDone(ctx, backoff) {
 				return
@@ -1022,7 +1141,7 @@ func (s *federatedServer) watchSpokeSessions(ctx context.Context, target spokeTa
 		if err != nil {
 			streamCancel()
 			_ = conn.Close()
-			state.setSpoke(target.Name, nil)
+			state.setCoordinatorError(target.Name, target.Addr, err)
 			signal.pulse()
 			if waitOrDone(ctx, backoff) {
 				return
@@ -1031,19 +1150,23 @@ func (s *federatedServer) watchSpokeSessions(ctx context.Context, target spokeTa
 			continue
 		}
 
-		state.setSpoke(target.Name, nil)
+		state.setCoordinatorError(target.Name, target.Addr, nil)
 		signal.pulse()
 		backoff = time.Second
 		for {
-			event, err := stream.Recv()
+			snapshot, err := stream.Recv()
 			if err != nil {
 				streamCancel()
 				_ = conn.Close()
-				state.setSpoke(target.Name, nil)
+				state.setCoordinatorError(target.Name, target.Addr, err)
 				signal.pulse()
 				break
 			}
-			state.setSpoke(target.Name, prefixSessions(target.Name, event.GetSessions(), excludeExited))
+			sessions := snapshotSessions(snapshot, target.Name)
+			if excludeExited {
+				sessions = filterSessions(sessions, true)
+			}
+			state.setCoordinatorSessions(target.Name, target.Addr, sessions)
 			signal.pulse()
 		}
 	}
@@ -1053,6 +1176,7 @@ func (s *federatedServer) watchRegistry(ctx context.Context, excludeExited bool,
 	known := make(map[string]struct{})
 	for _, target := range s.spokeTargets() {
 		known[target.Name] = struct{}{}
+		state.ensureCoordinator(target.Name, target.Addr)
 	}
 	ch := s.registry.Changed()
 	for {
@@ -1062,12 +1186,15 @@ func (s *federatedServer) watchRegistry(ctx context.Context, excludeExited bool,
 		case <-ch:
 			ch = s.registry.Changed()
 			for _, target := range s.spokeTargets() {
+				state.ensureCoordinator(target.Name, target.Addr)
 				if _, ok := known[target.Name]; ok {
 					continue
 				}
 				known[target.Name] = struct{}{}
+				signal.pulse()
 				go s.watchSpokeSessions(ctx, target, excludeExited, state, signal)
 			}
+			signal.pulse()
 		}
 	}
 }
@@ -1123,6 +1250,35 @@ func filterSessions(sessions []*proto.Session, excludeExited bool) []*proto.Sess
 	return out
 }
 
+func snapshotSessions(snapshot *proto.SessionsSnapshot, targetName string) []*proto.Session {
+	if snapshot == nil {
+		return nil
+	}
+	targetName = strings.TrimSpace(targetName)
+	if targetName != "" {
+		for _, coord := range snapshot.Coordinators {
+			if coord != nil && coord.Name == targetName {
+				return coord.Sessions
+			}
+		}
+	}
+	if len(snapshot.Coordinators) == 1 {
+		if coord := snapshot.Coordinators[0]; coord != nil {
+			return coord.Sessions
+		}
+	}
+	return nil
+}
+
+func cloneProtoSessions(sessions []*proto.Session) []*proto.Session {
+	if len(sessions) == 0 {
+		return nil
+	}
+	out := make([]*proto.Session, len(sessions))
+	copy(out, sessions)
+	return out
+}
+
 func prefixSubscribeEvent(spoke string, event *proto.SubscribeEvent) {
 	if event == nil {
 		return
@@ -1141,14 +1297,14 @@ func prefixSubscribeEvent(spoke string, event *proto.SubscribeEvent) {
 
 type localSessionsStream struct {
 	ctx  context.Context
-	send func(*proto.SubscribeSessionsEvent) error
+	send func(*proto.SessionsSnapshot) error
 }
 
-func (s *localSessionsStream) Send(event *proto.SubscribeSessionsEvent) error {
+func (s *localSessionsStream) Send(snapshot *proto.SessionsSnapshot) error {
 	if s.send == nil {
 		return nil
 	}
-	return s.send(event)
+	return s.send(snapshot)
 }
 
 func (s *localSessionsStream) Context() context.Context {

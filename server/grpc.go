@@ -45,6 +45,9 @@ type GRPCServer struct {
 	keyframeMu   sync.Mutex
 	keyframeRing map[string]*keyframeRing
 	spokes       *SpokeRegistry
+
+	coordinatorName string
+	coordinatorPath string
 }
 
 type keyframeEntry struct {
@@ -92,10 +95,11 @@ func NewGRPCServer(coord *Coordinator) *GRPCServer {
 		shell = coord.DefaultShell()
 	}
 	return &GRPCServer{
-		coord:        coord,
-		shell:        shell,
-		keyframeRing: make(map[string]*keyframeRing),
-		spokes:       NewSpokeRegistry(),
+		coord:           coord,
+		shell:           shell,
+		keyframeRing:    make(map[string]*keyframeRing),
+		spokes:          NewSpokeRegistry(),
+		coordinatorName: "local",
 	}
 }
 
@@ -111,6 +115,19 @@ func (s *GRPCServer) SetSpokeRegistry(registry *SpokeRegistry) {
 		return
 	}
 	s.spokes = registry
+}
+
+func (s *GRPCServer) SetCoordinatorInfo(name, path string) {
+	if s == nil {
+		return
+	}
+	name = strings.TrimSpace(name)
+	path = strings.TrimSpace(path)
+	if name == "" && path != "" {
+		name = coordinatorNameFromPath(path)
+	}
+	s.coordinatorName = name
+	s.coordinatorPath = path
 }
 
 // NewGRPCServerWithToken constructs a gRPC server with token interceptors attached.
@@ -154,7 +171,9 @@ func ServeUnix(ctx context.Context, coord *Coordinator, socketPath string) error
 	}()
 
 	grpcServer := grpc.NewServer()
-	proto.RegisterVTRServer(grpcServer, NewGRPCServer(coord))
+	service := NewGRPCServer(coord)
+	service.SetCoordinatorInfo("", socketPath)
+	proto.RegisterVTRServer(grpcServer, service)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -200,7 +219,9 @@ func ServeTCP(ctx context.Context, coord *Coordinator, addr string, tlsConfig *t
 	}
 
 	grpcServer := grpc.NewServer(opts...)
-	proto.RegisterVTRServer(grpcServer, NewGRPCServer(coord))
+	service := NewGRPCServer(coord)
+	service.SetCoordinatorInfo("", addr)
+	proto.RegisterVTRServer(grpcServer, service)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -350,6 +371,7 @@ func (s *GRPCServer) SubscribeSessions(req *proto.SubscribeSessionsRequest, stre
 	if req != nil {
 		excludeExited = req.ExcludeExited
 	}
+	coordName, coordPath := s.coordinatorInfo()
 	sendSnapshot := func() error {
 		sessions := s.coord.List()
 		out := make([]*proto.Session, 0, len(sessions))
@@ -360,7 +382,13 @@ func (s *GRPCServer) SubscribeSessions(req *proto.SubscribeSessionsRequest, stre
 			infoCopy := info
 			out = append(out, toProtoSession(&infoCopy))
 		}
-		return stream.Send(&proto.SubscribeSessionsEvent{Sessions: out})
+		return stream.Send(&proto.SessionsSnapshot{
+			Coordinators: []*proto.CoordinatorSessions{{
+				Name:     coordName,
+				Path:     coordPath,
+				Sessions: out,
+			}},
+		})
 	}
 
 	if err := sendSnapshot(); err != nil {
@@ -380,6 +408,32 @@ func (s *GRPCServer) SubscribeSessions(req *proto.SubscribeSessionsRequest, stre
 			signal = s.coord.sessionsChanged()
 		}
 	}
+}
+
+func (s *GRPCServer) coordinatorInfo() (string, string) {
+	if s == nil {
+		return "local", ""
+	}
+	name := strings.TrimSpace(s.coordinatorName)
+	path := strings.TrimSpace(s.coordinatorPath)
+	if name == "" && path != "" {
+		name = coordinatorNameFromPath(path)
+	}
+	if name == "" {
+		name = "local"
+	}
+	return name, path
+}
+
+func coordinatorNameFromPath(path string) string {
+	base := filepath.Base(strings.TrimSpace(path))
+	if strings.HasSuffix(base, ".sock") {
+		base = strings.TrimSuffix(base, ".sock")
+	}
+	if base == "" {
+		return strings.TrimSpace(path)
+	}
+	return base
 }
 
 func (s *GRPCServer) RegisterSpoke(ctx context.Context, req *proto.RegisterSpokeRequest) (*proto.RegisterSpokeResponse, error) {

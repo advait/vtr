@@ -14,6 +14,8 @@ All streaming uses the protobuf types in `proto/vtr.proto`:
 - `RowDelta`
 - `SessionExited`
 - `SessionIdle`
+- `SubscribeSessionsRequest`
+- `SessionsSnapshot`
 
 ### SubscribeRequest
 
@@ -67,6 +69,12 @@ If deltas are introduced:
 - Screen updates are output-driven and throttled (approx 30fps max).
 - Latest-only policy: per subscriber, only the most recent pending update is kept.
 - Keyframes are cached for resync when a client falls behind.
+
+## Session list snapshots
+
+`SubscribeSessions` streams `SessionsSnapshot` frames. Each snapshot includes
+all known coordinators (including empty) and their current session lists. Hubs
+emit a fresh snapshot whenever membership or sessions change.
 
 ## WebSocket transport mapping
 

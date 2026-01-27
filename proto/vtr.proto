@@ -10,7 +10,7 @@ service VTR {
   // Session management
   rpc Spawn(SpawnRequest) returns (SpawnResponse);
   rpc List(ListRequest) returns (ListResponse);
-  rpc SubscribeSessions(SubscribeSessionsRequest) returns (stream SubscribeSessionsEvent);
+  rpc SubscribeSessions(SubscribeSessionsRequest) returns (stream SessionsSnapshot);
   rpc Info(InfoRequest) returns (InfoResponse);
   rpc Kill(KillRequest) returns (KillResponse);
   rpc Close(CloseRequest) returns (CloseResponse);
@@ -86,10 +86,6 @@ message ListResponse {
 
 message SubscribeSessionsRequest {
   bool exclude_exited = 1;
-}
-
-message SubscribeSessionsEvent {
-  repeated Session sessions = 1;
 }
 
 // Federation messages

@@ -737,8 +737,8 @@ func (t *tunnelSpoke) handleStream(ctx context.Context, callID string, req *prot
 		}
 		stream := &tunnelSessionsStream{
 			ctx: ctx,
-			send: func(event *proto.SubscribeSessionsEvent) error {
-				return t.sendEvent(callID, event)
+			send: func(snapshot *proto.SessionsSnapshot) error {
+				return t.sendEvent(callID, snapshot)
 			},
 		}
 		err := t.service.SubscribeSessions(payload, stream)
@@ -848,14 +848,14 @@ func (s *tunnelSubscribeStream) RecvMsg(interface{}) error    { return nil }
 
 type tunnelSessionsStream struct {
 	ctx  context.Context
-	send func(*proto.SubscribeSessionsEvent) error
+	send func(*proto.SessionsSnapshot) error
 }
 
-func (s *tunnelSessionsStream) Send(event *proto.SubscribeSessionsEvent) error {
+func (s *tunnelSessionsStream) Send(snapshot *proto.SessionsSnapshot) error {
 	if s.send == nil {
 		return nil
 	}
-	return s.send(event)
+	return s.send(snapshot)
 }
 
 func (s *tunnelSessionsStream) Context() context.Context {

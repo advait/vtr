@@ -8,7 +8,7 @@ and current implementation status.
 `service VTR` includes:
 
 Session management:
-- Spawn, List, SubscribeSessions, Info, Kill, Close, Remove, Rename
+- Spawn, List, SubscribeSessions (stream SessionsSnapshot), Info, Kill, Close, Remove, Rename
 
 Screen / input:
 - GetScreen, Grep, SendText, SendKey, SendBytes, Resize
@@ -51,6 +51,12 @@ Not implemented:
 - Sessions have stable UUIDs (`id`) and mutable labels (`name`).
 - gRPC and the WebSocket bridge accept `id` (preferred); `name` is legacy lookup.
 - For hubs with multiple coordinators, use `coordinator:session-id` when routing.
+
+## Session snapshots
+
+`SubscribeSessions` streams `SessionsSnapshot` frames that include coordinator
+membership and per-coordinator session lists (`CoordinatorSessions` with
+`name`, `path`, `sessions`, and `error`). Clients render the latest snapshot.
 
 ## Error behavior (common cases)
 

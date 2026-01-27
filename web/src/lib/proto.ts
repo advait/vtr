@@ -46,7 +46,6 @@ message ListRequest {}
 message ListResponse { repeated Session sessions = 1; }
 
 message SubscribeSessionsRequest { bool exclude_exited = 1; }
-message SubscribeSessionsEvent { repeated Session sessions = 1; }
 
 message CoordinatorSessions {
   string name = 1;

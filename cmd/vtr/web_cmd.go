@@ -18,7 +18,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	proto "github.com/advait/vtrpc/proto"
 	webassets "github.com/advait/vtrpc/web"
@@ -44,6 +43,7 @@ type webResolver struct {
 	allowDefault bool
 	cfg          *clientConfig
 	coordsFn     func() ([]coordinatorRef, error)
+	hubFn        func() (coordinatorRef, error)
 }
 
 func (r webResolver) coordinators() ([]coordinatorRef, error) {
@@ -57,6 +57,25 @@ func (r webResolver) coordinators() ([]coordinatorRef, error) {
 		return coordinatorsOrDefault(r.coords), nil
 	}
 	return r.coords, nil
+}
+
+func (r webResolver) hubTarget() (coordinatorRef, error) {
+	if r.hubFn != nil {
+		return r.hubFn()
+	}
+	if r.cfg != nil {
+		if hub, err := resolveHubTarget(r.cfg, ""); err == nil {
+			return hub, nil
+		}
+	}
+	coords, err := r.coordinators()
+	if err != nil {
+		return coordinatorRef{}, err
+	}
+	if len(coords) == 0 {
+		return coordinatorRef{}, errors.New("no coordinators configured")
+	}
+	return coords[0], nil
 }
 
 type wsProtocolError struct {
@@ -333,86 +352,6 @@ func handleWebsocket(resolver webResolver) http.HandlerFunc {
 	}
 }
 
-type sessionListEntry struct {
-	name     string
-	path     string
-	sessions []*proto.Session
-	err      string
-}
-
-type sessionListState struct {
-	mu      sync.Mutex
-	order   []string
-	entries map[string]*sessionListEntry
-}
-
-func newSessionListState(coords []coordinatorRef) *sessionListState {
-	order := make([]string, 0, len(coords))
-	entries := make(map[string]*sessionListEntry, len(coords))
-	for _, coord := range coords {
-		order = append(order, coord.Name)
-		entries[coord.Name] = &sessionListEntry{name: coord.Name, path: coord.Path}
-	}
-	return &sessionListState{order: order, entries: entries}
-}
-
-func (s *sessionListState) setSessions(name string, sessions []*proto.Session) {
-	s.mu.Lock()
-	entry := s.entries[name]
-	if entry == nil {
-		s.mu.Unlock()
-		return
-	}
-	entry.sessions = cloneProtoSessions(sessions)
-	entry.err = ""
-	s.mu.Unlock()
-}
-
-func (s *sessionListState) setError(name string, err error) {
-	s.mu.Lock()
-	entry := s.entries[name]
-	if entry == nil {
-		s.mu.Unlock()
-		return
-	}
-	if err == nil {
-		entry.err = ""
-	} else {
-		entry.err = err.Error()
-		entry.sessions = nil
-	}
-	s.mu.Unlock()
-}
-
-func (s *sessionListState) snapshot() *proto.SessionsSnapshot {
-	s.mu.Lock()
-	coords := make([]*proto.CoordinatorSessions, 0, len(s.order))
-	for _, name := range s.order {
-		entry := s.entries[name]
-		if entry == nil {
-			continue
-		}
-		sessions := cloneProtoSessions(entry.sessions)
-		coords = append(coords, &proto.CoordinatorSessions{
-			Name:     entry.name,
-			Path:     entry.path,
-			Sessions: sessions,
-			Error:    entry.err,
-		})
-	}
-	s.mu.Unlock()
-	return &proto.SessionsSnapshot{Coordinators: coords}
-}
-
-func cloneProtoSessions(sessions []*proto.Session) []*proto.Session {
-	if len(sessions) == 0 {
-		return nil
-	}
-	out := make([]*proto.Session, len(sessions))
-	copy(out, sessions)
-	return out
-}
-
 func handleWebSessionsStream(resolver webResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
@@ -434,124 +373,35 @@ func handleWebSessionsStream(resolver webResolver) http.HandlerFunc {
 			return
 		}
 
-		coords, err := resolver.coordinators()
+		hubTarget, err := resolver.hubTarget()
 		if err != nil {
 			_ = sendWSError(ctx, sender, err)
 			return
 		}
 
-		state := newSessionListState(coords)
-		updateCh := make(chan struct{}, 1)
-		signalUpdate := func() {
-			select {
-			case updateCh <- struct{}{}:
-			default:
-			}
-		}
-
-		for _, coord := range coords {
-			go watchCoordinatorSessions(ctx, coord, hello.GetExcludeExited(), state, signalUpdate, resolver.cfg)
-		}
-
-		if err := sender.sendProto(ctx, state.snapshot()); err != nil {
-			return
-		}
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-updateCh:
-				if err := sender.sendProto(ctx, state.snapshot()); err != nil {
-					return
-				}
-			}
-		}
-	}
-}
-
-func watchCoordinatorSessions(
-	ctx context.Context,
-	coord coordinatorRef,
-	excludeExited bool,
-	state *sessionListState,
-	signalUpdate func(),
-	cfg *clientConfig,
-) {
-	backoff := time.Second
-	for {
-		if ctx.Err() != nil {
-			return
-		}
-		dialCtx, cancel := context.WithTimeout(ctx, rpcTimeout)
-		conn, err := dialClient(dialCtx, coord.Path, cfg)
-		cancel()
+		grpcConn, err := dialClient(ctx, hubTarget.Path, resolver.cfg)
 		if err != nil {
-			state.setError(coord.Name, err)
-			signalUpdate()
-			if waitOrDone(ctx, backoff) {
-				return
-			}
-			backoff = nextBackoff(backoff)
-			continue
+			_ = sendWSError(ctx, sender, err)
+			return
 		}
-		client := proto.NewVTRClient(conn)
+		defer grpcConn.Close()
+
+		client := proto.NewVTRClient(grpcConn)
 		streamCtx, streamCancel := context.WithCancel(ctx)
-		stream, err := client.SubscribeSessions(streamCtx, &proto.SubscribeSessionsRequest{
-			ExcludeExited: excludeExited,
-		})
+		defer streamCancel()
+
+		stream, err := client.SubscribeSessions(streamCtx, hello)
 		if err != nil {
-			streamCancel()
-			_ = conn.Close()
-			state.setError(coord.Name, err)
-			signalUpdate()
-			if waitOrDone(ctx, backoff) {
-				return
-			}
-			backoff = nextBackoff(backoff)
-			continue
+			_ = sendWSError(ctx, sender, err)
+			return
 		}
 
-		state.setError(coord.Name, nil)
-		signalUpdate()
-		backoff = time.Second
-		for {
-			event, err := stream.Recv()
-			if err != nil {
-				streamCancel()
-				_ = conn.Close()
-				state.setError(coord.Name, err)
-				signalUpdate()
-				break
-			}
-			state.setSessions(coord.Name, filterSessionsByPrefix(event.GetSessions(), coord.SessionPrefix))
-			signalUpdate()
+		err = streamSessionsToWeb(ctx, sender, stream)
+		cancel()
+		if err == nil || errors.Is(err, context.Canceled) || isNormalWSClose(err) {
+			return
 		}
-	}
-}
-
-func nextBackoff(current time.Duration) time.Duration {
-	if current <= 0 {
-		return time.Second
-	}
-	next := current * 2
-	if next > 5*time.Second {
-		return 5 * time.Second
-	}
-	return next
-}
-
-func waitOrDone(ctx context.Context, d time.Duration) bool {
-	if d <= 0 {
-		return ctx.Err() != nil
-	}
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return true
-	case <-timer.C:
-		return false
+		_ = sendWSError(ctx, sender, err)
 	}
 }
 
@@ -772,8 +622,8 @@ func handleWebSessionAction(resolver webResolver) http.HandlerFunc {
 			ctx, cancel = context.WithTimeout(r.Context(), rpcTimeout)
 			_, err = client.SendKey(ctx, &proto.SendKeyRequest{
 				Name: targetName,
-				Id:  target.ID,
-				Key: key,
+				Id:   target.ID,
+				Key:  key,
 			})
 			cancel()
 		case "signal":
@@ -991,12 +841,16 @@ func newWebResolver(opts webOptions) (webResolver, error) {
 		return webResolver{}, errors.New("cannot use --socket with --coordinator")
 	}
 	if opts.socket != "" {
+		ref := coordinatorRef{
+			Name: coordinatorName(opts.socket),
+			Path: opts.socket,
+		}
 		return webResolver{
-			coords: []coordinatorRef{{
-				Name: coordinatorName(opts.socket),
-				Path: opts.socket,
-			}},
-			cfg: cfg,
+			coords: []coordinatorRef{ref},
+			cfg:    cfg,
+			hubFn: func() (coordinatorRef, error) {
+				return ref, nil
+			},
 		}, nil
 	}
 	if len(opts.coordinators) > 0 {
@@ -1004,7 +858,14 @@ func newWebResolver(opts webOptions) (webResolver, error) {
 		if err != nil {
 			return webResolver{}, err
 		}
-		return webResolver{coords: coords, cfg: cfg}, nil
+		resolver := webResolver{coords: coords, cfg: cfg}
+		if len(coords) == 1 {
+			target := coords[0]
+			resolver.hubFn = func() (coordinatorRef, error) {
+				return target, nil
+			}
+		}
+		return resolver, nil
 	}
 	coords, err := resolveCoordinatorRefs(cfg)
 	if err != nil {
@@ -1083,8 +944,8 @@ func handleWebInput(ctx context.Context, conn *websocket.Conn, client proto.VTRC
 			ctxTimeout, cancel := context.WithTimeout(ctx, rpcTimeout)
 			_, err := client.SendKey(ctxTimeout, &proto.SendKeyRequest{
 				Name: sessionName,
-				Id:  sessionID,
-				Key: m.GetKey(),
+				Id:   sessionID,
+				Key:  m.GetKey(),
 			})
 			cancel()
 			if err != nil {
@@ -1124,6 +985,21 @@ func streamToWeb(ctx context.Context, sender *wsSender, stream proto.VTR_Subscri
 			return err
 		}
 		if err := sender.sendProto(ctx, event); err != nil {
+			return err
+		}
+	}
+}
+
+func streamSessionsToWeb(ctx context.Context, sender *wsSender, stream proto.VTR_SubscribeSessionsClient) error {
+	for {
+		snapshot, err := stream.Recv()
+		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) {
+				return nil
+			}
+			return err
+		}
+		if err := sender.sendProto(ctx, snapshot); err != nil {
 			return err
 		}
 	}

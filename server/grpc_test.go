@@ -344,7 +344,7 @@ func TestGRPCSubscribeSessions(t *testing.T) {
 		cancel()
 		t.Fatalf("SubscribeSessions recv: %v", err)
 	}
-	if streamHasSession(first, "grpc-subscribe") {
+	if snapshotHasSession(first, "grpc-subscribe") {
 		cancel()
 		t.Fatalf("SubscribeSessions unexpected session in initial snapshot")
 	}
@@ -362,23 +362,25 @@ func TestGRPCSubscribeSessions(t *testing.T) {
 
 	found := false
 	for !found {
-		event, err := stream.Recv()
+		snapshot, err := stream.Recv()
 		if err != nil {
 			cancel()
 			t.Fatalf("SubscribeSessions recv after spawn: %v", err)
 		}
-		found = streamHasSession(event, "grpc-subscribe")
+		found = snapshotHasSession(snapshot, "grpc-subscribe")
 	}
 	cancel()
 }
 
-func streamHasSession(event *proto.SubscribeSessionsEvent, name string) bool {
-	if event == nil {
+func snapshotHasSession(snapshot *proto.SessionsSnapshot, name string) bool {
+	if snapshot == nil {
 		return false
 	}
-	for _, session := range event.Sessions {
-		if session != nil && session.Name == name {
-			return true
+	for _, coord := range snapshot.Coordinators {
+		for _, session := range coord.GetSessions() {
+			if session != nil && session.Name == name {
+				return true
+			}
 		}
 	}
 	return false

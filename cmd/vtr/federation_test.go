@@ -87,6 +87,7 @@ func TestFederatedListPrefixesSpokeSessions(t *testing.T) {
 	federated := newFederatedServer(
 		local,
 		"hub",
+		"",
 		[]spokeTarget{{Name: "spoke-a", Addr: "spoke-a"}, {Name: "spoke-b", Addr: "spoke-b"}},
 		nil,
 		bufDialer(listeners),
@@ -136,6 +137,7 @@ func TestFederatedInfoRoutesToSpoke(t *testing.T) {
 	federated := newFederatedServer(
 		local,
 		"hub",
+		"",
 		[]spokeTarget{{Name: "spoke-a", Addr: "spoke-a"}},
 		nil,
 		bufDialer(listeners),
@@ -165,7 +167,7 @@ func TestTunnelListAndInfoRoutesToSpoke(t *testing.T) {
 
 	listener := bufconn.Listen(bufSize)
 	grpcServer := grpc.NewServer()
-	federated := newFederatedServer(local, "hub", nil, nil, nil, nil)
+	federated := newFederatedServer(local, "hub", "", nil, nil, nil, nil)
 	proto.RegisterVTRServer(grpcServer, federated)
 	go func() {
 		_ = grpcServer.Serve(listener)
@@ -230,4 +232,86 @@ func TestTunnelListAndInfoRoutesToSpoke(t *testing.T) {
 	if infoResp.GetSession().GetName() != "spoke-a:alpha" {
 		t.Fatalf("expected prefixed info, got %q", infoResp.GetSession().GetName())
 	}
+}
+
+func TestFederatedSubscribeSessionsAddsEmptyCoordinator(t *testing.T) {
+	coord := server.NewCoordinator(server.CoordinatorOptions{})
+	defer coord.CloseAll()
+	local := server.NewGRPCServer(coord)
+
+	registry := server.NewSpokeRegistry()
+	federated := newFederatedServer(local, "hub", "", nil, registry, nil, nil)
+
+	listener := bufconn.Listen(bufSize)
+	grpcServer := grpc.NewServer()
+	proto.RegisterVTRServer(grpcServer, federated)
+	go func() {
+		_ = grpcServer.Serve(listener)
+	}()
+	t.Cleanup(func() {
+		grpcServer.Stop()
+		_ = listener.Close()
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	conn, err := grpc.DialContext(ctx, "hub",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+			return listener.DialContext(ctx)
+		}),
+	)
+	if err != nil {
+		t.Fatalf("dial hub: %v", err)
+	}
+	defer conn.Close()
+
+	client := proto.NewVTRClient(conn)
+	stream, err := client.SubscribeSessions(ctx, &proto.SubscribeSessionsRequest{})
+	if err != nil {
+		t.Fatalf("SubscribeSessions: %v", err)
+	}
+
+	first, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("SubscribeSessions recv: %v", err)
+	}
+	if coord := snapshotCoordinator(first, "spoke-a"); coord != nil {
+		t.Fatalf("unexpected spoke-a coordinator in initial snapshot: %#v", coord)
+	}
+
+	registry.Upsert(&proto.SpokeInfo{Name: "spoke-a", GrpcAddr: "spoke-a"}, "peer")
+
+	deadline := time.After(1 * time.Second)
+	for {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for spoke-a snapshot")
+		default:
+		}
+		snapshot, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("SubscribeSessions recv after add: %v", err)
+		}
+		coord := snapshotCoordinator(snapshot, "spoke-a")
+		if coord == nil {
+			continue
+		}
+		if len(coord.GetSessions()) != 0 {
+			t.Fatalf("expected empty sessions for spoke-a, got %#v", coord.GetSessions())
+		}
+		break
+	}
+}
+
+func snapshotCoordinator(snapshot *proto.SessionsSnapshot, name string) *proto.CoordinatorSessions {
+	if snapshot == nil {
+		return nil
+	}
+	for _, coord := range snapshot.Coordinators {
+		if coord != nil && coord.Name == name {
+			return coord
+		}
+	}
+	return nil
 }

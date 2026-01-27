@@ -133,6 +133,7 @@ func runHub(opts hubOptions) error {
 	federated := newFederatedServer(
 		localService,
 		coordinatorName(socketPath),
+		socketPath,
 		staticSpokes,
 		localService.SpokeRegistry(),
 		func(ctx context.Context, addr string) (*grpc.ClientConn, error) {
@@ -172,6 +173,16 @@ func runHub(opts hubOptions) error {
 			cfg: cfg,
 			coordsFn: func() ([]coordinatorRef, error) {
 				return federatedCoordinatorRefs(socketPath, hubDialAddr(addr), staticSpokes, localService.SpokeRegistry(), federated.tunnels), nil
+			},
+			hubFn: func() (coordinatorRef, error) {
+				if strings.TrimSpace(socketPath) != "" {
+					return coordinatorRef{Name: coordinatorName(socketPath), Path: socketPath}, nil
+				}
+				hubAddr := hubDialAddr(addr)
+				if hubAddr == "" {
+					return coordinatorRef{}, errors.New("hub address is required")
+				}
+				return coordinatorRef{Name: hubName(hubAddr), Path: hubAddr}, nil
 			},
 		}
 		webHandler := http.NotFoundHandler()
