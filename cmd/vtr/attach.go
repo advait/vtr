@@ -27,6 +27,7 @@ import (
 type attachModel struct {
 	conn         *grpc.ClientConn
 	client       proto.VTRClient
+	hub          coordinatorRef
 	coordinator  coordinatorRef
 	coords       []coordinatorRef
 	cfg          *clientConfig
@@ -392,6 +393,7 @@ func newTuiCmd() *cobra.Command {
 			model := attachModel{
 				conn:             conn,
 				client:           client,
+				hub:              targetCoord,
 				coordinator:      targetCoord,
 				coords:           coords,
 				cfg:              cfg,
@@ -662,8 +664,12 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(coords) == 0 {
 			coords = ensureCoordinator(coords, m.coordinator)
 		}
+		forcePrefix := multi || shouldPrefixSnapshot(coords, m.hub.Name)
+		if forcePrefix {
+			items = prefixSessionItems(items)
+		}
 		m.coords = coords
-		m.multiCoordinator = multi
+		m.multiCoordinator = forcePrefix
 		m.sessionItems = items
 		if m.sessionID != "" {
 			for _, item := range m.sessionItems {
@@ -759,6 +765,7 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.conn = msg.conn
 			m.client = proto.NewVTRClient(msg.conn)
 			m.coordinator = msg.coord
+			m.hub = msg.coord
 			restartSessionsStream = true
 		}
 		next, cmd := switchSession(m, sessionSwitchMsg{id: msg.id, label: msg.label, coord: msg.coord.Name})
@@ -1156,6 +1163,34 @@ func prefixSessionLabel(coord, label string) string {
 	return fmt.Sprintf("%s:%s", coord, label)
 }
 
+func shouldPrefixCoordinator(hubName, coordName string) bool {
+	hubName = strings.TrimSpace(hubName)
+	coordName = strings.TrimSpace(coordName)
+	if hubName == "" || coordName == "" {
+		return false
+	}
+	return coordName != hubName
+}
+
+func shouldPrefixSnapshot(coords []coordinatorRef, hubName string) bool {
+	for _, coord := range coords {
+		if shouldPrefixCoordinator(hubName, coord.Name) {
+			return true
+		}
+	}
+	return false
+}
+
+func prefixSessionItems(items []sessionListItem) []sessionListItem {
+	for i := range items {
+		if items[i].coord == "" {
+			continue
+		}
+		items[i].label = prefixSessionLabel(items[i].coord, items[i].label)
+	}
+	return items
+}
+
 func spawnCurrentCmd(client proto.VTRClient, name string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
@@ -1221,6 +1256,26 @@ func spawnAutoSessionCmd(client proto.VTRClient, base string) tea.Cmd {
 		}
 		return rpcErrMsg{err: fmt.Errorf("spawn: unable to find available session name"), op: "spawn"}
 	}
+}
+
+func autoSpawnBase(m attachModel, base string) (string, bool) {
+	base = strings.TrimSpace(base)
+	if base == "" {
+		base = "session"
+	}
+	coord := m.coordinator
+	coordEmpty := strings.TrimSpace(coord.Name) == "" && strings.TrimSpace(coord.Path) == ""
+	if coordEmpty || coordinatorIndex(m.coords, coord) < 0 {
+		if len(m.coords) > 0 {
+			coord = m.coords[0]
+		} else if coordEmpty {
+			return "", false
+		}
+	}
+	if m.multiCoordinator || shouldPrefixCoordinator(m.hub.Name, coord.Name) {
+		return prefixSessionLabel(coord.Name, base), true
+	}
+	return base, true
 }
 
 func spawnSessionCmd(coord coordinatorRef, cfg *clientConfig, name string) tea.Cmd {
@@ -1409,7 +1464,13 @@ func handleMouse(m attachModel, msg tea.MouseMsg) (attachModel, tea.Cmd) {
 	}
 	if tab.newTab {
 		if msg.Button == tea.MouseButtonLeft {
-			return m, spawnAutoSessionCmd(m.client, "session")
+			base, ok := autoSpawnBase(m, "session")
+			if !ok {
+				m.statusMsg = "create: no coordinators"
+				m.statusUntil = time.Now().Add(2 * time.Second)
+				return m, nil
+			}
+			return m, spawnAutoSessionCmd(m.client, base)
 		}
 		return m, nil
 	}
@@ -1709,14 +1770,11 @@ func updateCreateModal(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
 		}
 		m.createActive = false
 		m.createInput.Blur()
-		if coord.Path == "" || coord.Path == m.coordinator.Path {
-			spawnName := name
-			if m.multiCoordinator {
-				spawnName = prefixSessionLabel(coord.Name, name)
-			}
-			return m, spawnCurrentCmd(m.client, spawnName)
+		spawnName := name
+		if m.multiCoordinator || shouldPrefixCoordinator(m.hub.Name, coord.Name) {
+			spawnName = prefixSessionLabel(coord.Name, name)
 		}
-		return m, spawnSessionCmd(coord, m.cfg, name)
+		return m, spawnCurrentCmd(m.client, spawnName)
 	case "j", "down":
 		if !m.createFocusInput && len(m.coords) > 0 {
 			m.createCoordIdx = (m.createCoordIdx + 1) % len(m.coords)

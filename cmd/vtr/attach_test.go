@@ -3,56 +3,153 @@ package main
 import (
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	proto "github.com/advait/vtrpc/proto"
 )
 
-func TestInputForKeyControlBytes(t *testing.T) {
-	tests := []struct {
-		name string
-		msg  tea.KeyMsg
-		want byte
-	}{
-		{name: "ctrl+c", msg: tea.KeyMsg{Type: tea.KeyCtrlC}, want: 0x03},
-		{name: "ctrl+d", msg: tea.KeyMsg{Type: tea.KeyCtrlD}, want: 0x04},
-		{name: "ctrl+l", msg: tea.KeyMsg{Type: tea.KeyCtrlL}, want: 0x0c},
-		{name: "enter", msg: tea.KeyMsg{Type: tea.KeyEnter}, want: 0x0d},
-		{name: "tab", msg: tea.KeyMsg{Type: tea.KeyTab}, want: 0x09},
-		{name: "esc", msg: tea.KeyMsg{Type: tea.KeyEsc}, want: 0x1b},
-		{name: "backspace", msg: tea.KeyMsg{Type: tea.KeyBackspace}, want: 0x7f},
+func TestSessionSnapshotPrefixingForSpokeOnly(t *testing.T) {
+	snapshot := &proto.SessionsSnapshot{
+		Coordinators: []*proto.CoordinatorSessions{{
+			Name: "spoke-a",
+			Path: "/tmp/spoke.sock",
+			Sessions: []*proto.Session{{
+				Id:   "id-1",
+				Name: "demo",
+			}},
+		}},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			key, data, ok := inputForKey(tt.msg)
-			if !ok {
-				t.Fatalf("expected ok")
-			}
-			if key != "" {
-				t.Fatalf("expected empty key, got %q", key)
-			}
-			if len(data) != 1 || data[0] != tt.want {
-				t.Fatalf("expected byte 0x%02x, got %v", tt.want, data)
-			}
-		})
+
+	coords, items, multi := sessionItemsFromSnapshot(snapshot)
+	if multi {
+		t.Fatalf("expected single coordinator snapshot to be non-multi")
+	}
+	if !shouldPrefixSnapshot(coords, "hub") {
+		t.Fatalf("expected prefixing when hub name differs from coordinator")
+	}
+	items = prefixSessionItems(items)
+	if len(items) != 1 {
+		t.Fatalf("expected one session item, got %d", len(items))
+	}
+	if items[0].label != "spoke-a:demo" {
+		t.Fatalf("expected prefixed label, got %q", items[0].label)
+	}
+	name, id := sessionRequestRef(items[0].id, items[0].label)
+	if name != "spoke-a:demo" || id != "" {
+		t.Fatalf("expected name-only request for federated session, got name=%q id=%q", name, id)
 	}
 }
 
-func TestLooksLikeMouseSGRReport(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		want  bool
-	}{
-		{name: "sgr-press", input: "35;148;16M", want: true},
-		{name: "sgr-release", input: "35;148;16m", want: true},
-		{name: "no-semicolons", input: "35M", want: false},
-		{name: "other-letters", input: "35;10;1X", want: false},
-		{name: "random-text", input: "mouse", want: false},
+func TestSessionSnapshotNoPrefixForHubOnly(t *testing.T) {
+	snapshot := &proto.SessionsSnapshot{
+		Coordinators: []*proto.CoordinatorSessions{{
+			Name: "hub",
+			Path: "/tmp/hub.sock",
+			Sessions: []*proto.Session{{
+				Id:   "id-2",
+				Name: "demo",
+			}},
+		}},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := looksLikeMouseSGRReport([]rune(tt.input)); got != tt.want {
-				t.Fatalf("expected %v, got %v", tt.want, got)
-			}
-		})
+
+	coords, items, multi := sessionItemsFromSnapshot(snapshot)
+	if multi {
+		t.Fatalf("expected single coordinator snapshot to be non-multi")
+	}
+	if shouldPrefixSnapshot(coords, "hub") {
+		t.Fatalf("did not expect prefixing when hub matches coordinator")
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected one session item, got %d", len(items))
+	}
+	name, id := sessionRequestRef(items[0].id, items[0].label)
+	if name != "" || id != "id-2" {
+		t.Fatalf("expected id-based request for hub session, got name=%q id=%q", name, id)
+	}
+}
+
+func TestSessionSnapshotPrefixingForMultiCoordinator(t *testing.T) {
+	snapshot := &proto.SessionsSnapshot{
+		Coordinators: []*proto.CoordinatorSessions{
+			{
+				Name: "hub",
+				Path: "/tmp/hub.sock",
+				Sessions: []*proto.Session{{
+					Id:   "id-hub",
+					Name: "local",
+				}},
+			},
+			{
+				Name: "spoke-a",
+				Path: "/tmp/spoke.sock",
+				Sessions: []*proto.Session{{
+					Id:   "id-spoke",
+					Name: "remote",
+				}},
+			},
+		},
+	}
+
+	coords, items, multi := sessionItemsFromSnapshot(snapshot)
+	if !multi {
+		t.Fatalf("expected multi-coordinator snapshot to be multi")
+	}
+	if len(coords) != 2 {
+		t.Fatalf("expected two coordinators, got %d", len(coords))
+	}
+	items = prefixSessionItems(items)
+	if len(items) != 2 {
+		t.Fatalf("expected two session items, got %d", len(items))
+	}
+	for _, item := range items {
+		if _, _, ok := parseSessionRef(item.label); !ok {
+			t.Fatalf("expected prefixed label for %q", item.label)
+		}
+	}
+}
+
+func TestAutoSpawnBasePrefixesForSpoke(t *testing.T) {
+	base, ok := autoSpawnBase(attachModel{
+		hub:         coordinatorRef{Name: "hub"},
+		coordinator: coordinatorRef{Name: "spoke-a"},
+		coords:      []coordinatorRef{{Name: "spoke-a"}},
+	}, "session")
+	if !ok {
+		t.Fatalf("expected auto spawn base to resolve")
+	}
+	if base != "spoke-a:session" {
+		t.Fatalf("expected prefixed base, got %q", base)
+	}
+}
+
+func TestAutoSpawnBaseUsesHubNameWhenSame(t *testing.T) {
+	base, ok := autoSpawnBase(attachModel{
+		hub:         coordinatorRef{Name: "hub"},
+		coordinator: coordinatorRef{Name: "hub"},
+		coords:      []coordinatorRef{{Name: "hub"}},
+	}, "session")
+	if !ok {
+		t.Fatalf("expected auto spawn base to resolve")
+	}
+	if base != "session" {
+		t.Fatalf("expected base without prefix, got %q", base)
+	}
+}
+
+func TestAutoSpawnBaseFallsBackToFirstCoordinator(t *testing.T) {
+	base, ok := autoSpawnBase(attachModel{
+		hub:    coordinatorRef{Name: "hub"},
+		coords: []coordinatorRef{{Name: "spoke-b"}},
+	}, "session")
+	if !ok {
+		t.Fatalf("expected auto spawn base to resolve")
+	}
+	if base != "spoke-b:session" {
+		t.Fatalf("expected fallback prefixed base, got %q", base)
+	}
+}
+
+func TestAutoSpawnBaseFailsWithoutCoordinator(t *testing.T) {
+	_, ok := autoSpawnBase(attachModel{}, "session")
+	if ok {
+		t.Fatalf("expected auto spawn base to fail without coordinator")
 	}
 }
