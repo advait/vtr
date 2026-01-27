@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
 )
 
 type spokeOptions struct {
@@ -183,11 +184,9 @@ func runSpoke(opts spokeOptions) error {
 
 	if hubAddr != "" {
 		info := &proto.SpokeInfo{
-			Name:     spokeName,
-			GrpcAddr: grpcAddr,
-			Version:  Version,
+			Name:    spokeName,
+			Version: Version,
 		}
-		go registerSpokeLoop(ctx, hubAddr, cfg, token, info)
 		go runSpokeTunnelLoop(ctx, hubAddr, cfg, token, info, localService, logger)
 	}
 
@@ -216,10 +215,16 @@ func dialHub(ctx context.Context, addr string, cfg *clientConfig, token string) 
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	keepaliveParams := keepalive.ClientParameters{
+		Time:                30 * time.Second,
+		Timeout:             10 * time.Second,
+		PermitWithoutStream: true,
+	}
 	if isUnixTarget(addr) {
 		opts := []grpc.DialOption{
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
 			grpc.WithContextDialer(unixDialer),
+			grpc.WithKeepaliveParams(keepaliveParams),
 		}
 		requireToken, _, err := parseAuthMode(cfg.Auth.Mode)
 		if err != nil {
@@ -248,51 +253,11 @@ func dialHub(ctx context.Context, addr string, cfg *clientConfig, token string) 
 	} else {
 		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}
+	opts = append(opts, grpc.WithKeepaliveParams(keepaliveParams))
 	if requireToken && token != "" {
 		opts = append(opts, grpc.WithPerRPCCredentials(tokenAuth{token: token, requireTransport: requireTLS}))
 	}
 	return grpc.DialContext(ctx, addr, opts...)
-}
-
-func registerSpokeLoop(ctx context.Context, addr string, cfg *clientConfig, token string, info *proto.SpokeInfo) {
-	const retryDelay = 5 * time.Second
-	interval := 15 * time.Second
-	for {
-		if ctx.Err() != nil {
-			return
-		}
-		resp, err := registerSpokeOnce(ctx, addr, cfg, token, info)
-		if err != nil {
-			slog.Warn("spoke: failed to register with hub", "addr", addr, "err", err)
-			if !sleepWithContext(ctx, retryDelay) {
-				return
-			}
-			continue
-		}
-		slog.Info("spoke: registered with hub", "addr", addr, "name", info.GetName())
-		if resp != nil && resp.HeartbeatInterval != nil {
-			if next := resp.HeartbeatInterval.AsDuration(); next > 0 {
-				interval = next
-			}
-		}
-		if !sleepWithContext(ctx, interval) {
-			return
-		}
-	}
-}
-
-func registerSpokeOnce(parent context.Context, addr string, cfg *clientConfig, token string, info *proto.SpokeInfo) (*proto.RegisterSpokeResponse, error) {
-	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
-	defer cancel()
-
-	conn, err := dialHub(ctx, addr, cfg, token)
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-
-	client := proto.NewVTRClient(conn)
-	return client.RegisterSpoke(ctx, &proto.RegisterSpokeRequest{Spoke: info})
 }
 
 func sleepWithContext(ctx context.Context, d time.Duration) bool {

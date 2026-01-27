@@ -92,41 +92,6 @@ func waitForScreenContains(t *testing.T, client proto.VTRClient, id, want string
 	t.Fatalf("timeout waiting for screen %q: last screen: %q", want, lastScreen)
 }
 
-func TestRegisterSpokeRequiresName(t *testing.T) {
-	client, cleanup := startGRPCTestServer(t)
-	defer cleanup()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	_, err := client.RegisterSpoke(ctx, &proto.RegisterSpokeRequest{Spoke: &proto.SpokeInfo{}})
-	cancel()
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("expected InvalidArgument, got %s", status.Code(err))
-	}
-}
-
-func TestRegisterSpokeReturnsHeartbeat(t *testing.T) {
-	client, cleanup := startGRPCTestServer(t)
-	defer cleanup()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	resp, err := client.RegisterSpoke(ctx, &proto.RegisterSpokeRequest{
-		Spoke: &proto.SpokeInfo{Name: "spoke-a"},
-	})
-	cancel()
-	if err != nil {
-		t.Fatalf("RegisterSpoke: %v", err)
-	}
-	if !resp.GetOk() {
-		t.Fatal("expected ok response")
-	}
-	if resp.HeartbeatInterval == nil || resp.HeartbeatInterval.AsDuration() <= 0 {
-		t.Fatal("expected heartbeat interval")
-	}
-}
-
 func screenToString(resp *proto.GetScreenResponse) string {
 	if resp == nil {
 		return ""

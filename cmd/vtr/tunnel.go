@@ -266,8 +266,7 @@ func (e *tunnelEndpoint) CallUnary(ctx context.Context, method string, req gopro
 		return err
 	}
 	frame := &proto.TunnelFrame{
-		SpokeName: e.name,
-		CallId:    call.id,
+		CallId: call.id,
 		Kind: &proto.TunnelFrame_Request{
 			Request: &proto.TunnelRequest{
 				Method:  method,
@@ -284,8 +283,7 @@ func (e *tunnelEndpoint) CallUnary(ctx context.Context, method string, req gopro
 		select {
 		case <-ctx.Done():
 			_ = e.send(&proto.TunnelFrame{
-				SpokeName: e.name,
-				CallId:    call.id,
+				CallId: call.id,
 				Kind: &proto.TunnelFrame_Cancel{
 					Cancel: &proto.TunnelCancel{Reason: ctx.Err().Error()},
 				},
@@ -329,8 +327,7 @@ func (e *tunnelEndpoint) CallStream(ctx context.Context, method string, req gopr
 		return err
 	}
 	frame := &proto.TunnelFrame{
-		SpokeName: e.name,
-		CallId:    call.id,
+		CallId: call.id,
 		Kind: &proto.TunnelFrame_Request{
 			Request: &proto.TunnelRequest{
 				Method:  method,
@@ -347,8 +344,7 @@ func (e *tunnelEndpoint) CallStream(ctx context.Context, method string, req gopr
 		select {
 		case <-ctx.Done():
 			_ = e.send(&proto.TunnelFrame{
-				SpokeName: e.name,
-				CallId:    call.id,
+				CallId: call.id,
 				Kind: &proto.TunnelFrame_Cancel{
 					Cancel: &proto.TunnelCancel{Reason: ctx.Err().Error()},
 				},
@@ -481,15 +477,20 @@ func runSpokeTunnelLoop(ctx context.Context, addr string, cfg *clientConfig, tok
 }
 
 func (t *tunnelSpoke) serve(name string, info *proto.SpokeInfo) error {
-	hello := &proto.TunnelFrame{
-		SpokeName: strings.TrimSpace(name),
-		Kind: &proto.TunnelFrame_Hello{
-			Hello: &proto.TunnelHello{},
-		},
+	helloInfo := &proto.TunnelHello{
+		Name: strings.TrimSpace(name),
+	}
+	if helloInfo.Name == "" && info != nil {
+		helloInfo.Name = strings.TrimSpace(info.GetName())
 	}
 	if info != nil {
-		hello.GetHello().Version = info.GetVersion()
-		hello.GetHello().Labels = info.GetLabels()
+		helloInfo.Version = info.GetVersion()
+		helloInfo.Labels = info.GetLabels()
+	}
+	hello := &proto.TunnelFrame{
+		Kind: &proto.TunnelFrame_Hello{
+			Hello: helloInfo,
+		},
 	}
 	if err := t.send(hello); err != nil {
 		return err

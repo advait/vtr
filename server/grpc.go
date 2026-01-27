@@ -19,6 +19,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
@@ -35,6 +36,14 @@ const grpcGracefulShutdownTimeout = 5 * time.Second
 
 var keyframeInterval = 5 * time.Second
 var logResize = strings.TrimSpace(os.Getenv("VTR_LOG_RESIZE")) != ""
+var grpcKeepaliveParams = keepalive.ServerParameters{
+	Time:    30 * time.Second,
+	Timeout: 10 * time.Second,
+}
+var grpcKeepalivePolicy = keepalive.EnforcementPolicy{
+	MinTime:             10 * time.Second,
+	PermitWithoutStream: true,
+}
 
 // GRPCServer implements the vtr gRPC service.
 type GRPCServer struct {
@@ -139,6 +148,8 @@ func NewGRPCServerWithTokenAndService(service proto.VTRServer, token string) *gr
 	opts := []grpc.ServerOption{
 		grpc.UnaryInterceptor(tokenUnaryInterceptor(token)),
 		grpc.StreamInterceptor(tokenStreamInterceptor(token)),
+		grpc.KeepaliveParams(grpcKeepaliveParams),
+		grpc.KeepaliveEnforcementPolicy(grpcKeepalivePolicy),
 	}
 	grpcServer := grpc.NewServer(opts...)
 	proto.RegisterVTRServer(grpcServer, service)
@@ -170,7 +181,10 @@ func ServeUnix(ctx context.Context, coord *Coordinator, socketPath string) error
 		_ = os.Remove(socketPath)
 	}()
 
-	grpcServer := grpc.NewServer()
+	grpcServer := grpc.NewServer(
+		grpc.KeepaliveParams(grpcKeepaliveParams),
+		grpc.KeepaliveEnforcementPolicy(grpcKeepalivePolicy),
+	)
 	service := NewGRPCServer(coord)
 	service.SetCoordinatorInfo("", socketPath)
 	proto.RegisterVTRServer(grpcServer, service)
@@ -207,7 +221,10 @@ func ServeUnixWithService(ctx context.Context, service proto.VTRServer, socketPa
 		_ = os.Remove(socketPath)
 	}()
 
-	grpcServer := grpc.NewServer()
+	grpcServer := grpc.NewServer(
+		grpc.KeepaliveParams(grpcKeepaliveParams),
+		grpc.KeepaliveEnforcementPolicy(grpcKeepalivePolicy),
+	)
 	proto.RegisterVTRServer(grpcServer, service)
 
 	errCh := make(chan error, 1)
@@ -248,6 +265,8 @@ func ServeTCP(ctx context.Context, coord *Coordinator, addr string, tlsConfig *t
 	opts := []grpc.ServerOption{
 		grpc.UnaryInterceptor(tokenUnaryInterceptor(token)),
 		grpc.StreamInterceptor(tokenStreamInterceptor(token)),
+		grpc.KeepaliveParams(grpcKeepaliveParams),
+		grpc.KeepaliveEnforcementPolicy(grpcKeepalivePolicy),
 	}
 	if tlsConfig != nil {
 		opts = append(opts, grpc.Creds(credentials.NewTLS(tlsConfig)))
@@ -469,30 +488,6 @@ func coordinatorNameFromPath(path string) string {
 		return strings.TrimSpace(path)
 	}
 	return base
-}
-
-func (s *GRPCServer) RegisterSpoke(ctx context.Context, req *proto.RegisterSpokeRequest) (*proto.RegisterSpokeResponse, error) {
-	if req == nil || req.Spoke == nil {
-		return nil, status.Error(codes.InvalidArgument, "spoke info is required")
-	}
-	name := strings.TrimSpace(req.Spoke.Name)
-	if name == "" {
-		return nil, status.Error(codes.InvalidArgument, "spoke name is required")
-	}
-	if s.spokes == nil {
-		s.spokes = NewSpokeRegistry()
-	}
-	peerAddr := ""
-	if p, ok := peer.FromContext(ctx); ok && p.Addr != nil {
-		peerAddr = p.Addr.String()
-	}
-	s.spokes.Upsert(req.Spoke, peerAddr)
-	interval := s.spokes.HeartbeatInterval()
-	resp := &proto.RegisterSpokeResponse{Ok: true}
-	if interval > 0 {
-		resp.HeartbeatInterval = durationpb.New(interval)
-	}
-	return resp, nil
 }
 
 func (s *GRPCServer) Tunnel(proto.VTR_TunnelServer) error {

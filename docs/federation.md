@@ -2,34 +2,33 @@
 
 ## Current status
 
-Federation is partially implemented:
+Federation is tunnel-only:
 
-- `RegisterSpoke` RPC exists in `proto/vtr.proto`.
-- `vtr spoke --hub <addr>` registers to a hub in a heartbeat loop.
+- Spokes connect to the hub using the `Tunnel` RPC.
+- The tunnel hello carries spoke identity and metadata.
 - The hub stores spoke metadata in an in-memory registry.
-- `Tunnel` RPC allows spokes to proxy requests without exposing listeners.
+- Liveness is derived from the tunnel stream lifecycle.
 
 In practice today:
 - `vtr hub` runs a local coordinator + web UI.
-- `vtr spoke` can register and open a tunnel so the hub routes requests to it.
+- `vtr spoke` opens a tunnel so the hub routes requests to it.
 
 ## What works now
 
-- Spoke registration to hub with periodic heartbeats.
-- Hub retains last-seen metadata (name, grpc_addr, version, labels).
+- Spoke registration via tunnel hello (name/version/labels).
+- Hub retains last-seen metadata (name, version, labels).
 - Hub routes List/Info/Send/Subscribe/Wait via tunnel-connected spokes.
 - Tunnel mode works without TCP/Unix listeners on the spoke.
 - Hub aggregates session lists across spokes.
 
 ## What is not implemented yet
 
-- Configuration blocks for federation in `vtrpc.toml`.
+- Persistent federation configuration or policy.
 
 ## Planned direction
 
-- Hub maintains a live view of spokes (registration + health).
-- Hub proxies gRPC requests to the correct spoke using `spoke:session` routing.
-- Web UI and CLI can attach to hub as a single entry point.
+- Keep tunnel-first federation and expand metadata (capabilities, versions).
+- Web UI and CLI attach to hub as a single entry point.
 
 ## Related commands
 

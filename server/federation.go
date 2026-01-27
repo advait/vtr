@@ -1,6 +1,7 @@
 package server
 
 import (
+	"strings"
 	"sync"
 	"time"
 
@@ -52,7 +53,7 @@ func (r *SpokeRegistry) Upsert(info *proto.SpokeInfo, peerAddr string) {
 	if r == nil || info == nil {
 		return
 	}
-	name := info.GetName()
+	name := strings.TrimSpace(info.GetName())
 	if name == "" {
 		return
 	}
@@ -64,6 +65,41 @@ func (r *SpokeRegistry) Upsert(info *proto.SpokeInfo, peerAddr string) {
 		PeerAddr: peerAddr,
 	}
 	r.signalChangedLocked()
+}
+
+func (r *SpokeRegistry) Touch(name string) {
+	if r == nil {
+		return
+	}
+	key := strings.TrimSpace(name)
+	if key == "" {
+		return
+	}
+	r.mu.Lock()
+	record, ok := r.spokes[key]
+	if !ok {
+		r.mu.Unlock()
+		return
+	}
+	record.LastSeen = time.Now()
+	r.spokes[key] = record
+	r.mu.Unlock()
+}
+
+func (r *SpokeRegistry) Remove(name string) {
+	if r == nil {
+		return
+	}
+	key := strings.TrimSpace(name)
+	if key == "" {
+		return
+	}
+	r.mu.Lock()
+	if _, ok := r.spokes[key]; ok {
+		delete(r.spokes, key)
+		r.signalChangedLocked()
+	}
+	r.mu.Unlock()
 }
 
 func (r *SpokeRegistry) List() []SpokeRecord {
@@ -95,9 +131,8 @@ func cloneSpokeInfo(info *proto.SpokeInfo) *proto.SpokeInfo {
 		return nil
 	}
 	out := &proto.SpokeInfo{
-		Name:     info.Name,
-		GrpcAddr: info.GrpcAddr,
-		Version:  info.Version,
+		Name:    info.Name,
+		Version: info.Version,
 	}
 	if len(info.Labels) > 0 {
 		out.Labels = make(map[string]string, len(info.Labels))

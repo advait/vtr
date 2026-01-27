@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"net"
 	"testing"
 	"time"
@@ -35,137 +34,12 @@ func (f *fakeVTRServer) Info(_ context.Context, req *proto.InfoRequest) (*proto.
 	return &proto.InfoResponse{Session: &proto.Session{Name: req.GetName()}}, nil
 }
 
-func startBufServer(t *testing.T, svc proto.VTRServer) (*bufconn.Listener, *grpc.Server) {
-	t.Helper()
-	listener := bufconn.Listen(bufSize)
-	grpcServer := grpc.NewServer()
-	proto.RegisterVTRServer(grpcServer, svc)
-	go func() {
-		_ = grpcServer.Serve(listener)
-	}()
-	return listener, grpcServer
-}
-
-func bufDialer(listeners map[string]*bufconn.Listener) spokeDialer {
-	return func(ctx context.Context, addr string) (*grpc.ClientConn, error) {
-		listener := listeners[addr]
-		if listener == nil {
-			return nil, fmt.Errorf("unknown addr %q", addr)
-		}
-		return grpc.DialContext(ctx, addr,
-			grpc.WithTransportCredentials(insecure.NewCredentials()),
-			grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
-				return listener.DialContext(ctx)
-			}),
-		)
-	}
-}
-
-func TestFederatedListPrefixesSpokeSessions(t *testing.T) {
-	coord := server.NewCoordinator(server.CoordinatorOptions{})
-	defer coord.CloseAll()
-	local := server.NewGRPCServer(coord)
-
-	spokeA := &fakeVTRServer{listSessions: []*proto.Session{{Name: "alpha"}}}
-	spokeB := &fakeVTRServer{listSessions: []*proto.Session{{Name: "beta"}}}
-
-	listeners := make(map[string]*bufconn.Listener)
-	servers := make([]*grpc.Server, 0, 2)
-	la, sa := startBufServer(t, spokeA)
-	listeners["spoke-a"] = la
-	servers = append(servers, sa)
-	lb, sb := startBufServer(t, spokeB)
-	listeners["spoke-b"] = lb
-	servers = append(servers, sb)
-	t.Cleanup(func() {
-		for _, srv := range servers {
-			srv.Stop()
-		}
-		for _, l := range listeners {
-			_ = l.Close()
-		}
-	})
-
-	federated := newFederatedServer(
-		local,
-		"hub",
-		"",
-		true,
-		[]spokeTarget{{Name: "spoke-a", Addr: "spoke-a"}, {Name: "spoke-b", Addr: "spoke-b"}},
-		nil,
-		bufDialer(listeners),
-		nil,
-	)
-
-	resp, err := federated.List(context.Background(), &proto.ListRequest{})
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-
-	seen := make(map[string]struct{})
-	for _, session := range resp.GetSessions() {
-		if session != nil {
-			seen[session.GetName()] = struct{}{}
-		}
-	}
-
-	if _, ok := seen["spoke-a:alpha"]; !ok {
-		t.Fatalf("missing spoke-a:alpha in list: %#v", seen)
-	}
-	if _, ok := seen["spoke-b:beta"]; !ok {
-		t.Fatalf("missing spoke-b:beta in list: %#v", seen)
-	}
-}
-
-func TestFederatedInfoRoutesToSpoke(t *testing.T) {
-	coord := server.NewCoordinator(server.CoordinatorOptions{})
-	defer coord.CloseAll()
-	local := server.NewGRPCServer(coord)
-
-	var called string
-	spoke := &fakeVTRServer{
-		infoHandler: func(name string) (*proto.InfoResponse, error) {
-			called = name
-			return &proto.InfoResponse{Session: &proto.Session{Name: name}}, nil
-		},
-	}
-
-	listener, grpcServer := startBufServer(t, spoke)
-	listeners := map[string]*bufconn.Listener{"spoke-a": listener}
-	t.Cleanup(func() {
-		grpcServer.Stop()
-		_ = listener.Close()
-	})
-
-	federated := newFederatedServer(
-		local,
-		"hub",
-		"",
-		true,
-		[]spokeTarget{{Name: "spoke-a", Addr: "spoke-a"}},
-		nil,
-		bufDialer(listeners),
-		nil,
-	)
-
-	resp, err := federated.Info(context.Background(), &proto.InfoRequest{Name: "spoke-a:alpha"})
-	if err != nil {
-		t.Fatalf("Info: %v", err)
-	}
-	if called != "alpha" {
-		t.Fatalf("expected spoke to receive alpha, got %q", called)
-	}
-	if resp.GetSession().GetName() != "spoke-a:alpha" {
-		t.Fatalf("expected prefixed name, got %q", resp.GetSession().GetName())
-	}
-}
-
 func TestFederatedHubOnlyRejectsLocalSpawn(t *testing.T) {
 	coord := server.NewCoordinator(server.CoordinatorOptions{})
 	defer coord.CloseAll()
 	local := server.NewGRPCServer(coord)
 
-	federated := newFederatedServer(local, "hub", "", false, nil, nil, nil, nil)
+	federated := newFederatedServer(local, "hub", "", false, nil, nil)
 	_, err := federated.Spawn(context.Background(), &proto.SpawnRequest{Name: "local-session"})
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("expected FailedPrecondition, got %v", err)
@@ -183,7 +57,7 @@ func TestTunnelListAndInfoRoutesToSpoke(t *testing.T) {
 
 	listener := bufconn.Listen(bufSize)
 	grpcServer := grpc.NewServer()
-	federated := newFederatedServer(local, "hub", "", true, nil, nil, nil, nil)
+	federated := newFederatedServer(local, "hub", "", true, nil, nil)
 	proto.RegisterVTRServer(grpcServer, federated)
 	go func() {
 		_ = grpcServer.Serve(listener)
@@ -250,13 +124,83 @@ func TestTunnelListAndInfoRoutesToSpoke(t *testing.T) {
 	}
 }
 
+func TestTunnelRegistersAndRemovesSpoke(t *testing.T) {
+	coord := server.NewCoordinator(server.CoordinatorOptions{})
+	defer coord.CloseAll()
+	local := server.NewGRPCServer(coord)
+
+	registry := server.NewSpokeRegistry()
+	federated := newFederatedServer(local, "hub", "", true, registry, nil)
+
+	listener := bufconn.Listen(bufSize)
+	grpcServer := grpc.NewServer()
+	proto.RegisterVTRServer(grpcServer, federated)
+	go func() {
+		_ = grpcServer.Serve(listener)
+	}()
+	t.Cleanup(func() {
+		grpcServer.Stop()
+		_ = listener.Close()
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	conn, err := grpc.DialContext(ctx, "hub",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+			return listener.DialContext(ctx)
+		}),
+	)
+	if err != nil {
+		t.Fatalf("dial hub: %v", err)
+	}
+	defer conn.Close()
+
+	client := proto.NewVTRClient(conn)
+	stream, err := client.Tunnel(ctx)
+	if err != nil {
+		t.Fatalf("tunnel: %v", err)
+	}
+	spoke := &fakeVTRServer{}
+	tunnel := &tunnelSpoke{
+		ctx:     ctx,
+		stream:  stream,
+		service: spoke,
+		calls:   make(map[string]context.CancelFunc),
+	}
+	go func() {
+		_ = tunnel.serve("spoke-a", &proto.SpokeInfo{Name: "spoke-a"})
+	}()
+
+	waitForRegistry(t, registry, "spoke-a")
+	before := time.Time{}
+	for _, record := range registry.List() {
+		if record.Info != nil && record.Info.Name == "spoke-a" {
+			before = record.LastSeen
+			break
+		}
+	}
+	if before.IsZero() {
+		t.Fatal("missing spoke-a last_seen")
+	}
+
+	time.Sleep(20 * time.Millisecond)
+	if _, err := client.List(ctx, &proto.ListRequest{}); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	waitForRegistryTouch(t, registry, "spoke-a", before)
+
+	_ = conn.Close()
+	waitForRegistryRemoved(t, registry, "spoke-a")
+}
+
 func TestFederatedSubscribeSessionsAddsEmptyCoordinator(t *testing.T) {
 	coord := server.NewCoordinator(server.CoordinatorOptions{})
 	defer coord.CloseAll()
 	local := server.NewGRPCServer(coord)
 
 	registry := server.NewSpokeRegistry()
-	federated := newFederatedServer(local, "hub", "", true, nil, registry, nil, nil)
+	federated := newFederatedServer(local, "hub", "", true, registry, nil)
 
 	listener := bufconn.Listen(bufSize)
 	grpcServer := grpc.NewServer()
@@ -296,9 +240,33 @@ func TestFederatedSubscribeSessionsAddsEmptyCoordinator(t *testing.T) {
 		t.Fatalf("unexpected spoke-a coordinator in initial snapshot: %#v", coord)
 	}
 
-	registry.Upsert(&proto.SpokeInfo{Name: "spoke-a", GrpcAddr: "spoke-a"}, "peer")
+	tunnelStream, err := client.Tunnel(ctx)
+	if err != nil {
+		t.Fatalf("tunnel: %v", err)
+	}
+	spoke := &fakeVTRServer{}
+	tunnel := &tunnelSpoke{
+		ctx:     ctx,
+		stream:  tunnelStream,
+		service: spoke,
+		calls:   make(map[string]context.CancelFunc),
+	}
+	go func() {
+		_ = tunnel.serve("spoke-a", &proto.SpokeInfo{Name: "spoke-a"})
+	}()
 
-	deadline := time.After(1 * time.Second)
+	deadline := time.After(500 * time.Millisecond)
+	for {
+		if federated.tunnels.Get("spoke-a") != nil {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("tunnel did not register")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	deadline = time.After(1 * time.Second)
 	for {
 		select {
 		case <-deadline:
@@ -330,4 +298,60 @@ func snapshotCoordinator(snapshot *proto.SessionsSnapshot, name string) *proto.C
 		}
 	}
 	return nil
+}
+
+func waitForRegistry(t *testing.T, registry *server.SpokeRegistry, name string) {
+	t.Helper()
+	deadline := time.After(500 * time.Millisecond)
+	for {
+		for _, record := range registry.List() {
+			if record.Info != nil && record.Info.Name == name {
+				return
+			}
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for %s registration", name)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+func waitForRegistryTouch(t *testing.T, registry *server.SpokeRegistry, name string, before time.Time) {
+	t.Helper()
+	deadline := time.After(500 * time.Millisecond)
+	for {
+		for _, record := range registry.List() {
+			if record.Info != nil && record.Info.Name == name && record.LastSeen.After(before) {
+				return
+			}
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for %s last_seen update", name)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+func waitForRegistryRemoved(t *testing.T, registry *server.SpokeRegistry, name string) {
+	t.Helper()
+	deadline := time.After(500 * time.Millisecond)
+	for {
+		found := false
+		for _, record := range registry.List() {
+			if record.Info != nil && record.Info.Name == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for %s removal", name)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
 }

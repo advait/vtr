@@ -20,7 +20,7 @@ Streaming:
 - Subscribe
 
 Federation:
-- RegisterSpoke, Tunnel
+- Tunnel
 
 Recording:
 - DumpAsciinema (defined but not implemented; server returns UNIMPLEMENTED)
@@ -34,7 +34,6 @@ Implemented in server code:
 - SendText, SendKey, SendBytes, Resize
 - WaitFor, WaitForIdle
 - Subscribe
-- RegisterSpoke
 - Tunnel
 
 Not implemented:

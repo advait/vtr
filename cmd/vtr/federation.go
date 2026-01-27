@@ -13,9 +13,9 @@ import (
 
 	proto "github.com/advait/vtrpc/proto"
 	"github.com/advait/vtrpc/server"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 	goproto "google.golang.org/protobuf/proto"
 )
@@ -25,22 +25,18 @@ type spokeTarget struct {
 	Addr string
 }
 
-type spokeDialer func(ctx context.Context, addr string) (*grpc.ClientConn, error)
-
 type federatedServer struct {
 	proto.UnimplementedVTRServer
 	local        *server.GRPCServer
 	localName    string
 	localPath    string
 	localEnabled bool
-	static       []spokeTarget
 	registry     *server.SpokeRegistry
-	dialer       spokeDialer
 	tunnels      *tunnelRegistry
 	logger       *slog.Logger
 }
 
-func newFederatedServer(local *server.GRPCServer, localName string, localPath string, localEnabled bool, static []spokeTarget, registry *server.SpokeRegistry, dialer spokeDialer, logger *slog.Logger) *federatedServer {
+func newFederatedServer(local *server.GRPCServer, localName string, localPath string, localEnabled bool, registry *server.SpokeRegistry, logger *slog.Logger) *federatedServer {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -57,9 +53,7 @@ func newFederatedServer(local *server.GRPCServer, localName string, localPath st
 		localName:    localName,
 		localPath:    localPath,
 		localEnabled: localEnabled,
-		static:       static,
 		registry:     registry,
-		dialer:       dialer,
 		tunnels:      newTunnelRegistry(),
 		logger:       logger,
 	}
@@ -80,24 +74,8 @@ func (s *federatedServer) localDisabledError() error {
 	return status.Error(codes.FailedPrecondition, "hub coordinator is disabled")
 }
 
-func federationSpokesFromConfig(cfg *clientConfig) []spokeTarget {
-	if cfg == nil || len(cfg.Federation.Spokes) == 0 {
-		return nil
-	}
-	out := make([]spokeTarget, 0, len(cfg.Federation.Spokes))
-	for _, entry := range cfg.Federation.Spokes {
-		name := strings.TrimSpace(entry.Name)
-		addr := strings.TrimSpace(entry.Address)
-		if name == "" || addr == "" {
-			continue
-		}
-		out = append(out, spokeTarget{Name: name, Addr: addr})
-	}
-	return out
-}
-
-func federatedCoordinatorRefs(localSocket string, localEnabled bool, hubAddr string, static []spokeTarget, registry *server.SpokeRegistry, tunnels *tunnelRegistry) []coordinatorRef {
-	refs := make([]coordinatorRef, 0, 1+len(static))
+func federatedCoordinatorRefs(localSocket string, localEnabled bool, hubAddr string, registry *server.SpokeRegistry, tunnels *tunnelRegistry) []coordinatorRef {
+	refs := make([]coordinatorRef, 0, 1)
 	socketPath := strings.TrimSpace(localSocket)
 	if localEnabled && socketPath != "" {
 		refs = append(refs, coordinatorRef{
@@ -110,7 +88,7 @@ func federatedCoordinatorRefs(localSocket string, localEnabled bool, hubAddr str
 		seen[ref.Name] = struct{}{}
 	}
 	hubAddr = strings.TrimSpace(hubAddr)
-	targets := mergeSpokeTargets(static, registry, "", tunnelNames(tunnels))
+	targets := mergeSpokeTargets(registry, "", tunnelNames(tunnels))
 	for _, target := range targets {
 		if _, ok := seen[target.Name]; ok {
 			continue
@@ -133,34 +111,22 @@ func federatedCoordinatorRefs(localSocket string, localEnabled bool, hubAddr str
 	return refs
 }
 
-func mergeSpokeTargets(static []spokeTarget, registry *server.SpokeRegistry, localName string, tunnels []string) []spokeTarget {
+func mergeSpokeTargets(registry *server.SpokeRegistry, localName string, tunnels []string) []spokeTarget {
 	targets := make(map[string]spokeTarget)
 	localName = strings.TrimSpace(localName)
-	for _, entry := range static {
-		name := strings.TrimSpace(entry.Name)
-		addr := strings.TrimSpace(entry.Addr)
-		if name == "" || addr == "" {
-			continue
-		}
-		if localName != "" && name == localName {
-			continue
-		}
-		targets[name] = spokeTarget{Name: name, Addr: addr}
-	}
 	if registry != nil {
 		for _, record := range registry.List() {
 			if record.Info == nil {
 				continue
 			}
 			name := strings.TrimSpace(record.Info.Name)
-			addr := strings.TrimSpace(record.Info.GrpcAddr)
-			if name == "" || addr == "" {
+			if name == "" {
 				continue
 			}
 			if localName != "" && name == localName {
 				continue
 			}
-			targets[name] = spokeTarget{Name: name, Addr: addr}
+			targets[name] = spokeTarget{Name: name}
 		}
 	}
 	for _, entry := range tunnels {
@@ -188,14 +154,6 @@ func mergeSpokeTargets(static []spokeTarget, registry *server.SpokeRegistry, loc
 	return out
 }
 
-func (s *federatedServer) RegisterSpoke(ctx context.Context, req *proto.RegisterSpokeRequest) (*proto.RegisterSpokeResponse, error) {
-	resp, err := s.local.RegisterSpoke(ctx, req)
-	if resp != nil && resp.HubName == "" && s.localName != "" {
-		resp.HubName = s.localName
-	}
-	return resp, err
-}
-
 func (s *federatedServer) Tunnel(stream proto.VTR_TunnelServer) error {
 	if stream == nil {
 		return status.Error(codes.InvalidArgument, "tunnel stream is required")
@@ -207,10 +165,24 @@ func (s *federatedServer) Tunnel(stream proto.VTR_TunnelServer) error {
 	if frame == nil || frame.GetHello() == nil {
 		return status.Error(codes.InvalidArgument, "first tunnel frame must be hello")
 	}
-	name := strings.TrimSpace(frame.GetSpokeName())
+	hello := frame.GetHello()
+	name := strings.TrimSpace(hello.GetName())
 	if name == "" {
-		return status.Error(codes.InvalidArgument, "spoke_name is required")
+		return status.Error(codes.InvalidArgument, "spoke name is required")
 	}
+	info := &proto.SpokeInfo{
+		Name:    name,
+		Version: hello.GetVersion(),
+		Labels:  hello.GetLabels(),
+	}
+	if s.registry == nil {
+		s.registry = server.NewSpokeRegistry()
+	}
+	peerAddr := ""
+	if p, ok := peer.FromContext(stream.Context()); ok && p.Addr != nil {
+		peerAddr = p.Addr.String()
+	}
+	s.registry.Upsert(info, peerAddr)
 	endpoint := newTunnelEndpoint(name, stream, s.logger)
 	if s.tunnels == nil {
 		s.tunnels = newTunnelRegistry()
@@ -218,19 +190,35 @@ func (s *federatedServer) Tunnel(stream proto.VTR_TunnelServer) error {
 	if prev := s.tunnels.Set(name, endpoint); prev != nil {
 		prev.close(errors.New("replaced by new tunnel"))
 	}
+	if s.logger != nil {
+		s.logger.Info("spoke connected", "name", name)
+	}
+	var closeErr error
 	defer func() {
+		if s.tunnel(name) == endpoint {
+			s.registry.Remove(name)
+		}
 		s.tunnels.Remove(name, endpoint)
 		endpoint.close(nil)
+		if s.logger != nil {
+			if closeErr != nil && !errors.Is(closeErr, io.EOF) {
+				s.logger.Info("spoke disconnected", "name", name, "err", closeErr)
+			} else {
+				s.logger.Info("spoke disconnected", "name", name)
+			}
+		}
 	}()
 
 	for {
 		frame, err := stream.Recv()
 		if err != nil {
+			closeErr = err
 			return err
 		}
 		if frame == nil {
 			continue
 		}
+		s.registry.Touch(name)
 		switch {
 		case frame.GetResponse() != nil || frame.GetEvent() != nil || frame.GetError() != nil:
 			endpoint.dispatch(frame)
@@ -707,41 +695,18 @@ func (s *federatedServer) Subscribe(req *proto.SubscribeRequest, stream proto.VT
 
 	reqCopy := *req
 	reqCopy.Name = session
-	if tunnel := s.tunnel(spoke); tunnel != nil {
-		return tunnel.CallStream(stream.Context(), tunnelMethodSubscribe, &reqCopy, func(payload []byte) error {
-			event := &proto.SubscribeEvent{}
-			if err := goproto.Unmarshal(payload, event); err != nil {
-				return err
-			}
-			prefixSubscribeEvent(spoke, event)
-			return stream.Send(event)
-		})
-	}
-
-	client, conn, err := s.dialSpoke(stream.Context(), spoke)
+	tunnel, err := s.requireTunnel(spoke)
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
-
-	remote, err := client.Subscribe(stream.Context(), &reqCopy)
-	if err != nil {
-		return err
-	}
-
-	for {
-		event, err := remote.Recv()
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return nil
-			}
+	return tunnel.CallStream(stream.Context(), tunnelMethodSubscribe, &reqCopy, func(payload []byte) error {
+		event := &proto.SubscribeEvent{}
+		if err := goproto.Unmarshal(payload, event); err != nil {
 			return err
 		}
 		prefixSubscribeEvent(spoke, event)
-		if err := stream.Send(event); err != nil {
-			return err
-		}
-	}
+		return stream.Send(event)
+	})
 }
 
 func (s *federatedServer) DumpAsciinema(ctx context.Context, req *proto.DumpAsciinemaRequest) (*proto.DumpAsciinemaResponse, error) {
@@ -793,7 +758,7 @@ func (s *federatedServer) resolveSpoke(name string) (spokeTarget, bool) {
 }
 
 func (s *federatedServer) spokeTargets() []spokeTarget {
-	return mergeSpokeTargets(s.static, s.registry, s.localNameForTargets(), tunnelNames(s.tunnels))
+	return mergeSpokeTargets(s.registry, s.localNameForTargets(), tunnelNames(s.tunnels))
 }
 
 func (s *federatedServer) tunnel(name string) *tunnelEndpoint {
@@ -803,254 +768,204 @@ func (s *federatedServer) tunnel(name string) *tunnelEndpoint {
 	return s.tunnels.Get(name)
 }
 
-func (s *federatedServer) dialSpoke(ctx context.Context, name string) (proto.VTRClient, *grpc.ClientConn, error) {
-	target, ok := s.resolveSpoke(name)
-	if !ok {
-		return nil, nil, status.Error(codes.NotFound, fmt.Sprintf("unknown coordinator %q", name))
+func (s *federatedServer) requireTunnel(name string) (*tunnelEndpoint, error) {
+	tunnel := s.tunnel(name)
+	if tunnel == nil {
+		return nil, status.Error(codes.Unavailable, "spoke tunnel is not connected")
 	}
-	if s.dialer == nil {
-		return nil, nil, errors.New("spoke dialer not configured")
-	}
-	dialCtx, cancel := context.WithTimeout(ctx, dialTimeout)
-	defer cancel()
-	conn, err := s.dialer(dialCtx, target.Addr)
-	if err != nil {
-		return nil, nil, err
-	}
-	return proto.NewVTRClient(conn), conn, nil
+	return tunnel, nil
 }
 
 func (s *federatedServer) callList(ctx context.Context, target spokeTarget) (*proto.ListResponse, error) {
-	if tunnel := s.tunnel(target.Name); tunnel != nil {
-		resp := &proto.ListResponse{}
-		if err := tunnel.CallUnary(ctx, tunnelMethodList, &proto.ListRequest{}, resp); err != nil {
-			return nil, err
-		}
-		return resp, nil
-	}
-	if s.dialer == nil {
-		return nil, errors.New("spoke dialer not configured")
-	}
-	if strings.TrimSpace(target.Addr) == "" {
-		return nil, errors.New("spoke address is required")
-	}
-	callCtx, cancel := context.WithTimeout(ctx, rpcTimeout)
-	defer cancel()
-	conn, err := s.dialer(callCtx, target.Addr)
+	tunnel, err := s.requireTunnel(target.Name)
 	if err != nil {
 		return nil, err
 	}
-	defer conn.Close()
-	client := proto.NewVTRClient(conn)
-	resp, err := client.List(callCtx, &proto.ListRequest{})
-	if err != nil {
+	resp := &proto.ListResponse{}
+	if err := tunnel.CallUnary(ctx, tunnelMethodList, &proto.ListRequest{}, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
 func (s *federatedServer) callSpawn(ctx context.Context, spoke string, req *proto.SpawnRequest) (*proto.SpawnResponse, error) {
-	if tunnel := s.tunnel(spoke); tunnel != nil {
-		resp := &proto.SpawnResponse{}
-		if err := tunnel.CallUnary(ctx, tunnelMethodSpawn, req, resp); err != nil {
-			return nil, err
-		}
-		return resp, nil
-	}
-	return callUnary(ctx, spoke, s, func(client proto.VTRClient) (*proto.SpawnResponse, error) {
-		return client.Spawn(ctx, req)
-	})
-}
-
-func (s *federatedServer) callInfo(ctx context.Context, spoke, session string) (*proto.InfoResponse, error) {
-	if tunnel := s.tunnel(spoke); tunnel != nil {
-		resp := &proto.InfoResponse{}
-		if err := tunnel.CallUnary(ctx, tunnelMethodInfo, &proto.InfoRequest{Name: session}, resp); err != nil {
-			return nil, err
-		}
-		return resp, nil
-	}
-	return callUnary(ctx, spoke, s, func(client proto.VTRClient) (*proto.InfoResponse, error) {
-		return client.Info(ctx, &proto.InfoRequest{Name: session})
-	})
-}
-
-func (s *federatedServer) callKill(ctx context.Context, spoke string, req *proto.KillRequest) (*proto.KillResponse, error) {
-	if tunnel := s.tunnel(spoke); tunnel != nil {
-		resp := &proto.KillResponse{}
-		if err := tunnel.CallUnary(ctx, tunnelMethodKill, req, resp); err != nil {
-			return nil, err
-		}
-		return resp, nil
-	}
-	return callUnary(ctx, spoke, s, func(client proto.VTRClient) (*proto.KillResponse, error) {
-		return client.Kill(ctx, req)
-	})
-}
-
-func (s *federatedServer) callClose(ctx context.Context, spoke string, req *proto.CloseRequest) (*proto.CloseResponse, error) {
-	if tunnel := s.tunnel(spoke); tunnel != nil {
-		resp := &proto.CloseResponse{}
-		if err := tunnel.CallUnary(ctx, tunnelMethodClose, req, resp); err != nil {
-			return nil, err
-		}
-		return resp, nil
-	}
-	return callUnary(ctx, spoke, s, func(client proto.VTRClient) (*proto.CloseResponse, error) {
-		return client.Close(ctx, req)
-	})
-}
-
-func (s *federatedServer) callRemove(ctx context.Context, spoke string, req *proto.RemoveRequest) (*proto.RemoveResponse, error) {
-	if tunnel := s.tunnel(spoke); tunnel != nil {
-		resp := &proto.RemoveResponse{}
-		if err := tunnel.CallUnary(ctx, tunnelMethodRemove, req, resp); err != nil {
-			return nil, err
-		}
-		return resp, nil
-	}
-	return callUnary(ctx, spoke, s, func(client proto.VTRClient) (*proto.RemoveResponse, error) {
-		return client.Remove(ctx, req)
-	})
-}
-
-func (s *federatedServer) callRename(ctx context.Context, spoke string, req *proto.RenameRequest) (*proto.RenameResponse, error) {
-	if tunnel := s.tunnel(spoke); tunnel != nil {
-		resp := &proto.RenameResponse{}
-		if err := tunnel.CallUnary(ctx, tunnelMethodRename, req, resp); err != nil {
-			return nil, err
-		}
-		return resp, nil
-	}
-	return callUnary(ctx, spoke, s, func(client proto.VTRClient) (*proto.RenameResponse, error) {
-		return client.Rename(ctx, req)
-	})
-}
-
-func (s *federatedServer) callGetScreen(ctx context.Context, spoke string, req *proto.GetScreenRequest) (*proto.GetScreenResponse, error) {
-	if tunnel := s.tunnel(spoke); tunnel != nil {
-		resp := &proto.GetScreenResponse{}
-		if err := tunnel.CallUnary(ctx, tunnelMethodGetScreen, req, resp); err != nil {
-			return nil, err
-		}
-		return resp, nil
-	}
-	return callUnary(ctx, spoke, s, func(client proto.VTRClient) (*proto.GetScreenResponse, error) {
-		return client.GetScreen(ctx, req)
-	})
-}
-
-func (s *federatedServer) callGrep(ctx context.Context, spoke string, req *proto.GrepRequest) (*proto.GrepResponse, error) {
-	if tunnel := s.tunnel(spoke); tunnel != nil {
-		resp := &proto.GrepResponse{}
-		if err := tunnel.CallUnary(ctx, tunnelMethodGrep, req, resp); err != nil {
-			return nil, err
-		}
-		return resp, nil
-	}
-	return callUnary(ctx, spoke, s, func(client proto.VTRClient) (*proto.GrepResponse, error) {
-		return client.Grep(ctx, req)
-	})
-}
-
-func (s *federatedServer) callSendText(ctx context.Context, spoke string, req *proto.SendTextRequest) (*proto.SendTextResponse, error) {
-	if tunnel := s.tunnel(spoke); tunnel != nil {
-		resp := &proto.SendTextResponse{}
-		if err := tunnel.CallUnary(ctx, tunnelMethodSendText, req, resp); err != nil {
-			return nil, err
-		}
-		return resp, nil
-	}
-	return callUnary(ctx, spoke, s, func(client proto.VTRClient) (*proto.SendTextResponse, error) {
-		return client.SendText(ctx, req)
-	})
-}
-
-func (s *federatedServer) callSendKey(ctx context.Context, spoke string, req *proto.SendKeyRequest) (*proto.SendKeyResponse, error) {
-	if tunnel := s.tunnel(spoke); tunnel != nil {
-		resp := &proto.SendKeyResponse{}
-		if err := tunnel.CallUnary(ctx, tunnelMethodSendKey, req, resp); err != nil {
-			return nil, err
-		}
-		return resp, nil
-	}
-	return callUnary(ctx, spoke, s, func(client proto.VTRClient) (*proto.SendKeyResponse, error) {
-		return client.SendKey(ctx, req)
-	})
-}
-
-func (s *federatedServer) callSendBytes(ctx context.Context, spoke string, req *proto.SendBytesRequest) (*proto.SendBytesResponse, error) {
-	if tunnel := s.tunnel(spoke); tunnel != nil {
-		resp := &proto.SendBytesResponse{}
-		if err := tunnel.CallUnary(ctx, tunnelMethodSendBytes, req, resp); err != nil {
-			return nil, err
-		}
-		return resp, nil
-	}
-	return callUnary(ctx, spoke, s, func(client proto.VTRClient) (*proto.SendBytesResponse, error) {
-		return client.SendBytes(ctx, req)
-	})
-}
-
-func (s *federatedServer) callResize(ctx context.Context, spoke string, req *proto.ResizeRequest) (*proto.ResizeResponse, error) {
-	if tunnel := s.tunnel(spoke); tunnel != nil {
-		resp := &proto.ResizeResponse{}
-		if err := tunnel.CallUnary(ctx, tunnelMethodResize, req, resp); err != nil {
-			return nil, err
-		}
-		return resp, nil
-	}
-	return callUnary(ctx, spoke, s, func(client proto.VTRClient) (*proto.ResizeResponse, error) {
-		return client.Resize(ctx, req)
-	})
-}
-
-func (s *federatedServer) callWaitFor(ctx context.Context, spoke string, req *proto.WaitForRequest) (*proto.WaitForResponse, error) {
-	if tunnel := s.tunnel(spoke); tunnel != nil {
-		resp := &proto.WaitForResponse{}
-		if err := tunnel.CallUnary(ctx, tunnelMethodWaitFor, req, resp); err != nil {
-			return nil, err
-		}
-		return resp, nil
-	}
-	return callUnary(ctx, spoke, s, func(client proto.VTRClient) (*proto.WaitForResponse, error) {
-		return client.WaitFor(ctx, req)
-	})
-}
-
-func (s *federatedServer) callWaitForIdle(ctx context.Context, spoke string, req *proto.WaitForIdleRequest) (*proto.WaitForIdleResponse, error) {
-	if tunnel := s.tunnel(spoke); tunnel != nil {
-		resp := &proto.WaitForIdleResponse{}
-		if err := tunnel.CallUnary(ctx, tunnelMethodWaitForIdle, req, resp); err != nil {
-			return nil, err
-		}
-		return resp, nil
-	}
-	return callUnary(ctx, spoke, s, func(client proto.VTRClient) (*proto.WaitForIdleResponse, error) {
-		return client.WaitForIdle(ctx, req)
-	})
-}
-
-func (s *federatedServer) callDumpAsciinema(ctx context.Context, spoke string, req *proto.DumpAsciinemaRequest) (*proto.DumpAsciinemaResponse, error) {
-	if tunnel := s.tunnel(spoke); tunnel != nil {
-		resp := &proto.DumpAsciinemaResponse{}
-		if err := tunnel.CallUnary(ctx, tunnelMethodDumpAsciinema, req, resp); err != nil {
-			return nil, err
-		}
-		return resp, nil
-	}
-	return callUnary(ctx, spoke, s, func(client proto.VTRClient) (*proto.DumpAsciinemaResponse, error) {
-		return client.DumpAsciinema(ctx, req)
-	})
-}
-
-func callUnary[T any](ctx context.Context, spoke string, srv *federatedServer, fn func(client proto.VTRClient) (*T, error)) (*T, error) {
-	client, conn, err := srv.dialSpoke(ctx, spoke)
+	tunnel, err := s.requireTunnel(spoke)
 	if err != nil {
 		return nil, err
 	}
-	defer conn.Close()
-	return fn(client)
+	resp := &proto.SpawnResponse{}
+	if err := tunnel.CallUnary(ctx, tunnelMethodSpawn, req, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (s *federatedServer) callInfo(ctx context.Context, spoke, session string) (*proto.InfoResponse, error) {
+	tunnel, err := s.requireTunnel(spoke)
+	if err != nil {
+		return nil, err
+	}
+	resp := &proto.InfoResponse{}
+	if err := tunnel.CallUnary(ctx, tunnelMethodInfo, &proto.InfoRequest{Name: session}, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (s *federatedServer) callKill(ctx context.Context, spoke string, req *proto.KillRequest) (*proto.KillResponse, error) {
+	tunnel, err := s.requireTunnel(spoke)
+	if err != nil {
+		return nil, err
+	}
+	resp := &proto.KillResponse{}
+	if err := tunnel.CallUnary(ctx, tunnelMethodKill, req, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (s *federatedServer) callClose(ctx context.Context, spoke string, req *proto.CloseRequest) (*proto.CloseResponse, error) {
+	tunnel, err := s.requireTunnel(spoke)
+	if err != nil {
+		return nil, err
+	}
+	resp := &proto.CloseResponse{}
+	if err := tunnel.CallUnary(ctx, tunnelMethodClose, req, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (s *federatedServer) callRemove(ctx context.Context, spoke string, req *proto.RemoveRequest) (*proto.RemoveResponse, error) {
+	tunnel, err := s.requireTunnel(spoke)
+	if err != nil {
+		return nil, err
+	}
+	resp := &proto.RemoveResponse{}
+	if err := tunnel.CallUnary(ctx, tunnelMethodRemove, req, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (s *federatedServer) callRename(ctx context.Context, spoke string, req *proto.RenameRequest) (*proto.RenameResponse, error) {
+	tunnel, err := s.requireTunnel(spoke)
+	if err != nil {
+		return nil, err
+	}
+	resp := &proto.RenameResponse{}
+	if err := tunnel.CallUnary(ctx, tunnelMethodRename, req, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (s *federatedServer) callGetScreen(ctx context.Context, spoke string, req *proto.GetScreenRequest) (*proto.GetScreenResponse, error) {
+	tunnel, err := s.requireTunnel(spoke)
+	if err != nil {
+		return nil, err
+	}
+	resp := &proto.GetScreenResponse{}
+	if err := tunnel.CallUnary(ctx, tunnelMethodGetScreen, req, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (s *federatedServer) callGrep(ctx context.Context, spoke string, req *proto.GrepRequest) (*proto.GrepResponse, error) {
+	tunnel, err := s.requireTunnel(spoke)
+	if err != nil {
+		return nil, err
+	}
+	resp := &proto.GrepResponse{}
+	if err := tunnel.CallUnary(ctx, tunnelMethodGrep, req, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (s *federatedServer) callSendText(ctx context.Context, spoke string, req *proto.SendTextRequest) (*proto.SendTextResponse, error) {
+	tunnel, err := s.requireTunnel(spoke)
+	if err != nil {
+		return nil, err
+	}
+	resp := &proto.SendTextResponse{}
+	if err := tunnel.CallUnary(ctx, tunnelMethodSendText, req, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (s *federatedServer) callSendKey(ctx context.Context, spoke string, req *proto.SendKeyRequest) (*proto.SendKeyResponse, error) {
+	tunnel, err := s.requireTunnel(spoke)
+	if err != nil {
+		return nil, err
+	}
+	resp := &proto.SendKeyResponse{}
+	if err := tunnel.CallUnary(ctx, tunnelMethodSendKey, req, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (s *federatedServer) callSendBytes(ctx context.Context, spoke string, req *proto.SendBytesRequest) (*proto.SendBytesResponse, error) {
+	tunnel, err := s.requireTunnel(spoke)
+	if err != nil {
+		return nil, err
+	}
+	resp := &proto.SendBytesResponse{}
+	if err := tunnel.CallUnary(ctx, tunnelMethodSendBytes, req, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (s *federatedServer) callResize(ctx context.Context, spoke string, req *proto.ResizeRequest) (*proto.ResizeResponse, error) {
+	tunnel, err := s.requireTunnel(spoke)
+	if err != nil {
+		return nil, err
+	}
+	resp := &proto.ResizeResponse{}
+	if err := tunnel.CallUnary(ctx, tunnelMethodResize, req, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (s *federatedServer) callWaitFor(ctx context.Context, spoke string, req *proto.WaitForRequest) (*proto.WaitForResponse, error) {
+	tunnel, err := s.requireTunnel(spoke)
+	if err != nil {
+		return nil, err
+	}
+	resp := &proto.WaitForResponse{}
+	if err := tunnel.CallUnary(ctx, tunnelMethodWaitFor, req, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (s *federatedServer) callWaitForIdle(ctx context.Context, spoke string, req *proto.WaitForIdleRequest) (*proto.WaitForIdleResponse, error) {
+	tunnel, err := s.requireTunnel(spoke)
+	if err != nil {
+		return nil, err
+	}
+	resp := &proto.WaitForIdleResponse{}
+	if err := tunnel.CallUnary(ctx, tunnelMethodWaitForIdle, req, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (s *federatedServer) callDumpAsciinema(ctx context.Context, spoke string, req *proto.DumpAsciinemaRequest) (*proto.DumpAsciinemaResponse, error) {
+	tunnel, err := s.requireTunnel(spoke)
+	if err != nil {
+		return nil, err
+	}
+	resp := &proto.DumpAsciinemaResponse{}
+	if err := tunnel.CallUnary(ctx, tunnelMethodDumpAsciinema, req, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
 }
 
 type federatedSessionState struct {
@@ -1238,64 +1153,20 @@ func (s *federatedServer) watchSpokeSessions(ctx context.Context, target spokeTa
 			backoff = time.Second
 			continue
 		}
-
-		if s.dialer == nil {
-			state.ensureCoordinator(target.Name, target.Addr)
-			signal.pulse()
+		state.ensureCoordinator(target.Name, target.Addr)
+		state.setCoordinatorError(target.Name, target.Addr, status.Error(codes.Unavailable, "spoke tunnel is not connected"))
+		signal.pulse()
+		if waitOrDone(ctx, backoff) {
 			return
 		}
-		dialCtx, cancel := context.WithTimeout(ctx, rpcTimeout)
-		conn, err := s.dialer(dialCtx, target.Addr)
-		cancel()
-		if err != nil {
-			state.setCoordinatorError(target.Name, target.Addr, err)
-			signal.pulse()
-			if waitOrDone(ctx, backoff) {
-				return
-			}
-			backoff = nextBackoff(backoff)
-			continue
-		}
-		client := proto.NewVTRClient(conn)
-		streamCtx, streamCancel := context.WithCancel(ctx)
-		stream, err := client.SubscribeSessions(streamCtx, &proto.SubscribeSessionsRequest{
-			ExcludeExited: excludeExited,
-		})
-		if err != nil {
-			streamCancel()
-			_ = conn.Close()
-			state.setCoordinatorError(target.Name, target.Addr, err)
-			signal.pulse()
-			if waitOrDone(ctx, backoff) {
-				return
-			}
-			backoff = nextBackoff(backoff)
-			continue
-		}
-
-		state.setCoordinatorError(target.Name, target.Addr, nil)
-		signal.pulse()
-		backoff = time.Second
-		for {
-			snapshot, err := stream.Recv()
-			if err != nil {
-				streamCancel()
-				_ = conn.Close()
-				state.setCoordinatorError(target.Name, target.Addr, err)
-				signal.pulse()
-				break
-			}
-			sessions := snapshotSessions(snapshot, target.Name)
-			if excludeExited {
-				sessions = filterSessions(sessions, true)
-			}
-			state.setCoordinatorSessions(target.Name, target.Addr, sessions)
-			signal.pulse()
-		}
+		backoff = nextBackoff(backoff)
 	}
 }
 
 func (s *federatedServer) watchRegistry(ctx context.Context, excludeExited bool, state *federatedSessionState, signal *updateSignal) {
+	if s.registry == nil {
+		return
+	}
 	known := make(map[string]struct{})
 	for _, target := range s.spokeTargets() {
 		known[target.Name] = struct{}{}

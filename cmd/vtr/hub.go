@@ -17,7 +17,6 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
-	"google.golang.org/grpc"
 )
 
 type hubOptions struct {
@@ -141,17 +140,12 @@ func runHub(opts hubOptions) error {
 	}
 
 	localService := server.NewGRPCServer(coord)
-	staticSpokes := federationSpokesFromConfig(cfg)
 	federated := newFederatedServer(
 		localService,
 		coordinatorName(socketPath),
 		socketPath,
 		coordinatorEnabled,
-		staticSpokes,
 		localService.SpokeRegistry(),
-		func(ctx context.Context, addr string) (*grpc.ClientConn, error) {
-			return dialClient(ctx, addr, cfg)
-		},
 		logger,
 	)
 
@@ -189,7 +183,7 @@ func runHub(opts hubOptions) error {
 		resolver := webResolver{
 			cfg: cfg,
 			coordsFn: func() ([]coordinatorRef, error) {
-				return federatedCoordinatorRefs(socketPath, coordinatorEnabled, hubDialAddr(addr), staticSpokes, localService.SpokeRegistry(), federated.tunnels), nil
+				return federatedCoordinatorRefs(socketPath, coordinatorEnabled, hubDialAddr(addr), localService.SpokeRegistry(), federated.tunnels), nil
 			},
 			hubFn: func() (coordinatorRef, error) {
 				if strings.TrimSpace(socketPath) != "" {

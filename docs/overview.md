@@ -12,7 +12,7 @@ queryable terminal state and reliable input delivery.
 - Structured screen state (cells with colors/attrs) over gRPC.
 - Blocking operations for agents (`WaitFor`, `WaitForIdle`) without polling.
 - A TUI (`vtr tui`) and a Web UI for interactive viewing.
-- Optional hub/spoke registration (spokes can register to a hub; proxying is future work).
+- Tunnel-only hub/spoke federation (spokes connect to a hub; proxying is supported).
 
 ## System sketch
 
