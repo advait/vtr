@@ -2817,19 +2817,8 @@ func groupTabSessionsByCoordinator(items []sessionListItem, coords []coordinator
 			seen[fallbackCoord] = struct{}{}
 		}
 	}
-	if len(coords) == 0 && len(names) > 1 {
+	if len(names) > 1 {
 		sort.Strings(names)
-	}
-	fallbackCoord = strings.TrimSpace(fallbackCoord)
-	if fallbackCoord != "" {
-		for i, name := range names {
-			if name == fallbackCoord {
-				if i > 0 {
-					names = append([]string{name}, append(names[:i], names[i+1:]...)...)
-				}
-				break
-			}
-		}
 	}
 	grouped := make(map[string][]sessionListItem, len(names))
 	for _, item := range items {
