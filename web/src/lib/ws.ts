@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { CoordinatorInfo, SessionInfo } from "../components/CoordinatorTree";
+import type { SessionRef } from "./session";
 import { decodeAny, encodeAny, type Session, type SessionsSnapshot, type SubscribeEvent } from "./proto";
 
 export type StreamStatus = "idle" | "connecting" | "open" | "reconnecting" | "error" | "closed";
@@ -60,13 +61,15 @@ function snapshotToCoordinators(snapshot: SessionsSnapshot): CoordinatorInfo[] {
   }));
 }
 
-export function useVtrStream(sessionId: string | null, options: StreamOptions) {
+export function useVtrStream(sessionRef: SessionRef | null, options: StreamOptions) {
   const [state, setState] = useState<StreamState>({ status: "idle" });
   const eventRef = useRef<((event: SubscribeEvent) => void) | null>(null);
   const pendingEventsRef = useRef<SubscribeEvent[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectRef = useRef<{ attempts: number; timer?: number }>({ attempts: 0 });
   const closedByUser = useRef(false);
+  const sessionId = sessionRef?.id?.trim() ?? "";
+  const sessionCoordinator = sessionRef?.coordinator?.trim() ?? "";
 
   const setEventHandler = useCallback((handler: (event: SubscribeEvent) => void) => {
     eventRef.current = handler;
@@ -99,31 +102,42 @@ export function useVtrStream(sessionId: string | null, options: StreamOptions) {
   const sendText = useCallback(
     (text: string) => {
       if (!sessionId) return;
-      sendProto("vtr.SendTextRequest", { id: sessionId, text: normalizeText(text) });
+      sendProto("vtr.SendTextRequest", {
+        session: { id: sessionId, coordinator: sessionCoordinator },
+        text: normalizeText(text),
+      });
     },
-    [normalizeText, sendProto, sessionId],
+    [normalizeText, sendProto, sessionCoordinator, sessionId],
   );
 
   const sendKey = useCallback(
     (key: string) => {
       if (!sessionId) return;
-      sendProto("vtr.SendKeyRequest", { id: sessionId, key });
+      sendProto("vtr.SendKeyRequest", { session: { id: sessionId, coordinator: sessionCoordinator }, key });
     },
-    [sendProto, sessionId],
+    [sendProto, sessionCoordinator, sessionId],
   );
 
   const sendTextTo = useCallback(
-    (id: string, text: string) => {
-      if (!id) return;
-      sendProto("vtr.SendTextRequest", { id, text: normalizeText(text) });
+    (target: SessionRef, text: string) => {
+      const targetId = target?.id?.trim() ?? "";
+      if (!targetId) return;
+      sendProto("vtr.SendTextRequest", {
+        session: { id: targetId, coordinator: target.coordinator?.trim() ?? "" },
+        text: normalizeText(text),
+      });
     },
     [normalizeText, sendProto],
   );
 
   const sendKeyTo = useCallback(
-    (id: string, key: string) => {
-      if (!id) return;
-      sendProto("vtr.SendKeyRequest", { id, key });
+    (target: SessionRef, key: string) => {
+      const targetId = target?.id?.trim() ?? "";
+      if (!targetId) return;
+      sendProto("vtr.SendKeyRequest", {
+        session: { id: targetId, coordinator: target.coordinator?.trim() ?? "" },
+        key,
+      });
     },
     [sendProto],
   );
@@ -131,17 +145,21 @@ export function useVtrStream(sessionId: string | null, options: StreamOptions) {
   const sendBytes = useCallback(
     (data: Uint8Array) => {
       if (!sessionId) return;
-      sendProto("vtr.SendBytesRequest", { id: sessionId, data });
+      sendProto("vtr.SendBytesRequest", { session: { id: sessionId, coordinator: sessionCoordinator }, data });
     },
-    [sendProto, sessionId],
+    [sendProto, sessionCoordinator, sessionId],
   );
 
   const resize = useCallback(
     (cols: number, rows: number) => {
       if (!sessionId) return;
-      sendProto("vtr.ResizeRequest", { id: sessionId, cols, rows });
+      sendProto("vtr.ResizeRequest", {
+        session: { id: sessionId, coordinator: sessionCoordinator },
+        cols,
+        rows,
+      });
     },
-    [sendProto, sessionId],
+    [sendProto, sessionCoordinator, sessionId],
   );
 
   useEffect(() => {
@@ -171,7 +189,7 @@ export function useVtrStream(sessionId: string | null, options: StreamOptions) {
           return;
         }
         const hello = encodeAny("vtr.SubscribeRequest", {
-          id: sessionId,
+          session: { id: sessionId, coordinator: sessionCoordinator },
           include_screen_updates: true,
           include_raw_output: options.includeRawOutput ?? false,
         });
@@ -244,7 +262,7 @@ export function useVtrStream(sessionId: string | null, options: StreamOptions) {
         wsRef.current.close();
       }
     };
-  }, [sessionId, options.includeRawOutput]);
+  }, [sessionCoordinator, sessionId, options.includeRawOutput]);
 
   return {
     state,

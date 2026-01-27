@@ -31,15 +31,15 @@ import (
 )
 
 type webOptions struct {
-	addr         string
-	hub          string
-	dev          bool
-	devServer    string
+	addr      string
+	hub       string
+	dev       bool
+	devServer string
 }
 
 type webResolver struct {
-	cfg          *clientConfig
-	hub          coordinatorRef
+	cfg *clientConfig
+	hub coordinatorRef
 }
 
 func (r webResolver) hubTarget() (coordinatorRef, error) {
@@ -273,9 +273,10 @@ func handleWebsocket(resolver webResolver) http.HandlerFunc {
 			return
 		}
 
-		sessionID := strings.TrimSpace(hello.GetId())
-		if sessionID == "" && strings.TrimSpace(hello.GetName()) == "" {
-			_ = sendWSError(ctx, sender, wsProtocolError{Code: codes.InvalidArgument, Message: "session is required"})
+		sessionRef := hello.GetSession()
+		sessionID := strings.TrimSpace(sessionRef.GetId())
+		if sessionID == "" {
+			_ = sendWSError(ctx, sender, wsProtocolError{Code: codes.InvalidArgument, Message: "session id is required"})
 			return
 		}
 
@@ -293,18 +294,10 @@ func handleWebsocket(resolver webResolver) http.HandlerFunc {
 		defer grpcConn.Close()
 
 		client := proto.NewVTRClient(grpcConn)
-		if sessionID == "" {
-			sessionID, _, err = resolveSessionID(ctx, client, strings.TrimSpace(hello.GetName()))
-			if err != nil {
-				_ = sendWSError(ctx, sender, wrapResolveError(err))
-				return
-			}
-		}
-
 		streamCtx, streamCancel := context.WithCancel(ctx)
 		defer streamCancel()
 		stream, err := client.Subscribe(streamCtx, &proto.SubscribeRequest{
-			Id:                   sessionID,
+			Session:              sessionRef,
 			IncludeScreenUpdates: hello.GetIncludeScreenUpdates(),
 			IncludeRawOutput:     hello.GetIncludeRawOutput(),
 		})
@@ -318,7 +311,7 @@ func handleWebsocket(resolver webResolver) http.HandlerFunc {
 			errCh <- streamToWeb(ctx, sender, stream)
 		}()
 		go func() {
-			errCh <- handleWebInput(ctx, conn, client, sessionID)
+			errCh <- handleWebInput(ctx, conn, client, sessionRef)
 		}()
 
 		err = <-errCh
@@ -420,12 +413,13 @@ type webSessionCreateResponse struct {
 }
 
 type webSessionActionRequest struct {
-	ID      string `json:"id,omitempty"`
-	Name    string `json:"name,omitempty"`
-	Action  string `json:"action"`
-	Key     string `json:"key,omitempty"`
-	Signal  string `json:"signal,omitempty"`
-	NewName string `json:"new_name,omitempty"`
+	ID          string `json:"id,omitempty"`
+	Name        string `json:"name,omitempty"`
+	Coordinator string `json:"coordinator,omitempty"`
+	Action      string `json:"action"`
+	Key         string `json:"key,omitempty"`
+	Signal      string `json:"signal,omitempty"`
+	NewName     string `json:"new_name,omitempty"`
 }
 
 type webSessionActionResponse struct {
@@ -627,11 +621,7 @@ func handleWebSessionAction(resolver webResolver) http.HandlerFunc {
 
 		action := strings.ToLower(strings.TrimSpace(req.Action))
 		targetID := strings.TrimSpace(req.ID)
-		sessionRef := targetID
-		if sessionRef == "" {
-			sessionRef = strings.TrimSpace(req.Name)
-		}
-		if sessionRef == "" {
+		if targetID == "" {
 			http.Error(w, "session id is required", http.StatusBadRequest)
 			return
 		}
@@ -656,14 +646,8 @@ func handleWebSessionAction(resolver webResolver) http.HandlerFunc {
 		defer conn.Close()
 
 		client := proto.NewVTRClient(conn)
-		if targetID == "" {
-			targetID, _, err = resolveSessionID(r.Context(), client, sessionRef)
-			if err != nil {
-				writeWebError(w, wrapResolveError(err))
-				return
-			}
-		}
-		targetID = strings.TrimSpace(targetID)
+		coordName := strings.TrimSpace(req.Coordinator)
+		sessionRef := &proto.SessionRef{Id: targetID, Coordinator: coordName}
 		switch action {
 		case "send_key":
 			key := strings.TrimSpace(req.Key)
@@ -673,8 +657,8 @@ func handleWebSessionAction(resolver webResolver) http.HandlerFunc {
 			}
 			ctx, cancel = context.WithTimeout(r.Context(), rpcTimeout)
 			_, err = client.SendKey(ctx, &proto.SendKeyRequest{
-				Id:  targetID,
-				Key: key,
+				Session: sessionRef,
+				Key:     key,
 			})
 			cancel()
 		case "signal":
@@ -684,17 +668,17 @@ func handleWebSessionAction(resolver webResolver) http.HandlerFunc {
 			}
 			ctx, cancel = context.WithTimeout(r.Context(), rpcTimeout)
 			_, err = client.Kill(ctx, &proto.KillRequest{
-				Id:     targetID,
-				Signal: sig,
+				Session: sessionRef,
+				Signal:  sig,
 			})
 			cancel()
 		case "close":
 			ctx, cancel = context.WithTimeout(r.Context(), rpcTimeout)
-			_, err = client.Close(ctx, &proto.CloseRequest{Id: targetID})
+			_, err = client.Close(ctx, &proto.CloseRequest{Session: sessionRef})
 			cancel()
 		case "remove":
 			ctx, cancel = context.WithTimeout(r.Context(), rpcTimeout)
-			_, err = client.Remove(ctx, &proto.RemoveRequest{Id: targetID})
+			_, err = client.Remove(ctx, &proto.RemoveRequest{Session: sessionRef})
 			cancel()
 		case "rename":
 			newName := strings.TrimSpace(req.NewName)
@@ -703,7 +687,7 @@ func handleWebSessionAction(resolver webResolver) http.HandlerFunc {
 				return
 			}
 			ctx, cancel = context.WithTimeout(r.Context(), rpcTimeout)
-			_, err = client.Rename(ctx, &proto.RenameRequest{Id: targetID, NewName: newName})
+			_, err = client.Rename(ctx, &proto.RenameRequest{Session: sessionRef, NewName: newName})
 			cancel()
 		default:
 			http.Error(w, fmt.Sprintf("unknown action %q", action), http.StatusBadRequest)
@@ -812,9 +796,9 @@ func readHello(ctx context.Context, conn *websocket.Conn) (*proto.SubscribeReque
 	if !ok {
 		return nil, wsProtocolError{Code: codes.InvalidArgument, Message: "expected SubscribeRequest hello"}
 	}
-	hello.Name = strings.TrimSpace(hello.Name)
-	if strings.TrimSpace(hello.GetId()) == "" && strings.TrimSpace(hello.GetName()) == "" {
-		return nil, wsProtocolError{Code: codes.InvalidArgument, Message: "session is required"}
+	sessionID := strings.TrimSpace(hello.GetSession().GetId())
+	if sessionID == "" {
+		return nil, wsProtocolError{Code: codes.InvalidArgument, Message: "session id is required"}
 	}
 	if !hello.IncludeScreenUpdates && !hello.IncludeRawOutput {
 		return nil, wsProtocolError{Code: codes.InvalidArgument, Message: "subscribe requires screen updates or raw output"}
@@ -883,21 +867,21 @@ func wrapResolveError(err error) error {
 	}
 }
 
-func resizeSession(ctx context.Context, client proto.VTRClient, sessionID string, cols, rows int32) error {
+func resizeSession(ctx context.Context, client proto.VTRClient, sessionRef *proto.SessionRef, cols, rows int32) error {
 	if cols <= 0 || rows <= 0 {
 		return wsProtocolError{Code: codes.InvalidArgument, Message: "resize requires cols and rows"}
 	}
 	ctxTimeout, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
 	_, err := client.Resize(ctxTimeout, &proto.ResizeRequest{
-		Id:   sessionID,
-		Cols: cols,
-		Rows: rows,
+		Session: sessionRef,
+		Cols:    cols,
+		Rows:    rows,
 	})
 	return err
 }
 
-func handleWebInput(ctx context.Context, conn *websocket.Conn, client proto.VTRClient, sessionID string) error {
+func handleWebInput(ctx context.Context, conn *websocket.Conn, client proto.VTRClient, sessionRef *proto.SessionRef) error {
 	for {
 		msgType, data, err := conn.Read(ctx)
 		if err != nil {
@@ -914,8 +898,8 @@ func handleWebInput(ctx context.Context, conn *websocket.Conn, client proto.VTRC
 		case *proto.SendTextRequest:
 			ctxTimeout, cancel := context.WithTimeout(ctx, rpcTimeout)
 			_, err := client.SendText(ctxTimeout, &proto.SendTextRequest{
-				Id:   sessionID,
-				Text: m.GetText(),
+				Session: sessionRef,
+				Text:    m.GetText(),
 			})
 			cancel()
 			if err != nil {
@@ -924,8 +908,8 @@ func handleWebInput(ctx context.Context, conn *websocket.Conn, client proto.VTRC
 		case *proto.SendKeyRequest:
 			ctxTimeout, cancel := context.WithTimeout(ctx, rpcTimeout)
 			_, err := client.SendKey(ctxTimeout, &proto.SendKeyRequest{
-				Id:   sessionID,
-				Key:  m.GetKey(),
+				Session: sessionRef,
+				Key:     m.GetKey(),
 			})
 			cancel()
 			if err != nil {
@@ -934,8 +918,8 @@ func handleWebInput(ctx context.Context, conn *websocket.Conn, client proto.VTRC
 		case *proto.SendBytesRequest:
 			ctxTimeout, cancel := context.WithTimeout(ctx, rpcTimeout)
 			_, err := client.SendBytes(ctxTimeout, &proto.SendBytesRequest{
-				Id:   sessionID,
-				Data: m.GetData(),
+				Session: sessionRef,
+				Data:    m.GetData(),
 			})
 			cancel()
 			if err != nil {
@@ -943,9 +927,9 @@ func handleWebInput(ctx context.Context, conn *websocket.Conn, client proto.VTRC
 			}
 		case *proto.ResizeRequest:
 			if envBool("VTR_LOG_RESIZE", false) {
-				log.Printf("resize web session=%s cols=%d rows=%d", sessionID, m.GetCols(), m.GetRows())
+				log.Printf("resize web session=%s cols=%d rows=%d", sessionRef.GetId(), m.GetCols(), m.GetRows())
 			}
-			if err := resizeSession(ctx, client, sessionID, m.GetCols(), m.GetRows()); err != nil {
+			if err := resizeSession(ctx, client, sessionRef, m.GetCols(), m.GetRows()); err != nil {
 				return err
 			}
 		default:

@@ -25,7 +25,7 @@ export type SessionCreateResponse = {
 
 export type SessionActionRequest = {
   id: string;
-  name?: string;
+  coordinator?: string;
   action: "send_key" | "signal" | "close" | "remove" | "rename";
   key?: string;
   signal?: string;
@@ -93,7 +93,7 @@ export async function sendSessionAction(req: SessionActionRequest) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       id: req.id,
-      name: req.name,
+      coordinator: req.coordinator,
       action: req.action,
       key: req.key,
       signal: req.signal,

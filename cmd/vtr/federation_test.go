@@ -21,7 +21,7 @@ const bufSize = 1024 * 1024
 type fakeVTRServer struct {
 	proto.UnimplementedVTRServer
 	listSessions             []*proto.Session
-	infoHandler              func(name string) (*proto.InfoResponse, error)
+	infoHandler              func(id string) (*proto.InfoResponse, error)
 	subscribeSessionsName    string
 	subscribeSessionsHandler func(req *proto.SubscribeSessionsRequest, stream proto.VTR_SubscribeSessionsServer) error
 }
@@ -32,9 +32,13 @@ func (f *fakeVTRServer) List(_ context.Context, _ *proto.ListRequest) (*proto.Li
 
 func (f *fakeVTRServer) Info(_ context.Context, req *proto.InfoRequest) (*proto.InfoResponse, error) {
 	if f.infoHandler != nil {
-		return f.infoHandler(req.GetName())
+		return f.infoHandler(req.GetSession().GetId())
 	}
-	return &proto.InfoResponse{Session: &proto.Session{Name: req.GetName()}}, nil
+	name := ""
+	if len(f.listSessions) > 0 && f.listSessions[0] != nil {
+		name = f.listSessions[0].GetName()
+	}
+	return &proto.InfoResponse{Session: &proto.Session{Id: req.GetSession().GetId(), Name: name}}, nil
 }
 
 func (f *fakeVTRServer) SubscribeSessions(req *proto.SubscribeSessionsRequest, stream proto.VTR_SubscribeSessionsServer) error {
@@ -71,7 +75,7 @@ func TestTunnelListAndInfoRoutesToSpoke(t *testing.T) {
 	local := server.NewGRPCServer(coord)
 
 	spoke := &fakeVTRServer{
-		listSessions: []*proto.Session{{Name: "alpha"}},
+		listSessions: []*proto.Session{{Id: "sess-1", Name: "alpha"}},
 	}
 
 	listener := bufconn.Listen(bufSize)
@@ -130,16 +134,16 @@ func TestTunnelListAndInfoRoutesToSpoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(listResp.GetSessions()) == 0 || listResp.GetSessions()[0].GetName() != "spoke-a:alpha" {
-		t.Fatalf("expected prefixed session, got %#v", listResp.GetSessions())
+	if len(listResp.GetSessions()) == 0 || listResp.GetSessions()[0].GetName() != "alpha" {
+		t.Fatalf("expected session name, got %#v", listResp.GetSessions())
 	}
 
-	infoResp, err := client.Info(ctx, &proto.InfoRequest{Name: "spoke-a:alpha"})
+	infoResp, err := client.Info(ctx, &proto.InfoRequest{Session: &proto.SessionRef{Id: "sess-1", Coordinator: "spoke-a"}})
 	if err != nil {
 		t.Fatalf("Info: %v", err)
 	}
-	if infoResp.GetSession().GetName() != "spoke-a:alpha" {
-		t.Fatalf("expected prefixed info, got %q", infoResp.GetSession().GetName())
+	if infoResp.GetSession().GetName() != "alpha" {
+		t.Fatalf("expected unprefixed info, got %q", infoResp.GetSession().GetName())
 	}
 }
 
@@ -307,7 +311,7 @@ func TestFederatedSubscribeSessionsAddsEmptyCoordinator(t *testing.T) {
 	}
 }
 
-func TestFederatedSubscribeSessionsPrefixesSpokeIDs(t *testing.T) {
+func TestFederatedSubscribeSessionsKeepsSpokeNames(t *testing.T) {
 	coord := server.NewCoordinator(server.CoordinatorOptions{})
 	defer coord.CloseAll()
 	local := server.NewGRPCServer(coord)
@@ -390,11 +394,11 @@ func TestFederatedSubscribeSessionsPrefixesSpokeIDs(t *testing.T) {
 			continue
 		}
 		session := coord.GetSessions()[0]
-		if got := session.GetId(); got != "spoke-a:sess-1" {
-			t.Fatalf("expected prefixed id, got %q", got)
+		if got := session.GetId(); got != "sess-1" {
+			t.Fatalf("expected canonical id, got %q", got)
 		}
-		if got := session.GetName(); got != "spoke-a:alpha" {
-			t.Fatalf("expected prefixed name, got %q", got)
+		if got := session.GetName(); got != "alpha" {
+			t.Fatalf("expected unprefixed name, got %q", got)
 		}
 		break
 	}

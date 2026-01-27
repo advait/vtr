@@ -8,7 +8,13 @@ import {
 } from "react";
 import { ActionTray } from "./components/ActionTray";
 import type { CoordinatorInfo, SessionInfo } from "./components/CoordinatorTree";
-import { displaySessionName, matchesSessionKey, sessionKey } from "./lib/session";
+import {
+  displaySessionName,
+  sessionKey,
+  sessionRefEquals,
+  sessionRefFromSession,
+  type SessionRef,
+} from "./lib/session";
 import { InputBar } from "./components/InputBar";
 import { MultiViewDashboard } from "./components/MultiViewDashboard";
 import { SessionTabs } from "./components/SessionTabs";
@@ -36,9 +42,10 @@ const statusLabels: Record<
 };
 
 const sessionHashKey = "session";
+const sessionCoordHashKey = "coord";
 const initialPreferences = loadPreferences();
 
-function readSessionHash() {
+function readSessionHash(): SessionRef | null {
   if (typeof window === "undefined") {
     return null;
   }
@@ -52,10 +59,14 @@ function readSessionHash() {
     return null;
   }
   const trimmed = session.trim();
-  return trimmed ? trimmed : null;
+  if (!trimmed) {
+    return null;
+  }
+  const coordinator = params.get(sessionCoordHashKey)?.trim() ?? "";
+  return { id: trimmed, coordinator };
 }
 
-function writeSessionHash(session: string | null) {
+function writeSessionHash(session: SessionRef | null) {
   if (typeof window === "undefined") {
     return;
   }
@@ -66,7 +77,10 @@ function writeSessionHash(session: string | null) {
     return;
   }
   const params = new URLSearchParams();
-  params.set(sessionHashKey, session);
+  params.set(sessionHashKey, session.id);
+  if (session.coordinator) {
+    params.set(sessionCoordHashKey, session.coordinator);
+  }
   url.hash = params.toString();
   window.history.replaceState(null, "", url.toString());
 }
@@ -95,17 +109,14 @@ function readRendererSetting(fallback: TerminalRenderer): TerminalRenderer {
 }
 
 type SelectedSession = {
-  key: string;
-  id: string;
+  ref: SessionRef;
   label: string;
-  coordinator: string;
   status: SessionInfo["status"];
   exitCode?: number;
 };
 
 type SessionDetails = {
-  key: string;
-  coordinator: string;
+  ref: SessionRef;
   session: SessionInfo;
 };
 
@@ -113,32 +124,39 @@ function formatSessionLabel(_coordinator: string, label: string) {
   return displaySessionName(label);
 }
 
-function findSessionDetails(coordinators: CoordinatorInfo[], key: string): SessionDetails | null {
+function findSessionDetails(coordinators: CoordinatorInfo[], ref: SessionRef): SessionDetails | null {
+  const id = ref.id.trim();
+  if (!id) {
+    return null;
+  }
+  let fallback: SessionDetails | null = null;
   for (const coord of coordinators) {
     for (const session of coord.sessions) {
-      const idKey = sessionKey(coord.name, session);
-      if (idKey && (idKey === key || matchesSessionKey(coord.name, session, key))) {
-        return { key: idKey, coordinator: coord.name, session };
+      if (!session.id || session.id !== id) {
+        continue;
       }
+      const sessionRef = sessionRefFromSession(coord.name, session);
+      if (ref.coordinator && sessionRef.coordinator !== ref.coordinator) {
+        if (!fallback) {
+          fallback = { ref: sessionRef, session };
+        }
+        continue;
+      }
+      return { ref: sessionRef, session };
     }
   }
-  return null;
+  return fallback;
 }
 
-function findSession(
-  coordinators: CoordinatorInfo[],
-  key: string,
-): SelectedSession | null {
-  const details = findSessionDetails(coordinators, key);
+function findSession(coordinators: CoordinatorInfo[], ref: SessionRef): SelectedSession | null {
+  const details = findSessionDetails(coordinators, ref);
   if (!details) {
     return null;
   }
   const session = details.session;
   return {
-    key: details.key,
-    id: session.id,
+    ref: details.ref,
     label: session.name,
-    coordinator: details.coordinator,
     status: session.status,
     exitCode: session.exitCode,
   };
@@ -146,7 +164,7 @@ function findSession(
 
 export default function App() {
   const [coordinators, setCoordinators] = useState<CoordinatorInfo[]>([]);
-  const [activeSession, setActiveSession] = useState<string | null>(null);
+  const [activeSession, setActiveSession] = useState<SessionRef | null>(null);
   const [selectedSession, setSelectedSession] = useState<SelectedSession | null>(null);
   const [viewMode, setViewMode] = useState<"single" | "multi">("single");
   const [screen, setScreen] = useState<ScreenState | null>(null);
@@ -174,10 +192,8 @@ export default function App() {
   const [contextMenu, setContextMenu] = useState<{
     x: number;
     y: number;
-    sessionKey: string;
-    sessionId: string;
+    sessionRef: SessionRef;
     sessionLabel: string;
-    coordinator: string;
     status: SessionInfo["status"];
   } | null>(null);
   const [renameOpen, setRenameOpen] = useState(false);
@@ -268,9 +284,19 @@ export default function App() {
     }
     return findSessionDetails(coordinators, selectedSession.key);
   }, [coordinators, selectedSession]);
+  const activeSessionRef = useMemo(() => {
+    if (!activeSession) {
+      return null;
+    }
+    const details = findSessionDetails(coordinators, activeSession);
+    return {
+      id: (details?.session.id || activeSession).trim(),
+      coordinator: details?.coordinator ?? "",
+    };
+  }, [activeSession, coordinators]);
 
   const { state, setEventHandler, sendText, sendKey, sendTextTo, sendKeyTo, resize, close } =
-    useVtrStream(activeSession, {
+    useVtrStream(activeSessionRef, {
       includeRawOutput: false,
     });
 
@@ -628,9 +654,14 @@ export default function App() {
       const resolvedTargets = targets.map((key) => {
         const match = findSession(coordinators, key);
         if (!match) {
-          return { key, label: key };
+          return { key, id: key, coordinator: "", label: key };
         }
-        return { key, label: formatSessionLabel(match.coordinator, match.label) };
+        return {
+          key,
+          id: match.id || key,
+          coordinator: match.coordinator,
+          label: formatSessionLabel(match.coordinator, match.label),
+        };
       });
       const labels = resolvedTargets.map((target) => target.label);
       const preview = labels.length > 4 ? `${labels.slice(0, 4).join(", ")}…` : labels.join(", ");
@@ -643,9 +674,9 @@ export default function App() {
       }
       for (const target of resolvedTargets) {
         if (mode === "text") {
-          sendTextTo(target.key, value);
+          sendTextTo(target.id, value, target.coordinator);
         } else {
-          sendKeyTo(target.key, value);
+          sendKeyTo(target.id, value, target.coordinator);
         }
       }
       return true;
@@ -748,7 +779,12 @@ export default function App() {
     setRenameBusy(true);
     setRenameError(null);
     try {
-      await sendSessionAction({ id: contextMenu.sessionId, action: "rename", newName: nextName });
+      await sendSessionAction({
+        id: contextMenu.sessionId,
+        coordinator,
+        action: "rename",
+        newName: nextName,
+      });
       setSelectedSession((prev) =>
         prev && prev.id === contextMenu.sessionId ? { ...prev, label: nextName } : prev,
       );
@@ -769,13 +805,13 @@ export default function App() {
         if (!window.confirm(`Remove exited session ${label}?`)) {
           return;
         }
-        runSessionAction({ id: session.id || sessionKey, action: "remove" });
+        runSessionAction({ id: session.id || sessionKey, coordinator, action: "remove" });
         return;
       }
       if (!window.confirm(`Close session ${label}?`)) {
         return;
       }
-      runSessionAction({ id: session.id || sessionKey, action: "close" });
+      runSessionAction({ id: session.id || sessionKey, coordinator, action: "close" });
     },
     [coordinators, runSessionAction],
   );
@@ -1350,7 +1386,11 @@ export default function App() {
                   if (!window.confirm(`Close session ${contextLabel}?`)) {
                     return;
                   }
-                  runSessionAction({ id: contextMenu.sessionId, action: "close" });
+                  runSessionAction({
+                    id: contextMenu.sessionId,
+                    coordinator: contextMenu.coordinator,
+                    action: "close",
+                  });
                 }}
                 disabled={!contextRunning}
               >
@@ -1370,7 +1410,12 @@ export default function App() {
                   if (!window.confirm(`Force kill ${contextLabel}?`)) {
                     return;
                   }
-                  runSessionAction({ id: contextMenu.sessionId, action: "signal", signal: "KILL" });
+                  runSessionAction({
+                    id: contextMenu.sessionId,
+                    coordinator: contextMenu.coordinator,
+                    action: "signal",
+                    signal: "KILL",
+                  });
                 }}
                 disabled={!contextRunning}
               >
@@ -1388,7 +1433,12 @@ export default function App() {
                   if (!contextRunning) {
                     return;
                   }
-                  runSessionAction({ id: contextMenu.sessionId, action: "send_key", key: "ctrl+c" });
+                  runSessionAction({
+                    id: contextMenu.sessionId,
+                    coordinator: contextMenu.coordinator,
+                    action: "send_key",
+                    key: "ctrl+c",
+                  });
                 }}
                 disabled={!contextRunning}
               >
@@ -1405,7 +1455,12 @@ export default function App() {
                   if (!contextRunning) {
                     return;
                   }
-                  runSessionAction({ id: contextMenu.sessionId, action: "send_key", key: "ctrl+z" });
+                  runSessionAction({
+                    id: contextMenu.sessionId,
+                    coordinator: contextMenu.coordinator,
+                    action: "send_key",
+                    key: "ctrl+z",
+                  });
                 }}
                 disabled={!contextRunning}
               >
@@ -1422,7 +1477,12 @@ export default function App() {
                   if (!contextRunning) {
                     return;
                   }
-                  runSessionAction({ id: contextMenu.sessionId, action: "send_key", key: "ctrl+d" });
+                  runSessionAction({
+                    id: contextMenu.sessionId,
+                    coordinator: contextMenu.coordinator,
+                    action: "send_key",
+                    key: "ctrl+d",
+                  });
                 }}
                 disabled={!contextRunning}
               >
@@ -1436,7 +1496,11 @@ export default function App() {
                   if (!window.confirm(`Remove session ${contextLabel}?`)) {
                     return;
                   }
-                  runSessionAction({ id: contextMenu.sessionId, action: "remove" });
+                  runSessionAction({
+                    id: contextMenu.sessionId,
+                    coordinator: contextMenu.coordinator,
+                    action: "remove",
+                  });
                 }}
               >
                 Remove session
