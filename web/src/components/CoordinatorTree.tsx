@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { cn } from "../lib/utils";
-import { displaySessionName } from "../lib/session";
+import { displaySessionName, sessionKey } from "../lib/session";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "./ui/Accordion";
 import { Badge } from "./ui/Badge";
 
@@ -103,15 +103,14 @@ export function CoordinatorTree({
           <AccordionContent>
             <div className="flex flex-col gap-2">
               {coord.sessions.map((session) => {
-                const ref = session.id || session.name;
-                const sessionKey = `${coord.name}:${ref}`;
+                const sessionKeyValue = sessionKey(coord.name, session);
                 return (
                   <button
-                    key={sessionKey}
+                    key={sessionKeyValue}
                     type="button"
                     onClick={() =>
                       onSelect({
-                        name: sessionKey,
+                        name: sessionKeyValue,
                         status: session.status,
                         exitCode: session.exitCode,
                       })
@@ -120,7 +119,7 @@ export function CoordinatorTree({
                       "flex items-center justify-between rounded-lg border border-transparent",
                       "bg-tn-panel px-3 py-2 text-left text-sm",
                       "hover:border-tn-border",
-                      activeSession === sessionKey && "border-tn-accent",
+                      activeSession === sessionKeyValue && "border-tn-accent",
                     )}
                   >
                     <div className="flex flex-col">

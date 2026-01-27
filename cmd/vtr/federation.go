@@ -1336,6 +1336,7 @@ func (s *federatedServer) watchSpokeSessions(ctx context.Context, target spokeTa
 				if excludeExited {
 					sessions = filterSessions(sessions, true)
 				}
+				sessions = prefixSessions(target.Name, sessions, false)
 				state.setCoordinatorSessions(target.Name, target.Addr, sessions)
 				signal.pulse()
 				return nil

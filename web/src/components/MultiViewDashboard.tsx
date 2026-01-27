@@ -1,7 +1,7 @@
 import { Check } from "lucide-react";
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SubscribeEvent } from "../lib/proto";
-import { displaySessionName } from "../lib/session";
+import { displaySessionName, sessionKey } from "../lib/session";
 import { applyScreenUpdate, type ScreenState } from "../lib/terminal";
 import { cn } from "../lib/utils";
 import { useVtrStream } from "../lib/ws";
@@ -36,11 +36,6 @@ const statusVariants: Record<
   exited: { label: "exited", variant: "red" },
   unknown: { label: "unknown", variant: "default" },
 };
-
-function sessionKey(coord: string, session: SessionInfo) {
-  const ref = session.id || session.name;
-  return `${coord}:${ref}`;
-}
 
 function normalizeStatusFilter(value: string): SessionInfo["status"] | null {
   switch (value) {
