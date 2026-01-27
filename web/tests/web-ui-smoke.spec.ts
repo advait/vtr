@@ -16,7 +16,6 @@ const tmpDir = process.env.TMPDIR ?? "/tmp";
 const socketPath = path.join(tmpDir, `vtr-playwright-${process.pid}.sock`);
 const vtrBinary = path.join(tmpDir, `vtr-playwright-${process.pid}`);
 const port = 18080 + (process.pid % 1000);
-const grpcPort = 17080 + (process.pid % 1000);
 const baseURL = `http://127.0.0.1:${port}`;
 const sessionName = "web-smoke";
 const bootTimeoutMs = Number.parseInt(process.env.E2E_BOOT_TIMEOUT_MS ?? "10000", 10);
@@ -115,9 +114,7 @@ test.beforeAll(async () => {
       "hub",
       "--socket",
       socketPath,
-      "--grpc-addr",
-      `127.0.0.1:${grpcPort}`,
-      "--web-addr",
+      "--addr",
       `127.0.0.1:${port}`,
     ],
     repoRoot,
