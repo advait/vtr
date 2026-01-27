@@ -37,7 +37,8 @@ type sessionItem struct {
 }
 
 type jsonList struct {
-	Sessions []jsonSession `json:"sessions"`
+	Sessions     []jsonSession     `json:"sessions"`
+	Coordinators []jsonCoordinator `json:"coordinators,omitempty"`
 }
 
 type jsonSessionEnvelope struct {
@@ -96,8 +97,9 @@ type jsonIdle struct {
 }
 
 type jsonCoordinator struct {
-	Name string `json:"name"`
-	Path string `json:"path"`
+	Name  string `json:"name"`
+	Path  string `json:"path"`
+	Error string `json:"error,omitempty"`
 }
 
 type jsonCoordinators struct {

@@ -80,7 +80,7 @@ outputs = ["web/dist/index.html"]
 
 [tasks.build]
 depends = ["proto", "shim", "web-build"]
-run = "bash -c 'set -euo pipefail; VERSION=$(git describe --tags --exact-match --match \"v*\" 2>/dev/null | sed \"s/^v//\" || cat VERSION); go build -o bin/vtr -ldflags \"-X main.Version=${VERSION}\" ./cmd/vtr'"
+run = "bash -c 'set -euo pipefail; VERSION=$(git describe --tags --match \"v*\" --dirty --always --long 2>/dev/null | sed \"s/^v//\"); if [[ -z \"$VERSION\" ]]; then VERSION=dev; fi; go build -o bin/vtr -ldflags \"-X main.Version=${VERSION}\" ./cmd/vtr'"
 env = { CGO_ENABLED = "1", CC = "clang", CXX = "clang++" }
 sources = [
   "VERSION",

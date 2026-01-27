@@ -56,17 +56,29 @@ export function SessionTabs({
     [coordinators],
   );
   const grouped = useMemo(() => {
-    const next: Array<{ coordinator: string; tabs: SessionTab[] }> = [];
+    const tabsByCoordinator = new Map<string, SessionTab[]>();
     for (const tab of sessions) {
-      const last = next[next.length - 1];
-      if (last && last.coordinator === tab.coordinator) {
-        last.tabs.push(tab);
+      const name = tab.coordinator.trim() || "unknown";
+      const list = tabsByCoordinator.get(name);
+      if (list) {
+        list.push(tab);
       } else {
-        next.push({ coordinator: tab.coordinator, tabs: [tab] });
+        tabsByCoordinator.set(name, [tab]);
+      }
+    }
+
+    const known = new Set(availableCoordinators.map((coord) => coord.name));
+    const next: Array<{ coordinator: string; tabs: SessionTab[] }> = [];
+    for (const coord of availableCoordinators) {
+      next.push({ coordinator: coord.name, tabs: tabsByCoordinator.get(coord.name) ?? [] });
+    }
+    for (const [name, tabs] of tabsByCoordinator) {
+      if (!known.has(name)) {
+        next.push({ coordinator: name, tabs });
       }
     }
     return next;
-  }, [sessions]);
+  }, [availableCoordinators, sessions]);
 
   const longPressTimerRef = useRef<number | null>(null);
   const longPressTriggeredRef = useRef(false);
@@ -114,47 +126,32 @@ export function SessionTabs({
       )}
     >
       <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
-        {sessions.length === 0 ? (
-          <div className="flex flex-wrap items-center gap-2 px-2 py-1 text-xs text-tn-text-dim">
-            <span className="px-1">No sessions yet.</span>
-            {availableCoordinators.length > 0 ? (
-              <div className="flex flex-wrap items-center gap-2">
-                {availableCoordinators.map((coord) => (
-                  <div
-                    key={coord.name}
-                    className="flex items-center gap-1 rounded-full border border-tn-border bg-tn-panel px-2 py-1"
-                  >
-                    <span className="text-[10px] uppercase tracking-wide text-tn-text-dim">
-                      {coord.name}
-                    </span>
-                    {onCreate && (
-                      <button
-                        type="button"
-                        className={cn(
-                          "flex h-5 w-5 items-center justify-center rounded-full text-[10px]",
-                          "bg-tn-panel text-tn-text",
-                          "hover:bg-tn-panel-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tn-accent",
-                        )}
-                        onClick={() => onCreate(coord.name)}
-                        aria-label={`New session in ${coord.name}`}
-                        title={`New session in ${coord.name}`}
-                      >
-                        <Plus className="h-3 w-3" aria-hidden="true" />
-                      </button>
-                    )}
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <span className="px-1 text-[11px] text-tn-muted">No coordinators available.</span>
-            )}
-          </div>
+        {sessions.length === 0 && (
+          <span className="px-1 text-xs text-tn-text-dim">No sessions yet.</span>
+        )}
+        {grouped.length === 0 ? (
+          <span className="px-1 text-[11px] text-tn-muted">No coordinators available.</span>
         ) : (
           grouped.map((group) => (
             <div key={group.coordinator} className="flex shrink-0 items-center gap-2">
               <span className="rounded-full px-2 py-1 text-[10px] uppercase tracking-wide text-tn-text-dim">
                 {group.coordinator}
               </span>
+              {onCreate && (
+                <button
+                  type="button"
+                  className={cn(
+                    "flex h-5 w-5 items-center justify-center rounded-full text-[10px]",
+                    "bg-tn-panel text-tn-text",
+                    "hover:bg-tn-panel-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tn-accent",
+                  )}
+                  onClick={() => onCreate(group.coordinator)}
+                  aria-label={`New session in ${group.coordinator}`}
+                  title={`New session in ${group.coordinator}`}
+                >
+                  <Plus className="h-3 w-3" aria-hidden="true" />
+                </button>
+              )}
               {group.tabs.map(({ key, session }) => {
                 const isActive = activeSession === key;
                 const label = displaySessionName(session.name);
@@ -206,21 +203,6 @@ export function SessionTabs({
               })}
             </div>
           ))
-        )}
-        {onCreate && sessions.length > 0 && (
-          <button
-            type="button"
-            className={cn(
-              "flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-sm",
-              "bg-tn-panel text-tn-text",
-              "hover:bg-tn-panel-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tn-accent",
-            )}
-            onClick={() => onCreate()}
-            aria-label="New session"
-            title="New session"
-          >
-            <Plus className="h-4 w-4" aria-hidden="true" />
-          </button>
         )}
       </div>
     </div>

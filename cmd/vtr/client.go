@@ -43,14 +43,28 @@ func newListCmd() *cobra.Command {
 				return err
 			}
 			items := make([]sessionItem, 0)
+			coords := make([]jsonCoordinator, 0)
 			ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 			err = withCoordinator(ctx, target, cfg, func(client proto.VTRClient) error {
+				snapshot, snapErr := fetchSessionsSnapshot(ctx, client)
+				if snapErr == nil && snapshot != nil {
+					items, coords = snapshotToItems(snapshot, target)
+					return nil
+				}
 				resp, err := client.List(ctx, &proto.ListRequest{})
 				if err != nil {
+					if snapErr != nil {
+						return fmt.Errorf("subscribe sessions: %w", snapErr)
+					}
 					return err
 				}
 				for _, session := range resp.Sessions {
 					items = append(items, sessionItem{Coordinator: target.Name, Session: session})
+				}
+				if snapErr != nil {
+					coords = []jsonCoordinator{{Name: target.Name, Path: target.Path, Error: snapErr.Error()}}
+				} else {
+					coords = []jsonCoordinator{{Name: target.Name, Path: target.Path}}
 				}
 				return nil
 			})
@@ -74,6 +88,9 @@ func newListCmd() *cobra.Command {
 					rightOrder = right.Session.GetOrder()
 				}
 				if leftOrder == rightOrder {
+					if leftName == rightName {
+						return left.Coordinator < right.Coordinator
+					}
 					return leftName < rightName
 				}
 				if leftOrder == 0 {
@@ -84,11 +101,74 @@ func newListCmd() *cobra.Command {
 				}
 				return leftOrder < rightOrder
 			})
-			return writeJSON(cmd.OutOrStdout(), sessionsToJSON(items))
+			return writeJSON(cmd.OutOrStdout(), listToJSON(items, coords))
 		},
 	}
 	addHubFlag(cmd, &hub)
 	return cmd
+}
+
+func fetchSessionsSnapshot(ctx context.Context, client proto.VTRClient) (*proto.SessionsSnapshot, error) {
+	stream, err := client.SubscribeSessions(ctx, &proto.SubscribeSessionsRequest{})
+	if err != nil {
+		return nil, err
+	}
+	snapshot, err := stream.Recv()
+	if err != nil {
+		return nil, err
+	}
+	return snapshot, nil
+}
+
+func snapshotToItems(snapshot *proto.SessionsSnapshot, fallback coordinatorRef) ([]sessionItem, []jsonCoordinator) {
+	if snapshot == nil {
+		return nil, nil
+	}
+	coords := snapshot.GetCoordinators()
+	items := make([]sessionItem, 0)
+	out := make([]jsonCoordinator, 0, len(coords))
+	for _, coord := range coords {
+		if coord == nil {
+			continue
+		}
+		name := strings.TrimSpace(coord.GetName())
+		path := strings.TrimSpace(coord.GetPath())
+		if name == "" && path != "" {
+			name = coordinatorName(path)
+		}
+		if name == "" {
+			name = fallback.Name
+		}
+		if name == "" {
+			name = "unknown"
+		}
+		out = append(out, jsonCoordinator{
+			Name:  name,
+			Path:  path,
+			Error: strings.TrimSpace(coord.GetError()),
+		})
+		for _, session := range coord.GetSessions() {
+			items = append(items, sessionItem{Coordinator: name, Session: session})
+		}
+	}
+	if len(out) == 0 && (fallback.Name != "" || fallback.Path != "") {
+		out = append(out, jsonCoordinator{Name: fallback.Name, Path: fallback.Path})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Name == out[j].Name {
+			return out[i].Path < out[j].Path
+		}
+		return out[i].Name < out[j].Name
+	})
+	return items, out
+}
+
+func listToJSON(items []sessionItem, coords []jsonCoordinator) jsonList {
+	out := sessionsToJSON(items)
+	if len(coords) > 0 {
+		out.Coordinators = coords
+	}
+	return out
 }
 
 func newSpawnCmd() *cobra.Command {
