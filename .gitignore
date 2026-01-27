@@ -30,6 +30,9 @@ coverage/
 /web/test-results/
 /web/playwright-report/
 
+# Web UI screenshots
+/docs/screenshots/
+
 # Temp files
 *.swp
 *.swo
