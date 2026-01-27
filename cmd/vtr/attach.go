@@ -336,8 +336,6 @@ var (
 	attachListCreateStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("120")).
 				Bold(true)
-	attachTabSeparatorStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("240"))
 	attachOverflowStyle = attachTabBaseStyle.Copy().
 				Foreground(lipgloss.Color("244"))
 	attachModalStyle = lipgloss.NewStyle().
@@ -2480,7 +2478,6 @@ const (
 	sessionIconUnknown = "?"
 	tabOverflowGlyph   = "…"
 	tabNewGlyph        = "+"
-	tabSeparatorGlyph  = "|"
 	tabNameMaxWidth    = 20
 	tabCoordMaxWidth   = 16
 	sessionListIndent  = "  "
@@ -2686,15 +2683,7 @@ func renderTabBar(view headerView) string {
 	if len(tabs) == 0 || view.width <= 0 {
 		return ""
 	}
-	return joinTabItems(tabs, tabGapString())
-}
-
-func tabGapString() string {
-	return " " + attachTabSeparatorStyle.Render(tabSeparatorGlyph) + " "
-}
-
-func tabGapWidth() int {
-	return lipgloss.Width(tabGapString())
+	return joinTabItems(tabs)
 }
 
 func renderNewTabLabel(hovered bool) string {
@@ -2925,6 +2914,7 @@ func visibleTabsWithWidth(view headerView, width int) []tabItem {
 	}
 	return fitTabsToWidthItems(tabs, activeIdx, width)
 }
+
 func tabAtOffsetX(view headerView, offset int) (tabItem, bool) {
 	if offset < 0 {
 		return tabItem{}, false
@@ -2933,7 +2923,6 @@ func tabAtOffsetX(view headerView, offset int) (tabItem, bool) {
 	if len(tabs) == 0 {
 		return tabItem{}, false
 	}
-	gapWidth := tabGapWidth()
 	cursor := 0
 	for i, tab := range tabs {
 		if offset >= cursor && offset < cursor+tab.width {
@@ -2950,14 +2939,25 @@ func tabAtOffsetX(view headerView, offset int) (tabItem, bool) {
 		}
 		cursor += tab.width
 		if i < len(tabs)-1 {
-			cursor += gapWidth
+			cursor += tabGapWidthBetween(tab, tabs[i+1])
 		}
 	}
 	return tabItem{}, false
 }
 
+func tabGapBetween(prev, next tabItem) string {
+	if next.kind == tabItemCoordinator {
+		return " "
+	}
+	return ""
+}
+
+func tabGapWidthBetween(prev, next tabItem) int {
+	return lipgloss.Width(tabGapBetween(prev, next))
+}
+
 func fitTabsToWidth(tabs []tabItem, activeIdx, width int) string {
-	return joinTabItems(fitTabsToWidthItems(tabs, activeIdx, width), " ")
+	return joinTabItems(fitTabsToWidthItems(tabs, activeIdx, width))
 }
 
 func overflowLabel(count int, left bool) string {
@@ -2983,8 +2983,7 @@ func fitTabsToWidthItems(tabs []tabItem, activeIdx, width int) []tabItem {
 	if len(tabs) == 0 || width <= 0 {
 		return nil
 	}
-	gapWidth := tabGapWidth()
-	if tabItemsWidth(tabs, gapWidth) <= width {
+	if tabItemsWidth(tabs) <= width {
 		return tabs
 	}
 	if activeIdx < 0 || activeIdx >= len(tabs) {
@@ -2999,7 +2998,7 @@ func fitTabsToWidthItems(tabs []tabItem, activeIdx, width int) []tabItem {
 		added := false
 		if left >= 0 {
 			candidate := append([]tabItem{tabs[left]}, selected...)
-			if tabItemsWidth(candidate, gapWidth) <= width {
+			if tabItemsWidth(candidate) <= width {
 				selected = candidate
 				leftIndex = left
 				left--
@@ -3008,7 +3007,7 @@ func fitTabsToWidthItems(tabs []tabItem, activeIdx, width int) []tabItem {
 		}
 		if right < len(tabs) {
 			candidate := append(append([]tabItem(nil), selected...), tabs[right])
-			if tabItemsWidth(candidate, gapWidth) <= width {
+			if tabItemsWidth(candidate) <= width {
 				selected = candidate
 				rightIndex = right
 				right++
@@ -3030,7 +3029,7 @@ func fitTabsToWidthItems(tabs []tabItem, activeIdx, width int) []tabItem {
 		if rightHidden > 0 {
 			candidate = append(candidate, overflowTabItem(rightHidden, false))
 		}
-		return tabItemsWidth(candidate, gapWidth)
+		return tabItemsWidth(candidate)
 	}
 	if leftHidden > 0 {
 		for candidateWidth(leftHidden, rightHidden) > width && len(selected) > 1 {
@@ -3056,25 +3055,28 @@ func fitTabsToWidthItems(tabs []tabItem, activeIdx, width int) []tabItem {
 	}
 	return out
 }
-func tabItemsWidth(tabs []tabItem, gapWidth int) int {
+func tabItemsWidth(tabs []tabItem) int {
 	if len(tabs) == 0 {
 		return 0
 	}
-	total := gapWidth * (len(tabs) - 1)
-	for _, tab := range tabs {
+	total := 0
+	for i, tab := range tabs {
 		total += tab.width
+		if i < len(tabs)-1 {
+			total += tabGapWidthBetween(tab, tabs[i+1])
+		}
 	}
 	return total
 }
 
-func joinTabItems(tabs []tabItem, gap string) string {
+func joinTabItems(tabs []tabItem) string {
 	if len(tabs) == 0 {
 		return ""
 	}
 	var b strings.Builder
 	for i, tab := range tabs {
 		if i > 0 {
-			b.WriteString(gap)
+			b.WriteString(tabGapBetween(tabs[i-1], tab))
 		}
 		b.WriteString(tab.label)
 	}
