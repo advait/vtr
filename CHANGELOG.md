@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.0.4 - 2026-01-27
+- Federation: make tunnel the canonical federation path and add hub-only mode.
+- Sessions: stream SessionsSnapshot for SubscribeSessions and update the TUI for snapshot/empty list handling.
+- Web UI: add hub info in settings, improve empty-create handling, and refresh session tabs.
+- CLI: improve client output formatting.
+- Tests: fix web e2e hub flags.
+
 ## v0.0.3 - 2026-01-26
 - Add hub-spoke federation aggregation, tunnel-based routing, and coordinator-scoped session targeting across clients.
 - Improve session routing robustness with rename-safe session IDs and coordinator-aware session grouping in the TUI.
