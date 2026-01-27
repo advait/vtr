@@ -1,29 +1,30 @@
 import { Plus } from "lucide-react";
 import { type MouseEvent, type TouchEvent, useMemo, useRef } from "react";
 import { cn } from "../lib/utils";
-import { displaySessionName } from "../lib/session";
+import { displaySessionName, sessionRefEquals, type SessionRef } from "../lib/session";
 import type { CoordinatorInfo, SessionInfo } from "./CoordinatorTree";
 
 export type SessionTab = {
   key: string;
   coordinator: string;
+  ref: SessionRef;
   session: SessionInfo;
 };
 
 type SessionTabsProps = {
   sessions: SessionTab[];
   coordinators?: CoordinatorInfo[];
-  activeSession: string | null;
-  onSelect: (sessionKey: string, session: SessionInfo) => void;
-  onClose: (sessionKey: string, session: SessionInfo) => void;
+  activeSession: SessionRef | null;
+  onSelect: (ref: SessionRef, session: SessionInfo) => void;
+  onClose: (ref: SessionRef, session: SessionInfo) => void;
   onContextMenu: (
     event: MouseEvent<HTMLDivElement>,
-    sessionKey: string,
+    ref: SessionRef,
     session: SessionInfo,
   ) => void;
   onContextMenuAt?: (
     coords: { x: number; y: number },
-    sessionKey: string,
+    ref: SessionRef,
     session: SessionInfo,
   ) => void;
   onCreate?: (coordinator?: string) => void;
@@ -92,7 +93,7 @@ export function SessionTabs({
 
   const handleTouchStart = (
     event: TouchEvent<HTMLDivElement>,
-    sessionKey: string,
+    ref: SessionRef,
     session: SessionInfo,
   ) => {
     if (!onContextMenuAt) {
@@ -106,7 +107,7 @@ export function SessionTabs({
     longPressTriggeredRef.current = false;
     longPressTimerRef.current = window.setTimeout(() => {
       longPressTriggeredRef.current = true;
-      onContextMenuAt({ x: clientX, y: clientY }, sessionKey, session);
+      onContextMenuAt({ x: clientX, y: clientY }, ref, session);
     }, 500);
   };
 
@@ -152,8 +153,8 @@ export function SessionTabs({
                   <Plus className="h-3 w-3" aria-hidden="true" />
                 </button>
               )}
-              {group.tabs.map(({ key, session }) => {
-                const isActive = activeSession === key;
+              {group.tabs.map(({ key, session, ref }) => {
+                const isActive = sessionRefEquals(activeSession, ref);
                 const label = displaySessionName(session.name);
                 const title = label;
                 return (
@@ -175,23 +176,23 @@ export function SessionTabs({
                         event.preventDefault();
                         return;
                       }
-                      onSelect(key, session);
+                      onSelect(ref, session);
                     }}
                     onKeyDown={(event) => {
                       if (event.key === "Enter" || event.key === " ") {
                         event.preventDefault();
-                        onSelect(key, session);
+                        onSelect(ref, session);
                       }
                     }}
                     onMouseDown={(event) => {
                       if (event.button === 1) {
                         event.preventDefault();
                         event.stopPropagation();
-                        onClose(key, session);
+                        onClose(ref, session);
                       }
                     }}
-                    onContextMenu={(event) => onContextMenu(event, key, session)}
-                    onTouchStart={(event) => handleTouchStart(event, key, session)}
+                    onContextMenu={(event) => onContextMenu(event, ref, session)}
+                    onTouchStart={(event) => handleTouchStart(event, ref, session)}
                     onTouchEnd={handleTouchEnd}
                     onTouchMove={handleTouchMove}
                     onTouchCancel={handleTouchEnd}

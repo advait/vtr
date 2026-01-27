@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { cn } from "../lib/utils";
-import { displaySessionName, sessionKey } from "../lib/session";
+import { displaySessionName, sessionKey, sessionRefEquals, sessionRefFromSession, type SessionRef } from "../lib/session";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "./ui/Accordion";
 import { Badge } from "./ui/Badge";
 
@@ -24,8 +24,8 @@ export type CoordinatorInfo = {
 export type CoordinatorTreeProps = {
   coordinators: CoordinatorInfo[];
   filter: string;
-  activeSession: string | null;
-  onSelect: (session: { name: string; status: SessionInfo["status"]; exitCode?: number }) => void;
+  activeSession: SessionRef | null;
+  onSelect: (ref: SessionRef, session: SessionInfo) => void;
 };
 
 function statusBadge(session: SessionInfo) {
@@ -104,22 +104,17 @@ export function CoordinatorTree({
             <div className="flex flex-col gap-2">
               {coord.sessions.map((session) => {
                 const sessionKeyValue = sessionKey(coord.name, session);
+                const sessionRef = sessionRefFromSession(coord.name, session);
                 return (
                   <button
                     key={sessionKeyValue}
                     type="button"
-                    onClick={() =>
-                      onSelect({
-                        name: sessionKeyValue,
-                        status: session.status,
-                        exitCode: session.exitCode,
-                      })
-                    }
+                    onClick={() => onSelect(sessionRef, session)}
                     className={cn(
                       "flex items-center justify-between rounded-lg border border-transparent",
                       "bg-tn-panel px-3 py-2 text-left text-sm",
                       "hover:border-tn-border",
-                      activeSession === sessionKeyValue && "border-tn-accent",
+                      sessionRefEquals(activeSession, sessionRef) && "border-tn-accent",
                     )}
                   >
                     <div className="flex flex-col">

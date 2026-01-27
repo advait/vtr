@@ -1,7 +1,7 @@
 import { Check } from "lucide-react";
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SubscribeEvent } from "../lib/proto";
-import { displaySessionName, sessionKey } from "../lib/session";
+import { displaySessionName, sessionKey, sessionRefEquals, sessionRefFromSession, type SessionRef } from "../lib/session";
 import { applyScreenUpdate, type ScreenState } from "../lib/terminal";
 import { cn } from "../lib/utils";
 import { useVtrStream } from "../lib/ws";
@@ -13,9 +13,9 @@ import { Input } from "./ui/Input";
 
 export type MultiViewDashboardProps = {
   coordinators: CoordinatorInfo[];
-  activeSession: string | null;
-  onSelect: (sessionKey: string, session: SessionInfo) => void;
-  onBroadcast: (mode: "text" | "key", value: string, targets: string[]) => boolean;
+  activeSession: SessionRef | null;
+  onSelect: (ref: SessionRef, session: SessionInfo) => void;
+  onBroadcast: (mode: "text" | "key", value: string, targets: SessionRef[]) => boolean;
 };
 
 type ThumbnailSize = "small" | "medium" | "large";
@@ -60,7 +60,7 @@ function normalizeStatusFilter(value: string): SessionInfo["status"] | null {
 
 function SessionThumbnail({
   session,
-  sessionKey,
+  sessionRef,
   active,
   selected,
   config,
@@ -68,16 +68,16 @@ function SessionThumbnail({
   onToggleSelect,
 }: {
   session: SessionInfo;
-  sessionKey: string;
+  sessionRef: SessionRef;
   active: boolean;
   selected: boolean;
   config: ThumbnailConfig;
-  onOpen: (sessionKey: string, session: SessionInfo) => void;
-  onToggleSelect: (sessionKey: string) => void;
+  onOpen: (ref: SessionRef, session: SessionInfo) => void;
+  onToggleSelect: (id: string) => void;
 }) {
-  const streamName =
-    session.status === "running" || session.status === "closing" ? sessionKey : null;
-  const { state, setEventHandler } = useVtrStream(streamName, { includeRawOutput: false });
+  const streamRef =
+    session.status === "running" || session.status === "closing" ? sessionRef : null;
+  const { state, setEventHandler } = useVtrStream(streamRef, { includeRawOutput: false });
   const [screen, setScreen] = useState<ScreenState | null>(null);
   const pendingUpdates = useRef<SubscribeEvent[]>([]);
   const rafRef = useRef<number | null>(null);
@@ -142,11 +142,11 @@ function SessionThumbnail({
         active && "border-tn-accent ring-1 ring-tn-accent",
         selected && "bg-tn-panel-2",
       )}
-      onClick={() => onOpen(sessionKey, session)}
+      onClick={() => onOpen(sessionRef, session)}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
-          onOpen(sessionKey, session);
+          onOpen(sessionRef, session);
         }
       }}
     >
@@ -160,7 +160,7 @@ function SessionThumbnail({
           )}
           onClick={(event) => {
             event.stopPropagation();
-            onToggleSelect(sessionKey);
+            onToggleSelect(sessionRef.id);
           }}
           aria-pressed={selected}
           aria-label={selected ? "Deselect session" : "Select session"}
@@ -312,6 +312,18 @@ export function MultiViewDashboard({
     return keys;
   }, [filtered]);
 
+  const sessionRefsById = useMemo(() => {
+    const map = new Map<string, SessionRef>();
+    for (const coord of coordinators) {
+      for (const session of coord.sessions) {
+        const id = session.id?.trim();
+        if (!id) continue;
+        map.set(id, sessionRefFromSession(coord.name, session));
+      }
+    }
+    return map;
+  }, [coordinators]);
+
   useEffect(() => {
     setSelectedSessions((prev) => {
       const next = new Set<string>();
@@ -329,13 +341,13 @@ export function MultiViewDashboard({
   }
 
   const selectedCount = selectedSessions.size;
-  const toggleSelect = (key: string) => {
+  const toggleSelect = (id: string) => {
     setSelectedSessions((prev) => {
       const next = new Set(prev);
-      if (next.has(key)) {
-        next.delete(key);
+      if (next.has(id)) {
+        next.delete(id);
       } else {
-        next.add(key);
+        next.add(id);
       }
       return next;
     });
@@ -347,7 +359,9 @@ export function MultiViewDashboard({
       return;
     }
     const payload = broadcastMode === "key" ? value.toLowerCase() : value;
-    const targets = Array.from(selectedSessions);
+    const targets = Array.from(selectedSessions)
+      .map((id) => sessionRefsById.get(id))
+      .filter((ref): ref is SessionRef => Boolean(ref));
     const sent = onBroadcast(broadcastMode, payload, targets);
     if (sent) {
       setBroadcastValue("");
@@ -488,14 +502,15 @@ export function MultiViewDashboard({
                 }}
               >
                 {coord.sessions.map((session) => {
+                  const ref = sessionRefFromSession(coord.name, session);
                   const key = sessionKey(coord.name, session);
                   return (
                     <SessionThumbnail
                       key={key}
                       session={session}
-                      sessionKey={key}
-                      active={activeSession === key}
-                      selected={selectedSessions.has(key)}
+                      sessionRef={ref}
+                      active={sessionRefEquals(activeSession, ref)}
+                      selected={selectedSessions.has(ref.id)}
                       config={thumbnailConfig}
                       onOpen={onSelect}
                       onToggleSelect={toggleSelect}

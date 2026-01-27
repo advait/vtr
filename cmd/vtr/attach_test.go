@@ -32,9 +32,9 @@ func TestSessionSnapshotPrefixingForSpokeOnly(t *testing.T) {
 	if items[0].label != "spoke-a:demo" {
 		t.Fatalf("expected prefixed label, got %q", items[0].label)
 	}
-	name, id := sessionRequestRef(items[0].id, items[0].label)
-	if name != "spoke-a:demo" || id != "" {
-		t.Fatalf("expected name-only request for federated session, got name=%q id=%q", name, id)
+	ref := sessionRequestRef(items[0].id, items[0].coord)
+	if ref.GetId() != "id-1" || ref.GetCoordinator() != "spoke-a" {
+		t.Fatalf("expected session ref with coordinator, got id=%q coord=%q", ref.GetId(), ref.GetCoordinator())
 	}
 }
 
@@ -60,9 +60,9 @@ func TestSessionSnapshotNoPrefixForHubOnly(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("expected one session item, got %d", len(items))
 	}
-	name, id := sessionRequestRef(items[0].id, items[0].label)
-	if name != "" || id != "id-2" {
-		t.Fatalf("expected id-based request for hub session, got name=%q id=%q", name, id)
+	ref := sessionRequestRef(items[0].id, items[0].coord)
+	if ref.GetId() != "id-2" || ref.GetCoordinator() != "hub" {
+		t.Fatalf("expected hub session ref, got id=%q coord=%q", ref.GetId(), ref.GetCoordinator())
 	}
 }
 

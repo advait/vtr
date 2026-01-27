@@ -1,5 +1,10 @@
 import type { SessionInfo } from "../components/CoordinatorTree";
 
+export type SessionRef = {
+  id: string;
+  coordinator: string;
+};
+
 export function displaySessionName(name: string): string {
   const trimmed = name.trim();
   if (!trimmed) {
@@ -12,34 +17,20 @@ export function displaySessionName(name: string): string {
   return trimmed.slice(splitIndex + 1);
 }
 
-export function sessionKey(coordinator: string, session: SessionInfo): string {
-  const id = session.id?.trim();
-  if (id) {
-    return id;
-  }
-  const name = session.name?.trim();
-  if (!name) {
-    return "";
-  }
-  const coord = coordinator.trim();
-  return coord ? `${coord}:${name}` : name;
+export function sessionKey(_coordinator: string, session: SessionInfo): string {
+  return session.id?.trim() ?? "";
 }
 
-export function matchesSessionKey(coordinator: string, session: SessionInfo, key: string): boolean {
-  const trimmed = key.trim();
-  if (!trimmed) {
+export function sessionRefFromSession(coordinator: string, session: SessionInfo): SessionRef {
+  return {
+    id: session.id?.trim() ?? "",
+    coordinator: coordinator.trim(),
+  };
+}
+
+export function sessionRefEquals(a: SessionRef | null, b: SessionRef | null): boolean {
+  if (!a || !b) {
     return false;
   }
-  if (session.id && session.id === trimmed) {
-    return true;
-  }
-  const name = session.name?.trim();
-  const coord = coordinator.trim();
-  if (session.id && coord && `${coord}:${session.id}` === trimmed) {
-    return true;
-  }
-  if (name && coord && `${coord}:${name}` === trimmed) {
-    return true;
-  }
-  return false;
+  return a.id === b.id && a.coordinator === b.coordinator;
 }

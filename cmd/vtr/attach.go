@@ -377,6 +377,14 @@ func newTuiCmd() *cobra.Command {
 			}
 
 			coords := initialCoordinatorRefs(cfg, targetCoord)
+			activeCoord := targetCoord
+			if strings.TrimSpace(target.Coordinator.Name) != "" {
+				activeCoord = target.Coordinator
+				coords = ensureCoordinator(coords, activeCoord)
+			} else if coordName, _, ok := parseSessionRef(target.Label); ok {
+				activeCoord = coordinatorRef{Name: coordName}
+				coords = ensureCoordinator(coords, activeCoord)
+			}
 			coordIdx := 0
 
 			conn, err := dialClient(context.Background(), targetCoord.Path, cfg)
@@ -402,7 +410,7 @@ func newTuiCmd() *cobra.Command {
 				conn:             conn,
 				client:           client,
 				hub:              targetCoord,
-				coordinator:      targetCoord,
+				coordinator:      activeCoord,
 				coords:           coords,
 				cfg:              cfg,
 				sessionID:        target.ID,
@@ -480,7 +488,11 @@ func resolveFirstSessionTarget(ctx context.Context, coord coordinatorRef, cfg *c
 		hadSuccess = true
 	}
 	if firstID != "" {
-		return sessionTarget{Coordinator: coord, ID: firstID, Label: firstLabel}, nil
+		resolvedCoord := coord
+		if parsedCoord, _, ok := parseSessionRef(firstLabel); ok {
+			resolvedCoord = coordinatorRef{Name: parsedCoord}
+		}
+		return sessionTarget{Coordinator: resolvedCoord, ID: firstID, Label: firstLabel}, nil
 	}
 	if !hadSuccess && len(errs) > 0 {
 		return sessionTarget{}, fmt.Errorf("unable to list sessions: %s", strings.Join(errs, "; "))
@@ -494,13 +506,25 @@ func resolveFirstSessionTarget(ctx context.Context, coord coordinatorRef, cfg *c
 func ensureSessionExists(client proto.VTRClient, ref string) (sessionTarget, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 	defer cancel()
+	snapshot, snapErr := fetchSessionsSnapshot(ctx, client)
+	if snapErr == nil && snapshot != nil {
+		items, _ := snapshotToItems(snapshot, coordinatorRef{})
+		id, label, coord, err := matchSessionRefWithCoordinator(ref, items)
+		if err == nil {
+			return sessionTarget{Coordinator: coordinatorRef{Name: coord}, ID: id, Label: label}, nil
+		}
+		if !errors.Is(err, errSessionNotFound) {
+			return sessionTarget{}, err
+		}
+	}
 	resp, err := client.List(ctx, &proto.ListRequest{})
 	if err != nil {
 		return sessionTarget{}, err
 	}
 	id, label, err := matchSessionRef(ref, resp.Sessions)
 	if err == nil {
-		return sessionTarget{ID: id, Label: label}, nil
+		coord, _ := splitCoordinatorPrefix(label, "")
+		return sessionTarget{Coordinator: coordinatorRef{Name: coord}, ID: id, Label: label}, nil
 	}
 	if !errors.Is(err, errSessionNotFound) {
 		return sessionTarget{}, err
@@ -519,7 +543,9 @@ func ensureSessionExists(client proto.VTRClient, ref string) (sessionTarget, err
 		return sessionTarget{}, err
 	}
 	if spawnResp != nil && spawnResp.Session != nil {
-		return sessionTarget{ID: spawnResp.Session.GetId(), Label: spawnResp.Session.GetName()}, nil
+		label := spawnResp.Session.GetName()
+		coord, _ := splitCoordinatorPrefix(label, "")
+		return sessionTarget{Coordinator: coordinatorRef{Name: coord}, ID: spawnResp.Session.GetId(), Label: label}, nil
 	}
 	ctx, cancel = context.WithTimeout(context.Background(), rpcTimeout)
 	defer cancel()
@@ -531,7 +557,8 @@ func ensureSessionExists(client proto.VTRClient, ref string) (sessionTarget, err
 	if err != nil {
 		return sessionTarget{}, err
 	}
-	return sessionTarget{ID: id, Label: label}, nil
+	coord, _ := splitCoordinatorPrefix(label, "")
+	return sessionTarget{Coordinator: coordinatorRef{Name: coord}, ID: id, Label: label}, nil
 }
 
 func confirmCreateSession(name string) (bool, error) {
@@ -560,7 +587,7 @@ func (m attachModel) Init() tea.Cmd {
 		tickCmd(),
 	}
 	if strings.TrimSpace(m.sessionID) != "" || strings.TrimSpace(m.sessionLabel) != "" {
-		cmds = append(cmds, startSubscribeCmd(m.client, m.sessionID, m.sessionLabel, m.streamID))
+		cmds = append(cmds, startSubscribeCmd(m.client, m.sessionID, m.coordinator.Name, m.streamID))
 	}
 	return tea.Batch(cmds...)
 }
@@ -713,7 +740,7 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.exited {
 				return m, nil
 			}
-			return m, resizeCmd(m.client, m.sessionID, m.sessionLabel, m.viewportWidth, m.viewportHeight)
+			return m, resizeCmd(m.client, m.sessionID, m.coordinator.Name, m.viewportWidth, m.viewportHeight)
 		}
 		return m, nil
 	case rpcErrMsg:
@@ -855,13 +882,12 @@ func (m attachModel) View() string {
 	return clampViewHeight(view, m.height)
 }
 
-func startSubscribeCmd(client proto.VTRClient, id, label string, streamID int) tea.Cmd {
+func startSubscribeCmd(client proto.VTRClient, id, coordinator string, streamID int) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithCancel(context.Background())
-		name, idRef := sessionRequestRef(id, label)
+		sessionRef := sessionRequestRef(id, coordinator)
 		stream, err := client.Subscribe(ctx, &proto.SubscribeRequest{
-			Name:                 name,
-			Id:                   idRef,
+			Session:              sessionRef,
 			IncludeScreenUpdates: true,
 			IncludeRawOutput:     false,
 		})
@@ -929,19 +955,18 @@ func tickCmd() tea.Cmd {
 	})
 }
 
-func resizeCmd(client proto.VTRClient, id, label string, cols, rows int) tea.Cmd {
+func resizeCmd(client proto.VTRClient, id, coordinator string, cols, rows int) tea.Cmd {
 	if cols <= 0 || rows <= 0 {
 		return nil
 	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 		defer cancel()
-		name, idRef := sessionRequestRef(id, label)
+		sessionRef := sessionRequestRef(id, coordinator)
 		_, err := client.Resize(ctx, &proto.ResizeRequest{
-			Name: name,
-			Id:   idRef,
-			Cols: int32(cols),
-			Rows: int32(rows),
+			Session: sessionRef,
+			Cols:    int32(cols),
+			Rows:    int32(rows),
 		})
 		if err != nil {
 			return rpcErrMsg{err: err, op: "resize"}
@@ -950,7 +975,7 @@ func resizeCmd(client proto.VTRClient, id, label string, cols, rows int) tea.Cmd
 	}
 }
 
-func sendBytesCmd(client proto.VTRClient, id, label string, data []byte) tea.Cmd {
+func sendBytesCmd(client proto.VTRClient, id, coordinator string, data []byte) tea.Cmd {
 	if len(data) == 0 {
 		return nil
 	}
@@ -958,11 +983,10 @@ func sendBytesCmd(client proto.VTRClient, id, label string, data []byte) tea.Cmd
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 		defer cancel()
-		name, idRef := sessionRequestRef(id, label)
+		sessionRef := sessionRequestRef(id, coordinator)
 		_, err := client.SendBytes(ctx, &proto.SendBytesRequest{
-			Name: name,
-			Id:   idRef,
-			Data: payload,
+			Session: sessionRef,
+			Data:    payload,
 		})
 		if err != nil {
 			return rpcErrMsg{err: err, op: "send bytes"}
@@ -971,18 +995,17 @@ func sendBytesCmd(client proto.VTRClient, id, label string, data []byte) tea.Cmd
 	}
 }
 
-func sendKeyCmd(client proto.VTRClient, id, label, key string) tea.Cmd {
+func sendKeyCmd(client proto.VTRClient, id, coordinator, key string) tea.Cmd {
 	if strings.TrimSpace(key) == "" {
 		return nil
 	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 		defer cancel()
-		name, idRef := sessionRequestRef(id, label)
+		sessionRef := sessionRequestRef(id, coordinator)
 		_, err := client.SendKey(ctx, &proto.SendKeyRequest{
-			Name: name,
-			Id:   idRef,
-			Key:  key,
+			Session: sessionRef,
+			Key:     key,
 		})
 		if err != nil {
 			return rpcErrMsg{err: err, op: "send key"}
@@ -991,18 +1014,17 @@ func sendKeyCmd(client proto.VTRClient, id, label, key string) tea.Cmd {
 	}
 }
 
-func killCmd(client proto.VTRClient, id, label string) tea.Cmd {
-	if id == "" && strings.TrimSpace(label) == "" {
+func killCmd(client proto.VTRClient, id, coordinator string) tea.Cmd {
+	if strings.TrimSpace(id) == "" {
 		return nil
 	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 		defer cancel()
-		name, idRef := sessionRequestRef(id, label)
+		sessionRef := sessionRequestRef(id, coordinator)
 		_, err := client.Kill(ctx, &proto.KillRequest{
-			Name:   name,
-			Id:     idRef,
-			Signal: "TERM",
+			Session: sessionRef,
+			Signal:  "TERM",
 		})
 		if err != nil {
 			return rpcErrMsg{err: err, op: "kill"}
@@ -1332,13 +1354,13 @@ func handleLeaderKey(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
 	}
 	switch key {
 	case "ctrl+b":
-		return m, sendKeyCmd(m.client, m.sessionID, m.sessionLabel, "ctrl+b")
+		return m, sendKeyCmd(m.client, m.sessionID, m.coordinator.Name, "ctrl+b")
 	case "d":
 		return m, tea.Quit
 	case "x":
 		m.statusMsg = "kill sent"
 		m.statusUntil = time.Now().Add(2 * time.Second)
-		return m, killCmd(m.client, m.sessionID, m.sessionLabel)
+		return m, killCmd(m.client, m.sessionID, m.coordinator.Name)
 	case "j", "n", "l":
 		return m, nextSessionCmd(m.client, m.sessionID, true, m.showExited)
 	case "k", "p", "h":
@@ -1500,15 +1522,14 @@ func handleMouse(m attachModel, msg tea.MouseMsg) (attachModel, tea.Cmd) {
 		if tab.id == "" || tab.id == m.sessionID {
 			return m, nil
 		}
-		coord, _ := splitCoordinatorPrefix(tab.sessionLabel, "")
-		return switchSession(m, sessionSwitchMsg{id: tab.id, label: tab.sessionLabel, coord: coord})
+		return switchSession(m, sessionSwitchMsg{id: tab.id, label: tab.sessionLabel, coord: tab.coord})
 	case tea.MouseButtonMiddle:
 		if tab.id == "" {
 			return m, nil
 		}
 		m.statusMsg = "kill sent"
 		m.statusUntil = time.Now().Add(2 * time.Second)
-		return m, killCmd(m.client, tab.id, tab.sessionLabel)
+		return m, killCmd(m.client, tab.id, tab.coord)
 	default:
 		return m, nil
 	}
@@ -1526,9 +1547,9 @@ func handleInputKey(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
 		return m, nil
 	}
 	if len(data) > 0 {
-		return m, sendBytesCmd(m.client, m.sessionID, m.sessionLabel, data)
+		return m, sendBytesCmd(m.client, m.sessionID, m.coordinator.Name, data)
 	}
-	return m, sendKeyCmd(m.client, m.sessionID, m.sessionLabel, key)
+	return m, sendKeyCmd(m.client, m.sessionID, m.coordinator.Name, key)
 }
 
 func inputForKey(msg tea.KeyMsg) (string, []byte, bool) {
@@ -1861,13 +1882,13 @@ func switchSession(m attachModel, msg sessionSwitchMsg) (attachModel, tea.Cmd) {
 	m.statusUntil = time.Now().Add(2 * time.Second)
 	m.sessionItems = ensureSessionItem(m.sessionItems, m.sessionID, m.sessionLabel, false, 0, m.coordinator.Name)
 	cmds := []tea.Cmd{
-		startSubscribeCmd(m.client, m.sessionID, m.sessionLabel, m.streamID),
+		startSubscribeCmd(m.client, m.sessionID, m.coordinator.Name, m.streamID),
 	}
 	cmd := m.sessionList.SetItems(sessionItemsToListItems(visibleSessionItems(m), m.coords, m.coordinator.Name))
 	skipSessionListHeaders(&m.sessionList, 1)
 	cmds = append(cmds, cmd)
 	if m.viewportWidth > 0 && m.viewportHeight > 0 {
-		cmds = append(cmds, resizeCmd(m.client, m.sessionID, m.sessionLabel, m.viewportWidth, m.viewportHeight))
+		cmds = append(cmds, resizeCmd(m.client, m.sessionID, m.coordinator.Name, m.viewportWidth, m.viewportHeight))
 	}
 	return m, tea.Batch(cmds...)
 }
@@ -2162,9 +2183,9 @@ func resubscribe(m attachModel, reason string) (attachModel, tea.Cmd) {
 		m.statusMsg = fmt.Sprintf("resync: %s", reason)
 		m.statusUntil = time.Now().Add(2 * time.Second)
 	}
-	cmds := []tea.Cmd{startSubscribeCmd(m.client, m.sessionID, m.sessionLabel, m.streamID)}
+	cmds := []tea.Cmd{startSubscribeCmd(m.client, m.sessionID, m.coordinator.Name, m.streamID)}
 	if m.viewportWidth > 0 && m.viewportHeight > 0 {
-		cmds = append(cmds, resizeCmd(m.client, m.sessionID, m.sessionLabel, m.viewportWidth, m.viewportHeight))
+		cmds = append(cmds, resizeCmd(m.client, m.sessionID, m.coordinator.Name, m.viewportWidth, m.viewportHeight))
 	}
 	return m, tea.Batch(cmds...)
 }
@@ -2627,16 +2648,13 @@ func sessionDisplayLabel(item sessionListItem) string {
 	return label
 }
 
-func sessionRequestRef(id, label string) (string, string) {
-	if strings.TrimSpace(label) != "" {
-		if _, _, ok := parseSessionRef(label); ok {
-			return label, ""
-		}
+func sessionRequestRef(id, coordinator string) *proto.SessionRef {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return &proto.SessionRef{}
 	}
-	if strings.TrimSpace(id) == "" {
-		return label, ""
-	}
-	return "", id
+	coord := strings.TrimSpace(coordinator)
+	return &proto.SessionRef{Id: id, Coordinator: coord}
 }
 func truncateTabName(name string, max int) string {
 	if max <= 0 {

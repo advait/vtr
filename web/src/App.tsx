@@ -229,13 +229,16 @@ export default function App() {
   const tabSessions = useMemo(() => {
     const entries: Array<{
       key: string;
+      ref: SessionRef;
       coordinator: string;
       session: SessionInfo;
     }> = [];
     for (const coord of visibleCoordinators) {
       for (const session of coord.sessions) {
+        const ref = sessionRefFromSession(coord.name, session);
         entries.push({
           key: sessionKey(coord.name, session),
+          ref,
           coordinator: coord.name,
           session,
         });
@@ -282,21 +285,11 @@ export default function App() {
     if (!selectedSession) {
       return null;
     }
-    return findSessionDetails(coordinators, selectedSession.key);
+    return findSessionDetails(coordinators, selectedSession.ref);
   }, [coordinators, selectedSession]);
-  const activeSessionRef = useMemo(() => {
-    if (!activeSession) {
-      return null;
-    }
-    const details = findSessionDetails(coordinators, activeSession);
-    return {
-      id: (details?.session.id || activeSession).trim(),
-      coordinator: details?.coordinator ?? "",
-    };
-  }, [activeSession, coordinators]);
 
   const { state, setEventHandler, sendText, sendKey, sendTextTo, sendKeyTo, resize, close } =
-    useVtrStream(activeSessionRef, {
+    useVtrStream(activeSession, {
       includeRawOutput: false,
     });
 
@@ -383,14 +376,14 @@ export default function App() {
       if (!prev) {
         return prev;
       }
-      const match = findSession(data, prev.key);
+      const match = findSession(data, prev.ref);
       if (!match) {
         return prev;
       }
       if (
         prev.status === match.status &&
         prev.exitCode === match.exitCode &&
-        prev.key === match.key &&
+        sessionRefEquals(prev.ref, match.ref) &&
         prev.label === match.label
       ) {
         return prev;
@@ -408,8 +401,8 @@ export default function App() {
       return;
     }
     const details = findSessionDetails(coordinators, activeSession);
-    if (details && details.key && details.key !== activeSession) {
-      setActiveSession(details.key);
+    if (details && !sessionRefEquals(details.ref, activeSession)) {
+      setActiveSession(details.ref);
     }
   }, [activeSession, coordinators]);
 
@@ -424,52 +417,48 @@ export default function App() {
       return;
     }
     setSelectedSession(match);
-    setActiveSession(match.status === "exited" ? null : match.key);
+    setActiveSession(match.status === "exited" ? null : match.ref);
   }, [hashSession, selectedSession, sessionsLoaded, visibleCoordinators]);
 
   useEffect(() => {
     if (!sessionsLoaded || hashSession || selectedSession || autoSelectedRef.current) {
       return;
     }
-    let fallback: { key: string; session: SessionInfo; coordinator: string } | null = null;
+    let fallback: { ref: SessionRef; session: SessionInfo } | null = null;
     for (const coord of visibleCoordinators) {
       for (const session of coord.sessions) {
-        const key = sessionKey(coord.name, session);
+        const ref = sessionRefFromSession(coord.name, session);
         if (session.status !== "exited") {
           setSelectedSession({
-            key,
-            id: session.id,
+            ref,
             label: session.name,
-            coordinator: coord.name,
             status: session.status,
             exitCode: session.exitCode,
           });
-          setActiveSession(key);
+          setActiveSession(ref);
           autoSelectedRef.current = true;
           return;
         }
         if (!fallback) {
-          fallback = { key, session, coordinator: coord.name };
+          fallback = { ref, session };
         }
       }
     }
     if (fallback) {
       setSelectedSession({
-        key: fallback.key,
-        id: fallback.session.id,
+        ref: fallback.ref,
         label: fallback.session.name,
-        coordinator: fallback.coordinator,
         status: fallback.session.status,
         exitCode: fallback.session.exitCode,
       });
-      setActiveSession(fallback.session.status === "exited" ? null : fallback.key);
+      setActiveSession(fallback.session.status === "exited" ? null : fallback.ref);
       autoSelectedRef.current = true;
     }
   }, [hashSession, selectedSession, sessionsLoaded, visibleCoordinators]);
 
   useEffect(() => {
     if (selectedSession) {
-      writeSessionHash(selectedSession.key);
+      writeSessionHash(selectedSession.ref);
     }
   }, [selectedSession]);
 
@@ -501,15 +490,15 @@ export default function App() {
     };
   }, [contextMenu]);
 
-  const selectedSessionKey = selectedSession?.key ?? null;
+  const selectedSessionId = selectedSession?.ref.id ?? null;
 
   useEffect(() => {
-    if (!selectedSessionKey) {
+    if (!selectedSessionId) {
       setScreen(null);
       return;
     }
     setScreen(null);
-  }, [selectedSessionKey]);
+  }, [selectedSessionId]);
 
   useEffect(() => {
     if (!selectedSession || selectedSession.status !== "exited") {
@@ -572,7 +561,7 @@ export default function App() {
         const exit = event.session_exited.exit_code ?? 0;
         setExitCode(exit);
         setSelectedSession((prev) => {
-          if (!prev || prev.key !== activeSession) {
+          if (!prev || !activeSession || !sessionRefEquals(prev.ref, activeSession)) {
             return prev;
           }
           return { ...prev, status: "exited", exitCode: exit };
@@ -643,7 +632,7 @@ export default function App() {
   );
 
   const handleBroadcast = useCallback(
-    (mode: "text" | "key", value: string, targets: string[]) => {
+    (mode: "text" | "key", value: string, targets: SessionRef[]) => {
       if (targets.length === 0) {
         return false;
       }
@@ -651,16 +640,14 @@ export default function App() {
         window.alert("Connect to a session before broadcasting.");
         return false;
       }
-      const resolvedTargets = targets.map((key) => {
-        const match = findSession(coordinators, key);
+      const resolvedTargets = targets.map((target) => {
+        const match = findSessionDetails(coordinators, target);
         if (!match) {
-          return { key, id: key, coordinator: "", label: key };
+          return { ref: target, label: target.id };
         }
         return {
-          key,
-          id: match.id || key,
-          coordinator: match.coordinator,
-          label: formatSessionLabel(match.coordinator, match.label),
+          ref: match.ref,
+          label: formatSessionLabel(match.ref.coordinator, match.session.name),
         };
       });
       const labels = resolvedTargets.map((target) => target.label);
@@ -674,9 +661,9 @@ export default function App() {
       }
       for (const target of resolvedTargets) {
         if (mode === "text") {
-          sendTextTo(target.id, value, target.coordinator);
+          sendTextTo(target.ref, value);
         } else {
-          sendKeyTo(target.id, value, target.coordinator);
+          sendKeyTo(target.ref, value);
         }
       }
       return true;
@@ -689,7 +676,7 @@ export default function App() {
       return;
     }
     const activeCoordinator =
-      (activeSession && findSessionDetails(coordinators, activeSession)?.coordinator) ?? "";
+      (activeSession && findSessionDetails(coordinators, activeSession)?.ref.coordinator) ?? "";
     const preferredCoordinator = coordinatorOverride?.trim() ?? "";
     const coordinator =
       (preferredCoordinator && coordinatorOptions.includes(preferredCoordinator)
@@ -717,16 +704,14 @@ export default function App() {
     setCreateBusy(true);
     try {
       const result = await createSession({ name, coordinator });
-      const sessionKeyValue = sessionKey(result.coordinator, result.session);
+      const ref = sessionRefFromSession(result.coordinator, result.session);
       setSelectedSession({
-        key: sessionKeyValue,
-        id: result.session.id,
+        ref,
         label: result.session.name,
-        coordinator: result.coordinator,
         status: result.session.status,
         exitCode: result.session.exitCode,
       });
-      setActiveSession(result.session.status === "exited" ? null : sessionKeyValue);
+      setActiveSession(result.session.status === "exited" ? null : ref);
       setViewMode("single");
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unable to create session.";
@@ -753,8 +738,10 @@ export default function App() {
     if (!contextMenu || renameBusy) {
       return;
     }
-    const currentKey = contextMenu.sessionKey;
-    const coordinator = findSessionDetails(coordinators, currentKey)?.coordinator ?? "";
+    const coordinator =
+      findSessionDetails(coordinators, contextMenu.sessionRef)?.ref.coordinator ??
+      contextMenu.sessionRef.coordinator ??
+      "";
     const nextName = renameDraft.trim();
     if (!nextName) {
       setRenameError("Name is required.");
@@ -780,13 +767,13 @@ export default function App() {
     setRenameError(null);
     try {
       await sendSessionAction({
-        id: contextMenu.sessionId,
+        id: contextMenu.sessionRef.id,
         coordinator,
         action: "rename",
         newName: nextName,
       });
       setSelectedSession((prev) =>
-        prev && prev.id === contextMenu.sessionId ? { ...prev, label: nextName } : prev,
+        prev && prev.ref.id === contextMenu.sessionRef.id ? { ...prev, label: nextName } : prev,
       );
       setContextMenu(null);
     } catch (err) {
@@ -798,26 +785,26 @@ export default function App() {
   };
 
   const handleCloseTab = useCallback(
-    (sessionKey: string, session: SessionInfo) => {
-      const coordinator = findSessionDetails(coordinators, sessionKey)?.coordinator ?? "";
+    (ref: SessionRef, session: SessionInfo) => {
+      const coordinator = ref.coordinator;
       const label = formatSessionLabel(coordinator, session.name);
       if (session.status === "exited") {
         if (!window.confirm(`Remove exited session ${label}?`)) {
           return;
         }
-        runSessionAction({ id: session.id || sessionKey, coordinator, action: "remove" });
+        runSessionAction({ id: ref.id, coordinator, action: "remove" });
         return;
       }
       if (!window.confirm(`Close session ${label}?`)) {
         return;
       }
-      runSessionAction({ id: session.id || sessionKey, coordinator, action: "close" });
+      runSessionAction({ id: ref.id, coordinator, action: "close" });
     },
-    [coordinators, runSessionAction],
+    [runSessionAction],
   );
 
   const openContextMenuAt = useCallback(
-    (coords: { x: number; y: number }, sessionKey: string, session: SessionInfo) => {
+    (coords: { x: number; y: number }, ref: SessionRef, session: SessionInfo) => {
       const menuWidth = 220;
       const menuHeight = 320;
       const viewportWidth = window.innerWidth || 0;
@@ -830,24 +817,21 @@ export default function App() {
       if (viewportHeight) {
         nextY = Math.min(nextY, Math.max(8, viewportHeight - menuHeight - 8));
       }
-      const coordinator = findSessionDetails(coordinators, sessionKey)?.coordinator ?? "";
       setContextMenu({
         x: nextX,
         y: nextY,
-        sessionKey,
-        sessionId: session.id || sessionKey,
+        sessionRef: ref,
         sessionLabel: displaySessionName(session.name),
-        coordinator,
         status: session.status,
       });
     },
-    [coordinators],
+    [],
   );
 
   const openContextMenu = useCallback(
-    (event: ReactMouseEvent<HTMLDivElement>, sessionKey: string, session: SessionInfo) => {
+    (event: ReactMouseEvent<HTMLDivElement>, ref: SessionRef, session: SessionInfo) => {
       event.preventDefault();
-      openContextMenuAt({ x: event.clientX, y: event.clientY }, sessionKey, session);
+      openContextMenuAt({ x: event.clientX, y: event.clientY }, ref, session);
     },
     [openContextMenuAt],
   );
@@ -864,7 +848,7 @@ export default function App() {
   const showExit = exitCode !== null && selectedSession?.status !== "exited";
   const displayStatus = selectedSession?.status === "exited" ? "exited" : state.status;
   const contextLabel = contextMenu
-    ? formatSessionLabel(contextMenu.coordinator, contextMenu.sessionLabel)
+    ? formatSessionLabel(contextMenu.sessionRef.coordinator, contextMenu.sessionLabel)
     : "";
   const contextRunning = contextMenu?.status === "running" || contextMenu?.status === "closing";
   const sessionsStreamStatus = statusLabels[sessionsState.status] || statusLabels.idle;
@@ -885,7 +869,7 @@ export default function App() {
             {showExit && <Badge variant="red">exited ({exitCode})</Badge>}
             {selectedSession && (
               <span className="text-xs text-tn-text-dim">
-                {formatSessionLabel(selectedSession.coordinator, selectedSession.label)}
+                {formatSessionLabel(selectedSession.ref.coordinator, selectedSession.label)}
               </span>
             )}
           </div>
@@ -1049,18 +1033,14 @@ export default function App() {
                   sessions={tabSessions}
                   coordinators={coordinators}
                   activeSession={activeSession}
-                  onSelect={(sessionKey, session) => {
-                    const coordinator =
-                      findSessionDetails(coordinators, sessionKey)?.coordinator ?? "";
+                  onSelect={(ref, session) => {
                     setSelectedSession({
-                      key: sessionKey,
-                      id: session.id,
+                      ref,
                       label: session.name,
-                      coordinator,
                       status: session.status,
                       exitCode: session.exitCode,
                     });
-                    setActiveSession(session.status === "exited" ? null : sessionKey);
+                    setActiveSession(session.status === "exited" ? null : ref);
                   }}
                   onClose={handleCloseTab}
                   onContextMenu={openContextMenu}
@@ -1077,7 +1057,7 @@ export default function App() {
                   onSendText={onSendText}
                   onPaste={onSendText}
                   autoFocus={isDesktop}
-                  focusKey={selectedSession?.key}
+                  focusKey={selectedSession?.ref.id}
                   autoResize={autoResize}
                   minRows={isDesktop ? 50 : undefined}
                   onFocusChange={setTerminalFocused}
@@ -1102,18 +1082,14 @@ export default function App() {
               coordinators={visibleCoordinators}
               activeSession={activeSession}
               onBroadcast={handleBroadcast}
-              onSelect={(sessionKey, session) => {
-                const coordinator =
-                  findSessionDetails(coordinators, sessionKey)?.coordinator ?? "";
+              onSelect={(ref, session) => {
                 setSelectedSession({
-                  key: sessionKey,
-                  id: session.id,
+                  ref,
                   label: session.name,
-                  coordinator,
                   status: session.status,
                   exitCode: session.exitCode,
                 });
-                setActiveSession(session.status === "exited" ? null : sessionKey);
+                setActiveSession(session.status === "exited" ? null : ref);
                 setViewMode("single");
               }}
             />
@@ -1279,7 +1255,7 @@ export default function App() {
                           {displaySessionName(selectedSessionDetails.session.name)}
                         </div>
                         <div>
-                          {selectedSessionDetails.coordinator} ·{" "}
+                          {selectedSessionDetails.ref.coordinator} ·{" "}
                           {selectedSessionDetails.session.cols}x
                           {selectedSessionDetails.session.rows}
                         </div>
@@ -1387,8 +1363,8 @@ export default function App() {
                     return;
                   }
                   runSessionAction({
-                    id: contextMenu.sessionId,
-                    coordinator: contextMenu.coordinator,
+                    id: contextMenu.sessionRef.id,
+                    coordinator: contextMenu.sessionRef.coordinator,
                     action: "close",
                   });
                 }}
@@ -1411,8 +1387,8 @@ export default function App() {
                     return;
                   }
                   runSessionAction({
-                    id: contextMenu.sessionId,
-                    coordinator: contextMenu.coordinator,
+                    id: contextMenu.sessionRef.id,
+                    coordinator: contextMenu.sessionRef.coordinator,
                     action: "signal",
                     signal: "KILL",
                   });
@@ -1434,8 +1410,8 @@ export default function App() {
                     return;
                   }
                   runSessionAction({
-                    id: contextMenu.sessionId,
-                    coordinator: contextMenu.coordinator,
+                    id: contextMenu.sessionRef.id,
+                    coordinator: contextMenu.sessionRef.coordinator,
                     action: "send_key",
                     key: "ctrl+c",
                   });
@@ -1456,8 +1432,8 @@ export default function App() {
                     return;
                   }
                   runSessionAction({
-                    id: contextMenu.sessionId,
-                    coordinator: contextMenu.coordinator,
+                    id: contextMenu.sessionRef.id,
+                    coordinator: contextMenu.sessionRef.coordinator,
                     action: "send_key",
                     key: "ctrl+z",
                   });
@@ -1478,8 +1454,8 @@ export default function App() {
                     return;
                   }
                   runSessionAction({
-                    id: contextMenu.sessionId,
-                    coordinator: contextMenu.coordinator,
+                    id: contextMenu.sessionRef.id,
+                    coordinator: contextMenu.sessionRef.coordinator,
                     action: "send_key",
                     key: "ctrl+d",
                   });
@@ -1497,8 +1473,8 @@ export default function App() {
                     return;
                   }
                   runSessionAction({
-                    id: contextMenu.sessionId,
-                    coordinator: contextMenu.coordinator,
+                    id: contextMenu.sessionRef.id,
+                    coordinator: contextMenu.sessionRef.coordinator,
                     action: "remove",
                   });
                 }}
