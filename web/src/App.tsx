@@ -173,6 +173,7 @@ export default function App() {
     readRendererSetting(initialPreferences.terminalRenderer),
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [hubInfoOpen, setHubInfoOpen] = useState(false);
   const [webInfo, setWebInfo] = useState<WebInfoResponse | null>(null);
   const [webInfoError, setWebInfoError] = useState<string | null>(null);
   const [showClosedSessions, setShowClosedSessions] = useState(
@@ -304,6 +305,21 @@ export default function App() {
       document.removeEventListener("keydown", handleKey);
     };
   }, [settingsOpen]);
+
+  useEffect(() => {
+    if (!hubInfoOpen) {
+      return;
+    }
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setHubInfoOpen(false);
+      }
+    };
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("keydown", handleKey);
+    };
+  }, [hubInfoOpen]);
 
   useEffect(() => {
     if (!contextMenu) {
@@ -949,165 +965,33 @@ export default function App() {
                       <div className="border-t border-tn-border pt-4">
                         <div className="flex items-center justify-between">
                           <span className="text-xs font-semibold uppercase tracking-wide text-tn-muted">
-                            Hub Info
+                            Hub
                           </span>
                           <Badge variant={sessionsStreamStatus.variant}>
                             {sessionsStreamStatus.label}
                           </Badge>
                         </div>
-                        <div className="mt-3 grid gap-3">
-                          <div className="rounded-lg border border-tn-border bg-tn-panel-2/80 p-3 text-sm">
-                            <div className="flex items-center justify-between">
-                              <span className="text-sm font-semibold text-tn-text">
-                                Connection
-                              </span>
-                              <Badge variant={activeStreamStatus.variant}>
-                                {activeStreamStatus.label}
-                              </Badge>
-                            </div>
-                            <div className="mt-2 grid gap-2 text-[11px] text-tn-text-dim">
-                              <div className="flex items-center justify-between gap-3">
-                                <span>Web address</span>
-                                <span className="font-mono text-tn-text">
-                                  {webAddress || "—"}
-                                </span>
-                              </div>
-                              <div className="flex items-center justify-between gap-3">
-                                <span>Hub name</span>
-                                <span className="font-mono text-tn-text">
-                                  {hubName || "—"}
-                                </span>
-                              </div>
-                              <div>
-                                <div className="text-tn-text-dim">Hub path</div>
-                                <div className="mt-1 font-mono text-tn-text break-all">
-                                  {hubPath || "—"}
-                                </div>
-                              </div>
-                              <div className="flex items-center justify-between gap-3">
-                                <span>vtr version</span>
-                                <span className="font-mono text-tn-text">
-                                  {webInfo?.version || "—"}
-                                </span>
-                              </div>
-                              {hubError && (
-                                <div className="text-[11px] text-tn-orange">
-                                  Hub info error: {hubError}
-                                </div>
-                              )}
-                              {sessionsState.error && (
-                                <div className="text-[11px] text-tn-orange">
-                                  Sessions stream: {sessionsState.error}
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                          <div className="rounded-lg border border-tn-border bg-tn-panel-2/80 p-3 text-sm">
-                            <div className="flex items-center justify-between">
-                              <span className="text-sm font-semibold text-tn-text">
-                                Coordinators
-                              </span>
-                              <Badge>{coordinators.length}</Badge>
-                            </div>
-                            <div className="mt-2 flex flex-col gap-2 text-[11px] text-tn-text-dim">
-                              {coordinators.length === 0 ? (
-                                <span className="text-tn-muted">
-                                  {sessionsLoaded
-                                    ? "No coordinators reporting."
-                                    : "Waiting for coordinator snapshot..."}
-                                </span>
-                              ) : (
-                                coordinators.map((coord) => {
-                                  const running = coord.sessions.filter(
-                                    (session) => session.status === "running",
-                                  ).length;
-                                  const exited = coord.sessions.filter(
-                                    (session) => session.status === "exited",
-                                  ).length;
-                                  return (
-                                    <div
-                                      key={`${coord.name}:${coord.path}`}
-                                      className="rounded-md border border-tn-border bg-tn-panel px-2 py-2"
-                                    >
-                                      <div className="flex items-center justify-between">
-                                        <span className="text-sm font-semibold text-tn-text">
-                                          {coord.name || "unknown"}
-                                        </span>
-                                        <Badge>{coord.sessions.length}</Badge>
-                                      </div>
-                                      <div className="mt-1 font-mono text-[10px] text-tn-text-dim break-all">
-                                        {coord.path || "—"}
-                                      </div>
-                                      <div className="mt-1 text-[10px] text-tn-text-dim">
-                                        {running} running · {exited} exited
-                                      </div>
-                                    </div>
-                                  );
-                                })
-                              )}
-                            </div>
-                          </div>
-                          <div className="rounded-lg border border-tn-border bg-tn-panel-2/80 p-3 text-sm">
-                            <div className="flex items-center justify-between">
-                              <span className="text-sm font-semibold text-tn-text">
-                                Sessions
-                              </span>
-                              <Badge>{sessionStats.total}</Badge>
-                            </div>
-                            <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] text-tn-text-dim">
-                              <div className="rounded-md border border-tn-border bg-tn-panel px-2 py-2">
-                                <div className="text-sm font-semibold text-tn-text">
-                                  {sessionStats.running}
-                                </div>
-                                <div>running</div>
-                              </div>
-                              <div className="rounded-md border border-tn-border bg-tn-panel px-2 py-2">
-                                <div className="text-sm font-semibold text-tn-text">
-                                  {sessionStats.idle}
-                                </div>
-                                <div>idle</div>
-                              </div>
-                              <div className="rounded-md border border-tn-border bg-tn-panel px-2 py-2">
-                                <div className="text-sm font-semibold text-tn-text">
-                                  {sessionStats.closing}
-                                </div>
-                                <div>closing</div>
-                              </div>
-                              <div className="rounded-md border border-tn-border bg-tn-panel px-2 py-2">
-                                <div className="text-sm font-semibold text-tn-text">
-                                  {sessionStats.exited}
-                                </div>
-                                <div>exited</div>
-                              </div>
-                            </div>
-                            <div className="mt-3 rounded-md border border-tn-border bg-tn-panel px-2 py-2 text-[11px] text-tn-text-dim">
-                              <div className="flex items-center justify-between">
-                                <span>Active session</span>
-                                <Badge variant="default">
-                                  {selectedSessionDetails?.session.status || "none"}
-                                </Badge>
-                              </div>
-                              {selectedSessionDetails ? (
-                                <div className="mt-2 grid gap-1 text-[11px] text-tn-text-dim">
-                                  <div className="text-sm font-semibold text-tn-text">
-                                    {displaySessionName(selectedSessionDetails.session.name)}
-                                  </div>
-                                  <div>
-                                    {selectedSessionDetails.coordinator} ·{" "}
-                                    {selectedSessionDetails.session.cols}x
-                                    {selectedSessionDetails.session.rows}
-                                  </div>
-                                  {selectedSessionDetails.session.exitCode !== undefined && (
-                                    <div>exit code: {selectedSessionDetails.session.exitCode}</div>
-                                  )}
-                                </div>
-                              ) : (
-                                <div className="mt-2 text-[11px] text-tn-muted">
-                                  No session selected.
-                                </div>
-                              )}
-                            </div>
-                          </div>
+                        <div className="mt-3 grid gap-2">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="w-full justify-between border border-tn-border bg-tn-panel-2"
+                            onClick={() => {
+                              setHubInfoOpen(true);
+                              setSettingsOpen(false);
+                            }}
+                            aria-haspopup="dialog"
+                            aria-controls="hub-info-modal"
+                          >
+                            <span>View hub info</span>
+                            <Badge variant={activeStreamStatus.variant}>
+                              {activeStreamStatus.label}
+                            </Badge>
+                          </Button>
+                          <span className="text-[11px] text-tn-text-dim">
+                            Connection, coordinators, and session details.
+                          </span>
                         </div>
                       </div>
                     </div>
@@ -1195,6 +1079,183 @@ export default function App() {
           )}
         </section>
       </main>
+      {hubInfoOpen && (
+        <div className="fixed inset-0 z-30 flex items-center justify-center px-4 py-6">
+          <button
+            type="button"
+            className="absolute inset-0 cursor-default bg-tn-bg/80 backdrop-blur-sm"
+            onClick={() => setHubInfoOpen(false)}
+            aria-label="Close hub info"
+          />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="hub-info-title"
+            id="hub-info-modal"
+            className="relative z-10 w-full max-w-2xl overflow-hidden rounded-xl border border-tn-border bg-tn-panel shadow-panel"
+          >
+            <div className="flex items-center justify-between border-b border-tn-border px-4 py-3">
+              <div className="flex items-center gap-2">
+                <span id="hub-info-title" className="text-sm font-semibold text-tn-text">
+                  Hub Info
+                </span>
+                <Badge variant={sessionsStreamStatus.variant}>
+                  {sessionsStreamStatus.label}
+                </Badge>
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="border border-tn-border bg-tn-panel-2"
+                onClick={() => setHubInfoOpen(false)}
+              >
+                Close
+              </Button>
+            </div>
+            <ScrollArea className="max-h-[70vh]">
+              <div className="grid gap-3 p-4">
+                <div className="rounded-lg border border-tn-border bg-tn-panel-2/80 p-3 text-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-semibold text-tn-text">Connection</span>
+                    <Badge variant={activeStreamStatus.variant}>{activeStreamStatus.label}</Badge>
+                  </div>
+                  <div className="mt-2 grid gap-2 text-[11px] text-tn-text-dim">
+                    <div className="flex items-center justify-between gap-3">
+                      <span>Web address</span>
+                      <span className="font-mono text-tn-text">{webAddress || "—"}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span>Hub name</span>
+                      <span className="font-mono text-tn-text">{hubName || "—"}</span>
+                    </div>
+                    <div>
+                      <div className="text-tn-text-dim">Hub path</div>
+                      <div className="mt-1 font-mono text-tn-text break-all">
+                        {hubPath || "—"}
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span>vtr version</span>
+                      <span className="font-mono text-tn-text">{webInfo?.version || "—"}</span>
+                    </div>
+                    {hubError && (
+                      <div className="text-[11px] text-tn-orange">
+                        Hub info error: {hubError}
+                      </div>
+                    )}
+                    {sessionsState.error && (
+                      <div className="text-[11px] text-tn-orange">
+                        Sessions stream: {sessionsState.error}
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div className="rounded-lg border border-tn-border bg-tn-panel-2/80 p-3 text-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-semibold text-tn-text">Coordinators</span>
+                    <Badge>{coordinators.length}</Badge>
+                  </div>
+                  <div className="mt-2 flex flex-col gap-2 text-[11px] text-tn-text-dim">
+                    {coordinators.length === 0 ? (
+                      <span className="text-tn-muted">
+                        {sessionsLoaded
+                          ? "No coordinators reporting."
+                          : "Waiting for coordinator snapshot..."}
+                      </span>
+                    ) : (
+                      coordinators.map((coord) => {
+                        const running = coord.sessions.filter(
+                          (session) => session.status === "running",
+                        ).length;
+                        const exited = coord.sessions.filter(
+                          (session) => session.status === "exited",
+                        ).length;
+                        return (
+                          <div
+                            key={`${coord.name}:${coord.path}`}
+                            className="rounded-md border border-tn-border bg-tn-panel px-2 py-2"
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="text-sm font-semibold text-tn-text">
+                                {coord.name || "unknown"}
+                              </span>
+                              <Badge>{coord.sessions.length}</Badge>
+                            </div>
+                            <div className="mt-1 font-mono text-[10px] text-tn-text-dim break-all">
+                              {coord.path || "—"}
+                            </div>
+                            <div className="mt-1 text-[10px] text-tn-text-dim">
+                              {running} running · {exited} exited
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+                <div className="rounded-lg border border-tn-border bg-tn-panel-2/80 p-3 text-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-semibold text-tn-text">Sessions</span>
+                    <Badge>{sessionStats.total}</Badge>
+                  </div>
+                  <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] text-tn-text-dim">
+                    <div className="rounded-md border border-tn-border bg-tn-panel px-2 py-2">
+                      <div className="text-sm font-semibold text-tn-text">
+                        {sessionStats.running}
+                      </div>
+                      <div>running</div>
+                    </div>
+                    <div className="rounded-md border border-tn-border bg-tn-panel px-2 py-2">
+                      <div className="text-sm font-semibold text-tn-text">
+                        {sessionStats.idle}
+                      </div>
+                      <div>idle</div>
+                    </div>
+                    <div className="rounded-md border border-tn-border bg-tn-panel px-2 py-2">
+                      <div className="text-sm font-semibold text-tn-text">
+                        {sessionStats.closing}
+                      </div>
+                      <div>closing</div>
+                    </div>
+                    <div className="rounded-md border border-tn-border bg-tn-panel px-2 py-2">
+                      <div className="text-sm font-semibold text-tn-text">
+                        {sessionStats.exited}
+                      </div>
+                      <div>exited</div>
+                    </div>
+                  </div>
+                  <div className="mt-3 rounded-md border border-tn-border bg-tn-panel px-2 py-2 text-[11px] text-tn-text-dim">
+                    <div className="flex items-center justify-between">
+                      <span>Active session</span>
+                      <Badge variant="default">
+                        {selectedSessionDetails?.session.status || "none"}
+                      </Badge>
+                    </div>
+                    {selectedSessionDetails ? (
+                      <div className="mt-2 grid gap-1 text-[11px] text-tn-text-dim">
+                        <div className="text-sm font-semibold text-tn-text">
+                          {displaySessionName(selectedSessionDetails.session.name)}
+                        </div>
+                        <div>
+                          {selectedSessionDetails.coordinator} ·{" "}
+                          {selectedSessionDetails.session.cols}x
+                          {selectedSessionDetails.session.rows}
+                        </div>
+                        {selectedSessionDetails.session.exitCode !== undefined && (
+                          <div>exit code: {selectedSessionDetails.session.exitCode}</div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="mt-2 text-[11px] text-tn-muted">No session selected.</div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </ScrollArea>
+          </div>
+        </div>
+      )}
       {contextMenu && (
         <div className="fixed inset-0 z-40">
           <div
