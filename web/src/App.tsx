@@ -552,15 +552,18 @@ export default function App() {
     [coordinators, sendKeyTo, sendTextTo, state.status],
   );
 
-  const handleCreateSession = useCallback(async () => {
+  const handleCreateSession = useCallback(async (coordinatorOverride?: string) => {
     if (createBusy) {
       return;
     }
     const activeCoordinator = activeSession?.split(":")[0] ?? "";
+    const preferredCoordinator = coordinatorOverride?.trim() ?? "";
     const coordinator =
-      (activeCoordinator && coordinatorOptions.includes(activeCoordinator)
-        ? activeCoordinator
-        : coordinatorOptions[0]) || "";
+      (preferredCoordinator && coordinatorOptions.includes(preferredCoordinator)
+        ? preferredCoordinator
+        : activeCoordinator && coordinatorOptions.includes(activeCoordinator)
+          ? activeCoordinator
+          : coordinatorOptions[0]) || "";
     if (!coordinator) {
       window.alert("No coordinators available to create a session.");
       return;
@@ -864,6 +867,7 @@ export default function App() {
               <div className="flex min-h-0 flex-1 flex-col">
                 <SessionTabs
                   sessions={tabSessions}
+                  coordinators={coordinators}
                   activeSession={activeSession}
                   onSelect={(sessionKey, session) => {
                     setSelectedSession({

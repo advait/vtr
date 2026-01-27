@@ -2,7 +2,7 @@ import { Plus } from "lucide-react";
 import { type MouseEvent, type TouchEvent, useMemo, useRef } from "react";
 import { cn } from "../lib/utils";
 import { displaySessionName } from "../lib/session";
-import type { SessionInfo } from "./CoordinatorTree";
+import type { CoordinatorInfo, SessionInfo } from "./CoordinatorTree";
 
 export type SessionTab = {
   key: string;
@@ -12,6 +12,7 @@ export type SessionTab = {
 
 type SessionTabsProps = {
   sessions: SessionTab[];
+  coordinators?: CoordinatorInfo[];
   activeSession: string | null;
   onSelect: (sessionKey: string, session: SessionInfo) => void;
   onClose: (sessionKey: string, session: SessionInfo) => void;
@@ -25,7 +26,7 @@ type SessionTabsProps = {
     sessionKey: string,
     session: SessionInfo,
   ) => void;
-  onCreate?: () => void;
+  onCreate?: (coordinator?: string) => void;
   isFocused?: boolean;
 };
 
@@ -41,6 +42,7 @@ function statusDot(session: SessionInfo) {
 
 export function SessionTabs({
   sessions,
+  coordinators = [],
   activeSession,
   onSelect,
   onClose,
@@ -49,6 +51,10 @@ export function SessionTabs({
   onCreate,
   isFocused = false,
 }: SessionTabsProps) {
+  const availableCoordinators = useMemo(
+    () => coordinators.filter((coord) => coord.name.trim().length > 0),
+    [coordinators],
+  );
   const grouped = useMemo(() => {
     const next: Array<{ coordinator: string; tabs: SessionTab[] }> = [];
     for (const tab of sessions) {
@@ -109,7 +115,40 @@ export function SessionTabs({
     >
       <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
         {sessions.length === 0 ? (
-          <span className="px-3 text-xs text-tn-text-dim">No sessions yet.</span>
+          <div className="flex flex-wrap items-center gap-2 px-2 py-1 text-xs text-tn-text-dim">
+            <span className="px-1">No sessions yet.</span>
+            {availableCoordinators.length > 0 ? (
+              <div className="flex flex-wrap items-center gap-2">
+                {availableCoordinators.map((coord) => (
+                  <div
+                    key={coord.name}
+                    className="flex items-center gap-1 rounded-full border border-tn-border bg-tn-panel px-2 py-1"
+                  >
+                    <span className="text-[10px] uppercase tracking-wide text-tn-text-dim">
+                      {coord.name}
+                    </span>
+                    {onCreate && (
+                      <button
+                        type="button"
+                        className={cn(
+                          "flex h-5 w-5 items-center justify-center rounded-full text-[10px]",
+                          "bg-tn-panel text-tn-text",
+                          "hover:bg-tn-panel-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tn-accent",
+                        )}
+                        onClick={() => onCreate(coord.name)}
+                        aria-label={`New session in ${coord.name}`}
+                        title={`New session in ${coord.name}`}
+                      >
+                        <Plus className="h-3 w-3" aria-hidden="true" />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <span className="px-1 text-[11px] text-tn-muted">No coordinators available.</span>
+            )}
+          </div>
         ) : (
           grouped.map((group) => (
             <div key={group.coordinator} className="flex shrink-0 items-center gap-2">
@@ -168,7 +207,7 @@ export function SessionTabs({
             </div>
           ))
         )}
-        {onCreate && (
+        {onCreate && sessions.length > 0 && (
           <button
             type="button"
             className={cn(
