@@ -236,7 +236,7 @@ func newInfoCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 			defer cancel()
 			return withCoordinator(ctx, target, cfg, func(client proto.VTRClient) error {
-				sessionRef, _, err := resolveSessionRef(ctx, client, args[0], target.Name)
+				sessionRef, _, err := resolveSessionRef(ctx, client, args[0], "")
 				if err != nil {
 					return err
 				}
@@ -275,7 +275,7 @@ func newScreenCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 			defer cancel()
 			return withCoordinator(ctx, target, cfg, func(client proto.VTRClient) error {
-				sessionRef, _, err := resolveSessionRef(ctx, client, args[0], target.Name)
+				sessionRef, _, err := resolveSessionRef(ctx, client, args[0], "")
 				if err != nil {
 					return err
 				}
@@ -329,7 +329,7 @@ func newSendCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 			defer cancel()
 			return withCoordinator(ctx, target, cfg, func(client proto.VTRClient) error {
-				sessionRef, _, err := resolveSessionRef(ctx, client, args[0], target.Name)
+				sessionRef, _, err := resolveSessionRef(ctx, client, args[0], "")
 				if err != nil {
 					return err
 				}
@@ -363,7 +363,7 @@ func newKeyCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 			defer cancel()
 			return withCoordinator(ctx, target, cfg, func(client proto.VTRClient) error {
-				sessionRef, _, err := resolveSessionRef(ctx, client, args[0], target.Name)
+				sessionRef, _, err := resolveSessionRef(ctx, client, args[0], "")
 				if err != nil {
 					return err
 				}
@@ -401,7 +401,7 @@ func newRawCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 			defer cancel()
 			return withCoordinator(ctx, target, cfg, func(client proto.VTRClient) error {
-				sessionRef, _, err := resolveSessionRef(ctx, client, args[0], target.Name)
+				sessionRef, _, err := resolveSessionRef(ctx, client, args[0], "")
 				if err != nil {
 					return err
 				}
@@ -443,7 +443,7 @@ func newResizeCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 			defer cancel()
 			return withCoordinator(ctx, target, cfg, func(client proto.VTRClient) error {
-				sessionRef, _, err := resolveSessionRef(ctx, client, args[0], target.Name)
+				sessionRef, _, err := resolveSessionRef(ctx, client, args[0], "")
 				if err != nil {
 					return err
 				}
@@ -478,7 +478,7 @@ func newKillCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 			defer cancel()
 			return withCoordinator(ctx, target, cfg, func(client proto.VTRClient) error {
-				sessionRef, _, err := resolveSessionRef(ctx, client, args[0], target.Name)
+				sessionRef, _, err := resolveSessionRef(ctx, client, args[0], "")
 				if err != nil {
 					return err
 				}
@@ -513,7 +513,7 @@ func newRemoveCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 			defer cancel()
 			return withCoordinator(ctx, target, cfg, func(client proto.VTRClient) error {
-				sessionRef, _, err := resolveSessionRef(ctx, client, args[0], target.Name)
+				sessionRef, _, err := resolveSessionRef(ctx, client, args[0], "")
 				if err != nil {
 					return err
 				}
@@ -562,7 +562,7 @@ func newGrepCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 			defer cancel()
 			return withCoordinator(ctx, target, cfg, func(client proto.VTRClient) error {
-				sessionRef, _, err := resolveSessionRef(ctx, client, args[0], target.Name)
+				sessionRef, _, err := resolveSessionRef(ctx, client, args[0], "")
 				if err != nil {
 					return err
 				}
@@ -612,7 +612,7 @@ func newWaitCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), ctxTimeout)
 			defer cancel()
 			return withCoordinator(ctx, target, cfg, func(client proto.VTRClient) error {
-				sessionRef, _, err := resolveSessionRef(ctx, client, args[0], target.Name)
+				sessionRef, _, err := resolveSessionRef(ctx, client, args[0], "")
 				if err != nil {
 					return err
 				}
@@ -660,7 +660,7 @@ func newIdleCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), ctxTimeout)
 			defer cancel()
 			return withCoordinator(ctx, target, cfg, func(client proto.VTRClient) error {
-				sessionRef, _, err := resolveSessionRef(ctx, client, args[0], target.Name)
+				sessionRef, _, err := resolveSessionRef(ctx, client, args[0], "")
 				if err != nil {
 					return err
 				}

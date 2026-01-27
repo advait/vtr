@@ -33,6 +33,7 @@ type attachModel struct {
 	cfg          *clientConfig
 	sessionID    string
 	sessionLabel string
+	sessionCoord string
 	stream       proto.VTR_SubscribeClient
 	streamCancel context.CancelFunc
 	streamID     int
@@ -377,7 +378,7 @@ func newTuiCmd() *cobra.Command {
 			}
 
 			coords := initialCoordinatorRefs(cfg, targetCoord)
-			activeCoord := targetCoord
+			activeCoord := coordinatorRef{}
 			if strings.TrimSpace(target.Coordinator.Name) != "" {
 				activeCoord = target.Coordinator
 				coords = ensureCoordinator(coords, activeCoord)
@@ -415,6 +416,7 @@ func newTuiCmd() *cobra.Command {
 				cfg:              cfg,
 				sessionID:        target.ID,
 				sessionLabel:     target.Label,
+				sessionCoord:     activeCoord.Name,
 				streamID:         1,
 				sessionsStreamID: 1,
 				sessionList:      newSessionListModel(nil, 0, 0),
@@ -488,7 +490,7 @@ func resolveFirstSessionTarget(ctx context.Context, coord coordinatorRef, cfg *c
 		hadSuccess = true
 	}
 	if firstID != "" {
-		resolvedCoord := coord
+		resolvedCoord := coordinatorRef{}
 		if parsedCoord, _, ok := parseSessionRef(firstLabel); ok {
 			resolvedCoord = coordinatorRef{Name: parsedCoord}
 		}
@@ -587,7 +589,7 @@ func (m attachModel) Init() tea.Cmd {
 		tickCmd(),
 	}
 	if strings.TrimSpace(m.sessionID) != "" || strings.TrimSpace(m.sessionLabel) != "" {
-		cmds = append(cmds, startSubscribeCmd(m.client, m.sessionID, m.coordinator.Name, m.streamID))
+		cmds = append(cmds, startSubscribeCmd(m.client, m.sessionID, m.sessionCoord, m.streamID))
 	}
 	return tea.Batch(cmds...)
 }
@@ -702,6 +704,7 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			for _, item := range m.sessionItems {
 				if item.id == m.sessionID && item.label != "" {
 					m.sessionLabel = item.label
+					m.sessionCoord = item.coord
 					if coord, ok := coordinatorByName(m.coords, item.coord); ok {
 						m.coordinator = coord
 					} else if item.coord != "" {
@@ -740,7 +743,7 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.exited {
 				return m, nil
 			}
-			return m, resizeCmd(m.client, m.sessionID, m.coordinator.Name, m.viewportWidth, m.viewportHeight)
+			return m, resizeCmd(m.client, m.sessionID, m.sessionCoord, m.viewportWidth, m.viewportHeight)
 		}
 		return m, nil
 	case rpcErrMsg:
@@ -1354,13 +1357,13 @@ func handleLeaderKey(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
 	}
 	switch key {
 	case "ctrl+b":
-		return m, sendKeyCmd(m.client, m.sessionID, m.coordinator.Name, "ctrl+b")
+		return m, sendKeyCmd(m.client, m.sessionID, m.sessionCoord, "ctrl+b")
 	case "d":
 		return m, tea.Quit
 	case "x":
 		m.statusMsg = "kill sent"
 		m.statusUntil = time.Now().Add(2 * time.Second)
-		return m, killCmd(m.client, m.sessionID, m.coordinator.Name)
+		return m, killCmd(m.client, m.sessionID, m.sessionCoord)
 	case "j", "n", "l":
 		return m, nextSessionCmd(m.client, m.sessionID, true, m.showExited)
 	case "k", "p", "h":
@@ -1547,9 +1550,9 @@ func handleInputKey(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
 		return m, nil
 	}
 	if len(data) > 0 {
-		return m, sendBytesCmd(m.client, m.sessionID, m.coordinator.Name, data)
+		return m, sendBytesCmd(m.client, m.sessionID, m.sessionCoord, data)
 	}
-	return m, sendKeyCmd(m.client, m.sessionID, m.coordinator.Name, key)
+	return m, sendKeyCmd(m.client, m.sessionID, m.sessionCoord, key)
 }
 
 func inputForKey(msg tea.KeyMsg) (string, []byte, bool) {
@@ -1854,6 +1857,7 @@ func switchSession(m attachModel, msg sessionSwitchMsg) (attachModel, tea.Cmd) {
 	m.streamID++
 	m.sessionID = msg.id
 	m.sessionLabel = msg.label
+	m.sessionCoord = msg.coord
 	if msg.coord == "" {
 		if coord, _ := splitCoordinatorPrefix(msg.label, ""); coord != "" {
 			msg.coord = coord
@@ -1882,13 +1886,13 @@ func switchSession(m attachModel, msg sessionSwitchMsg) (attachModel, tea.Cmd) {
 	m.statusUntil = time.Now().Add(2 * time.Second)
 	m.sessionItems = ensureSessionItem(m.sessionItems, m.sessionID, m.sessionLabel, false, 0, m.coordinator.Name)
 	cmds := []tea.Cmd{
-		startSubscribeCmd(m.client, m.sessionID, m.coordinator.Name, m.streamID),
+		startSubscribeCmd(m.client, m.sessionID, m.sessionCoord, m.streamID),
 	}
 	cmd := m.sessionList.SetItems(sessionItemsToListItems(visibleSessionItems(m), m.coords, m.coordinator.Name))
 	skipSessionListHeaders(&m.sessionList, 1)
 	cmds = append(cmds, cmd)
 	if m.viewportWidth > 0 && m.viewportHeight > 0 {
-		cmds = append(cmds, resizeCmd(m.client, m.sessionID, m.coordinator.Name, m.viewportWidth, m.viewportHeight))
+		cmds = append(cmds, resizeCmd(m.client, m.sessionID, m.sessionCoord, m.viewportWidth, m.viewportHeight))
 	}
 	return m, tea.Batch(cmds...)
 }
@@ -2183,9 +2187,9 @@ func resubscribe(m attachModel, reason string) (attachModel, tea.Cmd) {
 		m.statusMsg = fmt.Sprintf("resync: %s", reason)
 		m.statusUntil = time.Now().Add(2 * time.Second)
 	}
-	cmds := []tea.Cmd{startSubscribeCmd(m.client, m.sessionID, m.coordinator.Name, m.streamID)}
+	cmds := []tea.Cmd{startSubscribeCmd(m.client, m.sessionID, m.sessionCoord, m.streamID)}
 	if m.viewportWidth > 0 && m.viewportHeight > 0 {
-		cmds = append(cmds, resizeCmd(m.client, m.sessionID, m.coordinator.Name, m.viewportWidth, m.viewportHeight))
+		cmds = append(cmds, resizeCmd(m.client, m.sessionID, m.sessionCoord, m.viewportWidth, m.viewportHeight))
 	}
 	return m, tea.Batch(cmds...)
 }
