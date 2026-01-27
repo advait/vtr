@@ -211,6 +211,7 @@ export default function App() {
   const rafRef = useRef<number | null>(null);
   const lastSize = useRef<{ cols: number; rows: number } | null>(null);
   const autoSelectedRef = useRef(false);
+  const lastSelectedIndexRef = useRef<number | null>(null);
   const settingsRef = useRef<HTMLDivElement | null>(null);
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
   const activeTheme = useMemo(() => getTheme(themeId), [themeId]);
@@ -392,9 +393,45 @@ export default function App() {
     });
   }, []);
 
+  const selectFallbackSession = useCallback(
+    (preferredIndex: number | null) => {
+      if (tabSessions.length === 0) {
+        setSelectedSession(null);
+        setActiveSession(null);
+        return false;
+      }
+      const index = Math.min(Math.max(preferredIndex ?? 0, 0), tabSessions.length - 1);
+      const next = tabSessions[index];
+      if (!next) {
+        setSelectedSession(null);
+        setActiveSession(null);
+        return false;
+      }
+      setSelectedSession({
+        ref: next.ref,
+        label: next.session.name,
+        status: next.session.status,
+        exitCode: next.session.exitCode,
+      });
+      setActiveSession(next.session.status === "exited" ? null : next.ref);
+      return true;
+    },
+    [tabSessions],
+  );
+
   useEffect(() => {
     applySessions(streamCoordinators);
   }, [applySessions, streamCoordinators]);
+
+  useEffect(() => {
+    if (!selectedSession) {
+      return;
+    }
+    const index = tabSessions.findIndex((entry) => sessionRefEquals(entry.ref, selectedSession.ref));
+    if (index >= 0) {
+      lastSelectedIndexRef.current = index;
+    }
+  }, [selectedSession, tabSessions]);
 
   useEffect(() => {
     if (!activeSession) {
@@ -512,9 +549,22 @@ export default function App() {
     if (showClosedSessions || !selectedSession || selectedSession.status !== "exited") {
       return;
     }
-    setSelectedSession(null);
-    setActiveSession(null);
-  }, [selectedSession, showClosedSessions]);
+    selectFallbackSession(lastSelectedIndexRef.current);
+  }, [selectFallbackSession, selectedSession, showClosedSessions]);
+
+  useEffect(() => {
+    if (!selectedSession) {
+      return;
+    }
+    if (selectedSession.status === "exited" && !showClosedSessions) {
+      return;
+    }
+    const index = tabSessions.findIndex((entry) => sessionRefEquals(entry.ref, selectedSession.ref));
+    if (index >= 0) {
+      return;
+    }
+    selectFallbackSession(lastSelectedIndexRef.current);
+  }, [selectFallbackSession, selectedSession, showClosedSessions, tabSessions]);
 
   useEffect(() => {
     if (typeof window === "undefined" || !window.matchMedia) {
