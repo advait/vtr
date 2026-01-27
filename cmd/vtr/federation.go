@@ -29,19 +29,23 @@ type spokeDialer func(ctx context.Context, addr string) (*grpc.ClientConn, error
 
 type federatedServer struct {
 	proto.UnimplementedVTRServer
-	local     *server.GRPCServer
-	localName string
-	localPath string
-	static    []spokeTarget
-	registry  *server.SpokeRegistry
-	dialer    spokeDialer
-	tunnels   *tunnelRegistry
-	logger    *slog.Logger
+	local        *server.GRPCServer
+	localName    string
+	localPath    string
+	localEnabled bool
+	static       []spokeTarget
+	registry     *server.SpokeRegistry
+	dialer       spokeDialer
+	tunnels      *tunnelRegistry
+	logger       *slog.Logger
 }
 
-func newFederatedServer(local *server.GRPCServer, localName string, localPath string, static []spokeTarget, registry *server.SpokeRegistry, dialer spokeDialer, logger *slog.Logger) *federatedServer {
+func newFederatedServer(local *server.GRPCServer, localName string, localPath string, localEnabled bool, static []spokeTarget, registry *server.SpokeRegistry, dialer spokeDialer, logger *slog.Logger) *federatedServer {
 	if logger == nil {
 		logger = slog.Default()
+	}
+	if local == nil {
+		local = server.NewGRPCServer(nil)
 	}
 	localName = strings.TrimSpace(localName)
 	localPath = strings.TrimSpace(localPath)
@@ -49,15 +53,31 @@ func newFederatedServer(local *server.GRPCServer, localName string, localPath st
 		localName = coordinatorName(localPath)
 	}
 	return &federatedServer{
-		local:     local,
-		localName: localName,
-		localPath: localPath,
-		static:    static,
-		registry:  registry,
-		dialer:    dialer,
-		tunnels:   newTunnelRegistry(),
-		logger:    logger,
+		local:        local,
+		localName:    localName,
+		localPath:    localPath,
+		localEnabled: localEnabled,
+		static:       static,
+		registry:     registry,
+		dialer:       dialer,
+		tunnels:      newTunnelRegistry(),
+		logger:       logger,
 	}
+}
+
+func (s *federatedServer) localActive() bool {
+	return s != nil && s.localEnabled
+}
+
+func (s *federatedServer) localNameForTargets() string {
+	if s == nil || !s.localEnabled {
+		return ""
+	}
+	return s.localName
+}
+
+func (s *federatedServer) localDisabledError() error {
+	return status.Error(codes.FailedPrecondition, "hub coordinator is disabled")
 }
 
 func federationSpokesFromConfig(cfg *clientConfig) []spokeTarget {
@@ -76,10 +96,10 @@ func federationSpokesFromConfig(cfg *clientConfig) []spokeTarget {
 	return out
 }
 
-func federatedCoordinatorRefs(localSocket string, hubAddr string, static []spokeTarget, registry *server.SpokeRegistry, tunnels *tunnelRegistry) []coordinatorRef {
+func federatedCoordinatorRefs(localSocket string, localEnabled bool, hubAddr string, static []spokeTarget, registry *server.SpokeRegistry, tunnels *tunnelRegistry) []coordinatorRef {
 	refs := make([]coordinatorRef, 0, 1+len(static))
 	socketPath := strings.TrimSpace(localSocket)
-	if socketPath != "" {
+	if localEnabled && socketPath != "" {
 		refs = append(refs, coordinatorRef{
 			Name: coordinatorName(socketPath),
 			Path: socketPath,
@@ -221,6 +241,9 @@ func (s *federatedServer) Tunnel(stream proto.VTR_TunnelServer) error {
 
 func (s *federatedServer) Spawn(ctx context.Context, req *proto.SpawnRequest) (*proto.SpawnResponse, error) {
 	if req == nil || strings.TrimSpace(req.Name) == "" {
+		if !s.localActive() {
+			return nil, s.localDisabledError()
+		}
 		return s.local.Spawn(ctx, req)
 	}
 	spoke, session, routed, err := s.routeSession(req.Name)
@@ -228,6 +251,9 @@ func (s *federatedServer) Spawn(ctx context.Context, req *proto.SpawnRequest) (*
 		return nil, err
 	}
 	if !routed {
+		if !s.localActive() {
+			return nil, s.localDisabledError()
+		}
 		return s.local.Spawn(ctx, req)
 	}
 	reqCopy := *req
@@ -243,12 +269,14 @@ func (s *federatedServer) Spawn(ctx context.Context, req *proto.SpawnRequest) (*
 }
 
 func (s *federatedServer) List(ctx context.Context, _ *proto.ListRequest) (*proto.ListResponse, error) {
-	localResp, err := s.local.List(ctx, &proto.ListRequest{})
-	if err != nil {
-		return nil, err
+	sessions := make([]*proto.Session, 0)
+	if s.localActive() {
+		localResp, err := s.local.List(ctx, &proto.ListRequest{})
+		if err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, localResp.GetSessions()...)
 	}
-	sessions := make([]*proto.Session, 0, len(localResp.GetSessions()))
-	sessions = append(sessions, localResp.GetSessions()...)
 
 	targets := s.spokeTargets()
 	if len(targets) == 0 {
@@ -285,7 +313,7 @@ func (s *federatedServer) SubscribeSessions(req *proto.SubscribeSessionsRequest,
 	state := newFederatedSessionState()
 	signal := newSignal()
 
-	if s.localName != "" {
+	if s.localActive() && s.localName != "" {
 		state.ensureCoordinator(s.localName, s.localPath)
 		if localSessions, err := s.local.List(ctx, &proto.ListRequest{}); err == nil {
 			state.setCoordinatorSessions(s.localName, s.localPath, filterSessions(localSessions.GetSessions(), excludeExited))
@@ -299,7 +327,9 @@ func (s *federatedServer) SubscribeSessions(req *proto.SubscribeSessionsRequest,
 		state.ensureCoordinator(target.Name, target.Addr)
 	}
 
-	go s.watchLocalSessions(ctx, excludeExited, state, signal)
+	if s.localActive() {
+		go s.watchLocalSessions(ctx, excludeExited, state, signal)
+	}
 
 	for _, target := range targets {
 		go s.watchSpokeSessions(ctx, target, excludeExited, state, signal)
@@ -350,6 +380,9 @@ func (s *federatedServer) watchLocalSessions(ctx context.Context, excludeExited 
 
 func (s *federatedServer) Info(ctx context.Context, req *proto.InfoRequest) (*proto.InfoResponse, error) {
 	if req == nil || strings.TrimSpace(req.Name) == "" {
+		if !s.localActive() {
+			return nil, s.localDisabledError()
+		}
 		return s.local.Info(ctx, req)
 	}
 	spoke, session, routed, err := s.routeSession(req.Name)
@@ -357,6 +390,9 @@ func (s *federatedServer) Info(ctx context.Context, req *proto.InfoRequest) (*pr
 		return nil, err
 	}
 	if !routed {
+		if !s.localActive() {
+			return nil, s.localDisabledError()
+		}
 		return s.local.Info(ctx, req)
 	}
 	resp, err := s.callInfo(ctx, spoke, session)
@@ -371,6 +407,9 @@ func (s *federatedServer) Info(ctx context.Context, req *proto.InfoRequest) (*pr
 
 func (s *federatedServer) Kill(ctx context.Context, req *proto.KillRequest) (*proto.KillResponse, error) {
 	if req == nil || strings.TrimSpace(req.Name) == "" {
+		if !s.localActive() {
+			return nil, s.localDisabledError()
+		}
 		return s.local.Kill(ctx, req)
 	}
 	spoke, session, routed, err := s.routeSession(req.Name)
@@ -378,6 +417,9 @@ func (s *federatedServer) Kill(ctx context.Context, req *proto.KillRequest) (*pr
 		return nil, err
 	}
 	if !routed {
+		if !s.localActive() {
+			return nil, s.localDisabledError()
+		}
 		return s.local.Kill(ctx, req)
 	}
 	reqCopy := *req
@@ -387,6 +429,9 @@ func (s *federatedServer) Kill(ctx context.Context, req *proto.KillRequest) (*pr
 
 func (s *federatedServer) Close(ctx context.Context, req *proto.CloseRequest) (*proto.CloseResponse, error) {
 	if req == nil || strings.TrimSpace(req.Name) == "" {
+		if !s.localActive() {
+			return nil, s.localDisabledError()
+		}
 		return s.local.Close(ctx, req)
 	}
 	spoke, session, routed, err := s.routeSession(req.Name)
@@ -394,6 +439,9 @@ func (s *federatedServer) Close(ctx context.Context, req *proto.CloseRequest) (*
 		return nil, err
 	}
 	if !routed {
+		if !s.localActive() {
+			return nil, s.localDisabledError()
+		}
 		return s.local.Close(ctx, req)
 	}
 	reqCopy := *req
@@ -403,6 +451,9 @@ func (s *federatedServer) Close(ctx context.Context, req *proto.CloseRequest) (*
 
 func (s *federatedServer) Remove(ctx context.Context, req *proto.RemoveRequest) (*proto.RemoveResponse, error) {
 	if req == nil || strings.TrimSpace(req.Name) == "" {
+		if !s.localActive() {
+			return nil, s.localDisabledError()
+		}
 		return s.local.Remove(ctx, req)
 	}
 	spoke, session, routed, err := s.routeSession(req.Name)
@@ -410,6 +461,9 @@ func (s *federatedServer) Remove(ctx context.Context, req *proto.RemoveRequest) 
 		return nil, err
 	}
 	if !routed {
+		if !s.localActive() {
+			return nil, s.localDisabledError()
+		}
 		return s.local.Remove(ctx, req)
 	}
 	reqCopy := *req
@@ -419,6 +473,9 @@ func (s *federatedServer) Remove(ctx context.Context, req *proto.RemoveRequest) 
 
 func (s *federatedServer) Rename(ctx context.Context, req *proto.RenameRequest) (*proto.RenameResponse, error) {
 	if req == nil || strings.TrimSpace(req.Name) == "" {
+		if !s.localActive() {
+			return nil, s.localDisabledError()
+		}
 		return s.local.Rename(ctx, req)
 	}
 	spoke, session, routed, err := s.routeSession(req.Name)
@@ -426,6 +483,9 @@ func (s *federatedServer) Rename(ctx context.Context, req *proto.RenameRequest) 
 		return nil, err
 	}
 	if !routed {
+		if !s.localActive() {
+			return nil, s.localDisabledError()
+		}
 		return s.local.Rename(ctx, req)
 	}
 	newName := strings.TrimSpace(req.NewName)
@@ -446,6 +506,9 @@ func (s *federatedServer) Rename(ctx context.Context, req *proto.RenameRequest) 
 
 func (s *federatedServer) GetScreen(ctx context.Context, req *proto.GetScreenRequest) (*proto.GetScreenResponse, error) {
 	if req == nil || strings.TrimSpace(req.Name) == "" {
+		if !s.localActive() {
+			return nil, s.localDisabledError()
+		}
 		return s.local.GetScreen(ctx, req)
 	}
 	spoke, session, routed, err := s.routeSession(req.Name)
@@ -453,6 +516,9 @@ func (s *federatedServer) GetScreen(ctx context.Context, req *proto.GetScreenReq
 		return nil, err
 	}
 	if !routed {
+		if !s.localActive() {
+			return nil, s.localDisabledError()
+		}
 		return s.local.GetScreen(ctx, req)
 	}
 	reqCopy := *req
@@ -469,6 +535,9 @@ func (s *federatedServer) GetScreen(ctx context.Context, req *proto.GetScreenReq
 
 func (s *federatedServer) Grep(ctx context.Context, req *proto.GrepRequest) (*proto.GrepResponse, error) {
 	if req == nil || strings.TrimSpace(req.Name) == "" {
+		if !s.localActive() {
+			return nil, s.localDisabledError()
+		}
 		return s.local.Grep(ctx, req)
 	}
 	spoke, session, routed, err := s.routeSession(req.Name)
@@ -476,6 +545,9 @@ func (s *federatedServer) Grep(ctx context.Context, req *proto.GrepRequest) (*pr
 		return nil, err
 	}
 	if !routed {
+		if !s.localActive() {
+			return nil, s.localDisabledError()
+		}
 		return s.local.Grep(ctx, req)
 	}
 	reqCopy := *req
@@ -485,6 +557,9 @@ func (s *federatedServer) Grep(ctx context.Context, req *proto.GrepRequest) (*pr
 
 func (s *federatedServer) SendText(ctx context.Context, req *proto.SendTextRequest) (*proto.SendTextResponse, error) {
 	if req == nil || strings.TrimSpace(req.Name) == "" {
+		if !s.localActive() {
+			return nil, s.localDisabledError()
+		}
 		return s.local.SendText(ctx, req)
 	}
 	spoke, session, routed, err := s.routeSession(req.Name)
@@ -492,6 +567,9 @@ func (s *federatedServer) SendText(ctx context.Context, req *proto.SendTextReque
 		return nil, err
 	}
 	if !routed {
+		if !s.localActive() {
+			return nil, s.localDisabledError()
+		}
 		return s.local.SendText(ctx, req)
 	}
 	reqCopy := *req
@@ -501,6 +579,9 @@ func (s *federatedServer) SendText(ctx context.Context, req *proto.SendTextReque
 
 func (s *federatedServer) SendKey(ctx context.Context, req *proto.SendKeyRequest) (*proto.SendKeyResponse, error) {
 	if req == nil || strings.TrimSpace(req.Name) == "" {
+		if !s.localActive() {
+			return nil, s.localDisabledError()
+		}
 		return s.local.SendKey(ctx, req)
 	}
 	spoke, session, routed, err := s.routeSession(req.Name)
@@ -508,6 +589,9 @@ func (s *federatedServer) SendKey(ctx context.Context, req *proto.SendKeyRequest
 		return nil, err
 	}
 	if !routed {
+		if !s.localActive() {
+			return nil, s.localDisabledError()
+		}
 		return s.local.SendKey(ctx, req)
 	}
 	reqCopy := *req
@@ -517,6 +601,9 @@ func (s *federatedServer) SendKey(ctx context.Context, req *proto.SendKeyRequest
 
 func (s *federatedServer) SendBytes(ctx context.Context, req *proto.SendBytesRequest) (*proto.SendBytesResponse, error) {
 	if req == nil || strings.TrimSpace(req.Name) == "" {
+		if !s.localActive() {
+			return nil, s.localDisabledError()
+		}
 		return s.local.SendBytes(ctx, req)
 	}
 	spoke, session, routed, err := s.routeSession(req.Name)
@@ -524,6 +611,9 @@ func (s *federatedServer) SendBytes(ctx context.Context, req *proto.SendBytesReq
 		return nil, err
 	}
 	if !routed {
+		if !s.localActive() {
+			return nil, s.localDisabledError()
+		}
 		return s.local.SendBytes(ctx, req)
 	}
 	reqCopy := *req
@@ -533,6 +623,9 @@ func (s *federatedServer) SendBytes(ctx context.Context, req *proto.SendBytesReq
 
 func (s *federatedServer) Resize(ctx context.Context, req *proto.ResizeRequest) (*proto.ResizeResponse, error) {
 	if req == nil || strings.TrimSpace(req.Name) == "" {
+		if !s.localActive() {
+			return nil, s.localDisabledError()
+		}
 		return s.local.Resize(ctx, req)
 	}
 	spoke, session, routed, err := s.routeSession(req.Name)
@@ -540,6 +633,9 @@ func (s *federatedServer) Resize(ctx context.Context, req *proto.ResizeRequest) 
 		return nil, err
 	}
 	if !routed {
+		if !s.localActive() {
+			return nil, s.localDisabledError()
+		}
 		return s.local.Resize(ctx, req)
 	}
 	reqCopy := *req
@@ -549,6 +645,9 @@ func (s *federatedServer) Resize(ctx context.Context, req *proto.ResizeRequest) 
 
 func (s *federatedServer) WaitFor(ctx context.Context, req *proto.WaitForRequest) (*proto.WaitForResponse, error) {
 	if req == nil || strings.TrimSpace(req.Name) == "" {
+		if !s.localActive() {
+			return nil, s.localDisabledError()
+		}
 		return s.local.WaitFor(ctx, req)
 	}
 	spoke, session, routed, err := s.routeSession(req.Name)
@@ -556,6 +655,9 @@ func (s *federatedServer) WaitFor(ctx context.Context, req *proto.WaitForRequest
 		return nil, err
 	}
 	if !routed {
+		if !s.localActive() {
+			return nil, s.localDisabledError()
+		}
 		return s.local.WaitFor(ctx, req)
 	}
 	reqCopy := *req
@@ -565,6 +667,9 @@ func (s *federatedServer) WaitFor(ctx context.Context, req *proto.WaitForRequest
 
 func (s *federatedServer) WaitForIdle(ctx context.Context, req *proto.WaitForIdleRequest) (*proto.WaitForIdleResponse, error) {
 	if req == nil || strings.TrimSpace(req.Name) == "" {
+		if !s.localActive() {
+			return nil, s.localDisabledError()
+		}
 		return s.local.WaitForIdle(ctx, req)
 	}
 	spoke, session, routed, err := s.routeSession(req.Name)
@@ -572,6 +677,9 @@ func (s *federatedServer) WaitForIdle(ctx context.Context, req *proto.WaitForIdl
 		return nil, err
 	}
 	if !routed {
+		if !s.localActive() {
+			return nil, s.localDisabledError()
+		}
 		return s.local.WaitForIdle(ctx, req)
 	}
 	reqCopy := *req
@@ -581,6 +689,9 @@ func (s *federatedServer) WaitForIdle(ctx context.Context, req *proto.WaitForIdl
 
 func (s *federatedServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_SubscribeServer) error {
 	if req == nil || strings.TrimSpace(req.Name) == "" {
+		if !s.localActive() {
+			return s.localDisabledError()
+		}
 		return s.local.Subscribe(req, stream)
 	}
 	spoke, session, routed, err := s.routeSession(req.Name)
@@ -588,6 +699,9 @@ func (s *federatedServer) Subscribe(req *proto.SubscribeRequest, stream proto.VT
 		return err
 	}
 	if !routed {
+		if !s.localActive() {
+			return s.localDisabledError()
+		}
 		return s.local.Subscribe(req, stream)
 	}
 
@@ -632,6 +746,9 @@ func (s *federatedServer) Subscribe(req *proto.SubscribeRequest, stream proto.VT
 
 func (s *federatedServer) DumpAsciinema(ctx context.Context, req *proto.DumpAsciinemaRequest) (*proto.DumpAsciinemaResponse, error) {
 	if req == nil || strings.TrimSpace(req.Name) == "" {
+		if !s.localActive() {
+			return nil, s.localDisabledError()
+		}
 		return s.local.DumpAsciinema(ctx, req)
 	}
 	spoke, session, routed, err := s.routeSession(req.Name)
@@ -639,6 +756,9 @@ func (s *federatedServer) DumpAsciinema(ctx context.Context, req *proto.DumpAsci
 		return nil, err
 	}
 	if !routed {
+		if !s.localActive() {
+			return nil, s.localDisabledError()
+		}
 		return s.local.DumpAsciinema(ctx, req)
 	}
 	reqCopy := *req
@@ -652,7 +772,10 @@ func (s *federatedServer) routeSession(name string) (string, string, bool, error
 		return "", name, false, nil
 	}
 	if coord != "" && coord == s.localName {
-		return "", session, false, nil
+		if s.localActive() {
+			return "", session, false, nil
+		}
+		return "", "", false, s.localDisabledError()
 	}
 	if _, ok := s.resolveSpoke(coord); ok {
 		return coord, session, true, nil
@@ -670,7 +793,7 @@ func (s *federatedServer) resolveSpoke(name string) (spokeTarget, bool) {
 }
 
 func (s *federatedServer) spokeTargets() []spokeTarget {
-	return mergeSpokeTargets(s.static, s.registry, s.localName, tunnelNames(s.tunnels))
+	return mergeSpokeTargets(s.static, s.registry, s.localNameForTargets(), tunnelNames(s.tunnels))
 }
 
 func (s *federatedServer) tunnel(name string) *tunnelEndpoint {

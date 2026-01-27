@@ -11,6 +11,7 @@ Config file: `$VTRPC_CONFIG_DIR/vtrpc.toml` (default: `~/.config/vtrpc/vtrpc.tom
 grpc_socket = "/var/run/vtrpc.sock"
 addr = "127.0.0.1:4620"   # unified gRPC + web listener
 web_enabled = true
+coordinator_enabled = true
 
 [auth]
 mode = "both"            # token, mtls, or both
@@ -29,7 +30,7 @@ key_file = "~/.config/vtrpc/server.key"
 ## Hub runtime
 
 ```
-vtr hub [--socket /path/to.sock] [--addr 127.0.0.1:4620] [--no-web]
+vtr hub [--socket /path/to.sock] [--addr 127.0.0.1:4620] [--no-web] [--no-coordinator]
         [--shell /bin/bash] [--cols 80] [--rows 24] [--scrollback 10000]
         [--kill-timeout 5s] [--idle-threshold 5s]
 ```
@@ -37,6 +38,8 @@ vtr hub [--socket /path/to.sock] [--addr 127.0.0.1:4620] [--no-web]
 Notes:
 - `--addr` is a single listener for gRPC + web.
 - `--no-web` disables the Web UI while keeping the coordinator active.
+- `--no-coordinator` (or `hub.coordinator_enabled = false`) runs the hub as an
+  aggregator only; local sessions are disabled and requests must target a spoke.
 
 ## Spoke runtime
 

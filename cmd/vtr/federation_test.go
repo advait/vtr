@@ -10,7 +10,9 @@ import (
 	proto "github.com/advait/vtrpc/proto"
 	"github.com/advait/vtrpc/server"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 )
 
@@ -88,6 +90,7 @@ func TestFederatedListPrefixesSpokeSessions(t *testing.T) {
 		local,
 		"hub",
 		"",
+		true,
 		[]spokeTarget{{Name: "spoke-a", Addr: "spoke-a"}, {Name: "spoke-b", Addr: "spoke-b"}},
 		nil,
 		bufDialer(listeners),
@@ -138,6 +141,7 @@ func TestFederatedInfoRoutesToSpoke(t *testing.T) {
 		local,
 		"hub",
 		"",
+		true,
 		[]spokeTarget{{Name: "spoke-a", Addr: "spoke-a"}},
 		nil,
 		bufDialer(listeners),
@@ -156,6 +160,18 @@ func TestFederatedInfoRoutesToSpoke(t *testing.T) {
 	}
 }
 
+func TestFederatedHubOnlyRejectsLocalSpawn(t *testing.T) {
+	coord := server.NewCoordinator(server.CoordinatorOptions{})
+	defer coord.CloseAll()
+	local := server.NewGRPCServer(coord)
+
+	federated := newFederatedServer(local, "hub", "", false, nil, nil, nil, nil)
+	_, err := federated.Spawn(context.Background(), &proto.SpawnRequest{Name: "local-session"})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition, got %v", err)
+	}
+}
+
 func TestTunnelListAndInfoRoutesToSpoke(t *testing.T) {
 	coord := server.NewCoordinator(server.CoordinatorOptions{})
 	defer coord.CloseAll()
@@ -167,7 +183,7 @@ func TestTunnelListAndInfoRoutesToSpoke(t *testing.T) {
 
 	listener := bufconn.Listen(bufSize)
 	grpcServer := grpc.NewServer()
-	federated := newFederatedServer(local, "hub", "", nil, nil, nil, nil)
+	federated := newFederatedServer(local, "hub", "", true, nil, nil, nil, nil)
 	proto.RegisterVTRServer(grpcServer, federated)
 	go func() {
 		_ = grpcServer.Serve(listener)
@@ -240,7 +256,7 @@ func TestFederatedSubscribeSessionsAddsEmptyCoordinator(t *testing.T) {
 	local := server.NewGRPCServer(coord)
 
 	registry := server.NewSpokeRegistry()
-	federated := newFederatedServer(local, "hub", "", nil, registry, nil, nil)
+	federated := newFederatedServer(local, "hub", "", true, nil, registry, nil, nil)
 
 	listener := bufconn.Listen(bufSize)
 	grpcServer := grpc.NewServer()

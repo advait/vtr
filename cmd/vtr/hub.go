@@ -24,6 +24,7 @@ type hubOptions struct {
 	socket        string
 	addr          string
 	noWeb         bool
+	noCoordinator bool
 	shell         string
 	cols          int
 	rows          int
@@ -46,6 +47,7 @@ func newHubCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.socket, "socket", "", "path to Unix socket (default from vtrpc.toml)")
 	cmd.Flags().StringVar(&opts.addr, "addr", "", "single listener for gRPC + web (default from vtrpc.toml)")
 	cmd.Flags().BoolVar(&opts.noWeb, "no-web", false, "disable the web UI")
+	cmd.Flags().BoolVar(&opts.noCoordinator, "no-coordinator", false, "disable the local coordinator (hub-only mode)")
 	cmd.Flags().StringVar(&opts.shell, "shell", "", "default shell path")
 	cmd.Flags().IntVar(&opts.cols, "cols", 80, "default columns")
 	cmd.Flags().IntVar(&opts.rows, "rows", 24, "default rows")
@@ -88,6 +90,13 @@ func runHub(opts hubOptions) error {
 	if opts.noWeb {
 		webEnabled = false
 	}
+	coordinatorEnabled := true
+	if cfg.Hub.CoordinatorEnabled != nil {
+		coordinatorEnabled = *cfg.Hub.CoordinatorEnabled
+	}
+	if opts.noCoordinator {
+		coordinatorEnabled = false
+	}
 
 	if opts.cols <= 0 || opts.cols > int(^uint16(0)) {
 		return fmt.Errorf("cols must be between 1 and %d", int(^uint16(0)))
@@ -118,15 +127,18 @@ func runHub(opts hubOptions) error {
 		return err
 	}
 
-	coord := server.NewCoordinator(server.CoordinatorOptions{
-		DefaultShell:  opts.shell,
-		DefaultCols:   uint16(opts.cols),
-		DefaultRows:   uint16(opts.rows),
-		Scrollback:    uint32(opts.scrollback),
-		KillTimeout:   opts.killTimeout,
-		IdleThreshold: opts.idleThreshold,
-	})
-	defer coord.CloseAll()
+	var coord *server.Coordinator
+	if coordinatorEnabled {
+		coord = server.NewCoordinator(server.CoordinatorOptions{
+			DefaultShell:  opts.shell,
+			DefaultCols:   uint16(opts.cols),
+			DefaultRows:   uint16(opts.rows),
+			Scrollback:    uint32(opts.scrollback),
+			KillTimeout:   opts.killTimeout,
+			IdleThreshold: opts.idleThreshold,
+		})
+		defer coord.CloseAll()
+	}
 
 	localService := server.NewGRPCServer(coord)
 	staticSpokes := federationSpokesFromConfig(cfg)
@@ -134,6 +146,7 @@ func runHub(opts hubOptions) error {
 		localService,
 		coordinatorName(socketPath),
 		socketPath,
+		coordinatorEnabled,
 		staticSpokes,
 		localService.SpokeRegistry(),
 		func(ctx context.Context, addr string) (*grpc.ClientConn, error) {
@@ -149,6 +162,7 @@ func runHub(opts hubOptions) error {
 		"socket", socketPath,
 		"addr", addr,
 		"web_enabled", webEnabled,
+		"coordinator_enabled", coordinatorEnabled,
 		"log_level", strings.ToLower(opts.logLevel),
 	)
 
@@ -162,7 +176,10 @@ func runHub(opts hubOptions) error {
 	}
 
 	start(func() error {
-		return server.ServeUnix(ctx, coord, socketPath)
+		if coordinatorEnabled {
+			return server.ServeUnix(ctx, coord, socketPath)
+		}
+		return server.ServeUnixWithService(ctx, federated, socketPath)
 	})
 
 	if strings.TrimSpace(addr) != "" {
@@ -172,7 +189,7 @@ func runHub(opts hubOptions) error {
 		resolver := webResolver{
 			cfg: cfg,
 			coordsFn: func() ([]coordinatorRef, error) {
-				return federatedCoordinatorRefs(socketPath, hubDialAddr(addr), staticSpokes, localService.SpokeRegistry(), federated.tunnels), nil
+				return federatedCoordinatorRefs(socketPath, coordinatorEnabled, hubDialAddr(addr), staticSpokes, localService.SpokeRegistry(), federated.tunnels), nil
 			},
 			hubFn: func() (coordinatorRef, error) {
 				if strings.TrimSpace(socketPath) != "" {

@@ -193,6 +193,41 @@ func ServeUnix(ctx context.Context, coord *Coordinator, socketPath string) error
 	}
 }
 
+// ServeUnixWithService runs the provided gRPC service on a Unix socket until ctx is canceled.
+func ServeUnixWithService(ctx context.Context, service proto.VTRServer, socketPath string) error {
+	if service == nil {
+		return errors.New("grpc: service is required")
+	}
+	listener, err := ListenUnix(socketPath)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = listener.Close()
+		_ = os.Remove(socketPath)
+	}()
+
+	grpcServer := grpc.NewServer()
+	proto.RegisterVTRServer(grpcServer, service)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- grpcServer.Serve(listener)
+	}()
+
+	select {
+	case <-ctx.Done():
+		gracefulStopWithTimeout(grpcServer, grpcGracefulShutdownTimeout)
+		err := <-errCh
+		if err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+			return err
+		}
+		return ctx.Err()
+	case err := <-errCh:
+		return err
+	}
+}
+
 // ServeTCP runs the gRPC server on a TCP address until ctx is canceled.
 // TLS is required when binding to a non-loopback address.
 func ServeTCP(ctx context.Context, coord *Coordinator, addr string, tlsConfig *tls.Config, token string) error {

@@ -21,9 +21,10 @@ type clientConfig struct {
 }
 
 type hubConfig struct {
-	Addr       string `toml:"addr"`
-	GrpcSocket string `toml:"grpc_socket"`
-	WebEnabled *bool  `toml:"web_enabled"`
+	Addr               string `toml:"addr"`
+	GrpcSocket         string `toml:"grpc_socket"`
+	WebEnabled         *bool  `toml:"web_enabled"`
+	CoordinatorEnabled *bool  `toml:"coordinator_enabled"`
 
 	// Legacy fields (deprecated): prefer Addr.
 	GrpcAddr    string `toml:"grpc_addr"`
@@ -137,6 +138,10 @@ func resolveHubConfig(cfg hubConfig) hubConfig {
 	if cfg.WebEnabled == nil {
 		value := true
 		cfg.WebEnabled = &value
+	}
+	if cfg.CoordinatorEnabled == nil {
+		value := true
+		cfg.CoordinatorEnabled = &value
 	}
 	cfg.GrpcSocket = expandPath(cfg.GrpcSocket)
 	return cfg
