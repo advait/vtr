@@ -37,6 +37,12 @@ type attachModel struct {
 	streamID     int
 	frameID      uint64
 
+	sessionsStream       proto.VTR_SubscribeSessionsClient
+	sessionsStreamCancel context.CancelFunc
+	sessionsStreamID     int
+	sessionsBackoff      time.Duration
+	multiCoordinator     bool
+
 	width          int
 	height         int
 	viewportWidth  int
@@ -60,7 +66,6 @@ type attachModel struct {
 	exitCode     int32
 	statusMsg    string
 	statusUntil  time.Time
-	lastListAt   time.Time
 
 	now time.Time
 	err error
@@ -99,6 +104,23 @@ type subscribeEventMsg struct {
 	err      error
 }
 
+type sessionsSubscribeStartMsg struct {
+	stream   proto.VTR_SubscribeSessionsClient
+	cancel   context.CancelFunc
+	streamID int
+	err      error
+}
+
+type sessionsSnapshotMsg struct {
+	snapshot *proto.SessionsSnapshot
+	streamID int
+	err      error
+}
+
+type sessionsRetryMsg struct {
+	streamID int
+}
+
 type tickMsg time.Time
 
 type rpcErrMsg struct {
@@ -109,6 +131,7 @@ type rpcErrMsg struct {
 type sessionSwitchMsg struct {
 	id    string
 	label string
+	coord string
 	err   error
 }
 
@@ -375,13 +398,13 @@ func newTuiCmd() *cobra.Command {
 				sessionID:        target.ID,
 				sessionLabel:     target.Label,
 				streamID:         1,
+				sessionsStreamID: 1,
 				sessionList:      newSessionListModel(nil, 0, 0),
 				createInput:      newCreateInput(),
 				createCoordIdx:   coordIdx,
 				createFocusInput: true,
 				listActive:       listActive,
 				now:              time.Now(),
-				lastListAt:       time.Now(),
 			}
 
 			prog := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseAllMotion())
@@ -531,7 +554,7 @@ func confirmCreateSession(name string) (bool, error) {
 
 func (m attachModel) Init() tea.Cmd {
 	cmds := []tea.Cmd{
-		loadSessionListCmd(m.client, false, m.coordinator.Name),
+		startSessionsStreamCmd(m.client, m.sessionsStreamID),
 		tickCmd(),
 	}
 	if strings.TrimSpace(m.sessionID) != "" || strings.TrimSpace(m.sessionLabel) != "" {
@@ -599,18 +622,80 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 		return m, waitSubscribeCmd(m.stream, m.streamID)
+	case sessionsSubscribeStartMsg:
+		if msg.streamID != m.sessionsStreamID {
+			if msg.cancel != nil {
+				msg.cancel()
+			}
+			return m, nil
+		}
+		if msg.err != nil {
+			m.statusMsg = fmt.Sprintf("sessions stream: %v", msg.err)
+			m.statusUntil = time.Now().Add(2 * time.Second)
+			return scheduleSessionsRetry(m)
+		}
+		if m.sessionsStreamCancel != nil {
+			m.sessionsStreamCancel()
+		}
+		m.sessionsStream = msg.stream
+		m.sessionsStreamCancel = msg.cancel
+		m.sessionsBackoff = time.Second
+		return m, waitSessionsStreamCmd(m.sessionsStream, m.sessionsStreamID)
+	case sessionsSnapshotMsg:
+		if msg.streamID != m.sessionsStreamID {
+			return m, nil
+		}
+		if msg.err != nil {
+			if errors.Is(msg.err, io.EOF) || errors.Is(msg.err, context.Canceled) {
+				return m, nil
+			}
+			m.statusMsg = fmt.Sprintf("sessions stream: %v", msg.err)
+			m.statusUntil = time.Now().Add(2 * time.Second)
+			if m.sessionsStreamCancel != nil {
+				m.sessionsStreamCancel()
+				m.sessionsStreamCancel = nil
+			}
+			m.sessionsStream = nil
+			return scheduleSessionsRetry(m)
+		}
+		coords, items, multi := sessionItemsFromSnapshot(msg.snapshot)
+		if len(coords) == 0 {
+			coords = ensureCoordinator(coords, m.coordinator)
+		}
+		m.coords = coords
+		m.multiCoordinator = multi
+		m.sessionItems = items
+		if m.sessionID != "" {
+			for _, item := range m.sessionItems {
+				if item.id == m.sessionID && item.label != "" {
+					m.sessionLabel = item.label
+					if coord, ok := coordinatorByName(m.coords, item.coord); ok {
+						m.coordinator = coord
+					} else if item.coord != "" {
+						m.coordinator.Name = item.coord
+					}
+					break
+				}
+			}
+		}
+		if m.createCoordIdx >= len(m.coords) && len(m.coords) > 0 {
+			m.createCoordIdx = len(m.coords) - 1
+		}
+		cmd := m.sessionList.SetItems(sessionItemsToListItems(visibleSessionItems(m), m.coords, m.coordinator.Name))
+		skipSessionListHeaders(&m.sessionList, 1)
+		return m, tea.Batch(cmd, waitSessionsStreamCmd(m.sessionsStream, m.sessionsStreamID))
+	case sessionsRetryMsg:
+		if msg.streamID != m.sessionsStreamID {
+			return m, nil
+		}
+		return m, startSessionsStreamCmd(m.client, m.sessionsStreamID)
 	case tickMsg:
 		m.now = time.Time(msg)
 		if m.statusMsg != "" && !m.statusUntil.IsZero() && m.now.After(m.statusUntil) {
 			m.statusMsg = ""
 			m.statusUntil = time.Time{}
 		}
-		cmds := []tea.Cmd{tickCmd()}
-		if m.client != nil && !m.listActive && !m.createActive && (m.lastListAt.IsZero() || m.now.Sub(m.lastListAt) > 5*time.Second) {
-			m.lastListAt = m.now
-			cmds = append(cmds, loadSessionListCmd(m.client, false, m.coordinator.Name))
-		}
-		return m, tea.Batch(cmds...)
+		return m, tickCmd()
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -651,7 +736,6 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-		m.lastListAt = time.Now()
 		cmd := m.sessionList.SetItems(sessionItemsToListItems(visibleSessionItems(m), m.coords, m.coordinator.Name))
 		skipSessionListHeaders(&m.sessionList, 1)
 		if msg.activate {
@@ -667,6 +751,7 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusUntil = time.Now().Add(2 * time.Second)
 			return m, nil
 		}
+		restartSessionsStream := false
 		if msg.conn != nil {
 			if m.conn != nil {
 				_ = m.conn.Close()
@@ -674,8 +759,22 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.conn = msg.conn
 			m.client = proto.NewVTRClient(msg.conn)
 			m.coordinator = msg.coord
+			restartSessionsStream = true
 		}
-		return switchSession(m, sessionSwitchMsg{id: msg.id, label: msg.label})
+		next, cmd := switchSession(m, sessionSwitchMsg{id: msg.id, label: msg.label, coord: msg.coord.Name})
+		if !restartSessionsStream {
+			return next, cmd
+		}
+		if next.sessionsStreamCancel != nil {
+			next.sessionsStreamCancel()
+			next.sessionsStreamCancel = nil
+		}
+		next.sessionsStream = nil
+		next.sessionsStreamID++
+		next.sessionsBackoff = 0
+		next.multiCoordinator = false
+		restart := startSessionsStreamCmd(next.client, next.sessionsStreamID)
+		return next, tea.Batch(cmd, restart)
 	case tea.MouseMsg:
 		return handleMouse(m, msg)
 	case tea.KeyMsg:
@@ -774,6 +873,46 @@ func waitSubscribeCmd(stream proto.VTR_SubscribeClient, streamID int) tea.Cmd {
 		}
 		return subscribeEventMsg{event: event, streamID: streamID}
 	}
+}
+
+func startSessionsStreamCmd(client proto.VTRClient, streamID int) tea.Cmd {
+	return func() tea.Msg {
+		if client == nil {
+			return sessionsSubscribeStartMsg{err: fmt.Errorf("session stream: no client"), streamID: streamID}
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		stream, err := client.SubscribeSessions(ctx, &proto.SubscribeSessionsRequest{
+			ExcludeExited: false,
+		})
+		if err != nil {
+			cancel()
+			return sessionsSubscribeStartMsg{err: err, streamID: streamID}
+		}
+		return sessionsSubscribeStartMsg{stream: stream, cancel: cancel, streamID: streamID}
+	}
+}
+
+func waitSessionsStreamCmd(stream proto.VTR_SubscribeSessionsClient, streamID int) tea.Cmd {
+	return func() tea.Msg {
+		snapshot, err := stream.Recv()
+		if err != nil {
+			return sessionsSnapshotMsg{err: err, streamID: streamID}
+		}
+		return sessionsSnapshotMsg{snapshot: snapshot, streamID: streamID}
+	}
+}
+
+func scheduleSessionsRetry(m attachModel) (attachModel, tea.Cmd) {
+	delay := m.sessionsBackoff
+	if delay <= 0 {
+		delay = time.Second
+	}
+	nextID := m.sessionsStreamID + 1
+	m.sessionsStreamID = nextID
+	m.sessionsBackoff = nextBackoff(delay)
+	return m, tea.Tick(delay, func(time.Time) tea.Msg {
+		return sessionsRetryMsg{streamID: nextID}
+	})
 }
 
 func tickCmd() tea.Cmd {
@@ -880,9 +1019,12 @@ func nextSessionCmd(client proto.VTRClient, currentID string, forward bool, show
 				if !showExited && session.Status == proto.SessionStatus_SESSION_STATUS_EXITED {
 					continue
 				}
+				label := session.GetName()
+				coord, _ := splitCoordinatorPrefix(label, "")
 				entries = append(entries, sessionListItem{
 					id:       session.GetId(),
-					label:    session.GetName(),
+					label:    label,
+					coord:    coord,
 					status:   session.Status,
 					exitCode: session.ExitCode,
 					idle:     session.GetIdle(),
@@ -903,7 +1045,7 @@ func nextSessionCmd(client proto.VTRClient, currentID string, forward bool, show
 		}
 		if idx == -1 {
 			entry := entries[0]
-			return sessionSwitchMsg{id: entry.id, label: entry.label}
+			return sessionSwitchMsg{id: entry.id, label: entry.label, coord: entry.coord}
 		}
 		if forward {
 			idx = (idx + 1) % len(entries)
@@ -911,7 +1053,7 @@ func nextSessionCmd(client proto.VTRClient, currentID string, forward bool, show
 			idx = (idx - 1 + len(entries)) % len(entries)
 		}
 		entry := entries[idx]
-		return sessionSwitchMsg{id: entry.id, label: entry.label}
+		return sessionSwitchMsg{id: entry.id, label: entry.label, coord: entry.coord}
 	}
 }
 
@@ -946,6 +1088,74 @@ func loadSessionListCmd(client proto.VTRClient, activate bool, fallbackCoord str
 	}
 }
 
+func sessionItemsFromSnapshot(snapshot *proto.SessionsSnapshot) ([]coordinatorRef, []sessionListItem, bool) {
+	if snapshot == nil {
+		return nil, nil, false
+	}
+	coords := make([]coordinatorRef, 0, len(snapshot.Coordinators))
+	for _, coord := range snapshot.Coordinators {
+		if coord == nil {
+			continue
+		}
+		name := strings.TrimSpace(coord.GetName())
+		if name == "" {
+			continue
+		}
+		coords = append(coords, coordinatorRef{
+			Name: name,
+			Path: strings.TrimSpace(coord.GetPath()),
+		})
+	}
+	sort.Slice(coords, func(i, j int) bool {
+		if coords[i].Name == coords[j].Name {
+			return coords[i].Path < coords[j].Path
+		}
+		return coords[i].Name < coords[j].Name
+	})
+	multi := len(coords) > 1
+	items := make([]sessionListItem, 0)
+	for _, coord := range snapshot.Coordinators {
+		if coord == nil {
+			continue
+		}
+		coordName := strings.TrimSpace(coord.GetName())
+		if coordName == "" {
+			continue
+		}
+		for _, session := range coord.GetSessions() {
+			if session == nil || session.GetId() == "" {
+				continue
+			}
+			label := session.GetName()
+			if multi {
+				label = prefixSessionLabel(coordName, label)
+			}
+			items = append(items, sessionListItem{
+				id:       session.GetId(),
+				label:    label,
+				coord:    coordName,
+				status:   session.Status,
+				exitCode: session.ExitCode,
+				idle:     session.GetIdle(),
+				order:    session.GetOrder(),
+			})
+		}
+	}
+	return coords, items, multi
+}
+
+func prefixSessionLabel(coord, label string) string {
+	coord = strings.TrimSpace(coord)
+	label = strings.TrimSpace(label)
+	if coord == "" || label == "" {
+		return label
+	}
+	if _, _, ok := parseSessionRef(label); ok {
+		return label
+	}
+	return fmt.Sprintf("%s:%s", coord, label)
+}
+
 func spawnCurrentCmd(client proto.VTRClient, name string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
@@ -955,7 +1165,9 @@ func spawnCurrentCmd(client proto.VTRClient, name string) tea.Cmd {
 			return rpcErrMsg{err: err, op: "spawn"}
 		}
 		if resp != nil && resp.Session != nil {
-			return sessionSwitchMsg{id: resp.Session.GetId(), label: resp.Session.GetName()}
+			label := resp.Session.GetName()
+			coord, _ := splitCoordinatorPrefix(label, "")
+			return sessionSwitchMsg{id: resp.Session.GetId(), label: label, coord: coord}
 		}
 		return sessionSwitchMsg{err: fmt.Errorf("spawn: missing session response")}
 	}
@@ -995,7 +1207,9 @@ func spawnAutoSessionCmd(client proto.VTRClient, base string) tea.Cmd {
 			cancel()
 			if err == nil {
 				if resp != nil && resp.Session != nil {
-					return sessionSwitchMsg{id: resp.Session.GetId(), label: resp.Session.GetName()}
+					label := resp.Session.GetName()
+					coord, _ := splitCoordinatorPrefix(label, "")
+					return sessionSwitchMsg{id: resp.Session.GetId(), label: label, coord: coord}
 				}
 				return sessionSwitchMsg{err: fmt.Errorf("spawn: missing session response")}
 			}
@@ -1072,7 +1286,7 @@ func handleLeaderKey(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
 		return m, cmd
 	case "w":
 		m.listActive = true
-		return m, loadSessionListCmd(m.client, true, m.coordinator.Name)
+		return m, nil
 	default:
 		m.statusMsg = fmt.Sprintf("unknown leader key: %s", key)
 		m.statusUntil = time.Now().Add(2 * time.Second)
@@ -1204,7 +1418,8 @@ func handleMouse(m attachModel, msg tea.MouseMsg) (attachModel, tea.Cmd) {
 		if tab.id == "" || tab.id == m.sessionID {
 			return m, nil
 		}
-		return switchSession(m, sessionSwitchMsg{id: tab.id, label: tab.sessionLabel})
+		coord, _ := splitCoordinatorPrefix(tab.sessionLabel, "")
+		return switchSession(m, sessionSwitchMsg{id: tab.id, label: tab.sessionLabel, coord: coord})
 	case tea.MouseButtonMiddle:
 		if tab.id == "" {
 			return m, nil
@@ -1387,7 +1602,7 @@ func updateSessionList(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
 		switch selected := item.(type) {
 		case sessionListItem:
 			m.listActive = false
-			return switchSession(m, sessionSwitchMsg{id: selected.id, label: selected.label})
+			return switchSession(m, sessionSwitchMsg{id: selected.id, label: selected.label, coord: selected.coord})
 		case sessionCreateItem:
 			return beginCreateModalForCoord(m, selected.coord)
 		default:
@@ -1494,8 +1709,12 @@ func updateCreateModal(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
 		}
 		m.createActive = false
 		m.createInput.Blur()
-		if coord.Path == m.coordinator.Path {
-			return m, spawnCurrentCmd(m.client, name)
+		if coord.Path == "" || coord.Path == m.coordinator.Path {
+			spawnName := name
+			if m.multiCoordinator {
+				spawnName = prefixSessionLabel(coord.Name, name)
+			}
+			return m, spawnCurrentCmd(m.client, spawnName)
 		}
 		return m, spawnSessionCmd(coord, m.cfg, name)
 	case "j", "down":
@@ -1535,6 +1754,18 @@ func switchSession(m attachModel, msg sessionSwitchMsg) (attachModel, tea.Cmd) {
 	m.streamID++
 	m.sessionID = msg.id
 	m.sessionLabel = msg.label
+	if msg.coord == "" {
+		if coord, _ := splitCoordinatorPrefix(msg.label, ""); coord != "" {
+			msg.coord = coord
+		}
+	}
+	if msg.coord != "" {
+		if coord, ok := coordinatorByName(m.coords, msg.coord); ok {
+			m.coordinator = coord
+		} else {
+			m.coordinator.Name = msg.coord
+		}
+	}
 	m.screen = nil
 	m.frameID = 0
 	m.exited = false
@@ -1550,11 +1781,15 @@ func switchSession(m attachModel, msg sessionSwitchMsg) (attachModel, tea.Cmd) {
 	}
 	m.statusUntil = time.Now().Add(2 * time.Second)
 	m.sessionItems = ensureSessionItem(m.sessionItems, m.sessionID, m.sessionLabel, false, 0, m.coordinator.Name)
-	cmds := []tea.Cmd{startSubscribeCmd(m.client, m.sessionID, m.sessionLabel, m.streamID)}
+	cmds := []tea.Cmd{
+		startSubscribeCmd(m.client, m.sessionID, m.sessionLabel, m.streamID),
+	}
+	cmd := m.sessionList.SetItems(sessionItemsToListItems(visibleSessionItems(m), m.coords, m.coordinator.Name))
+	skipSessionListHeaders(&m.sessionList, 1)
+	cmds = append(cmds, cmd)
 	if m.viewportWidth > 0 && m.viewportHeight > 0 {
 		cmds = append(cmds, resizeCmd(m.client, m.sessionID, m.sessionLabel, m.viewportWidth, m.viewportHeight))
 	}
-	cmds = append(cmds, loadSessionListCmd(m.client, false, m.coordinator.Name))
 	return m, tea.Batch(cmds...)
 }
 
@@ -1776,6 +2011,9 @@ func applyScreenUpdate(m attachModel, update *proto.ScreenUpdate) (attachModel, 
 func applySessionLabelUpdate(m attachModel, id, label string) attachModel {
 	if id == "" || label == "" || id != m.sessionID || label == m.sessionLabel {
 		return m
+	}
+	if m.multiCoordinator {
+		label = prefixSessionLabel(m.coordinator.Name, label)
 	}
 	m.sessionLabel = label
 	m.statusMsg = fmt.Sprintf("session renamed to %s", label)
@@ -2055,6 +2293,22 @@ func renderCreateModal(m attachModel) string {
 }
 
 func coordinatorIndex(coords []coordinatorRef, target coordinatorRef) int {
+	targetPath := strings.TrimSpace(target.Path)
+	targetName := strings.TrimSpace(target.Name)
+	if targetPath != "" {
+		for i, coord := range coords {
+			if strings.TrimSpace(coord.Path) == targetPath {
+				return i
+			}
+		}
+	}
+	if targetName != "" {
+		for i, coord := range coords {
+			if strings.TrimSpace(coord.Name) == targetName {
+				return i
+			}
+		}
+	}
 	for i, coord := range coords {
 		if coord.Path == target.Path {
 			return i
@@ -2068,6 +2322,19 @@ func ensureCoordinator(coords []coordinatorRef, target coordinatorRef) []coordin
 		return coords
 	}
 	return append(coords, target)
+}
+
+func coordinatorByName(coords []coordinatorRef, name string) (coordinatorRef, bool) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return coordinatorRef{}, false
+	}
+	for _, coord := range coords {
+		if strings.TrimSpace(coord.Name) == name {
+			return coord, true
+		}
+	}
+	return coordinatorRef{}, false
 }
 
 func clampViewHeight(view string, height int) string {
