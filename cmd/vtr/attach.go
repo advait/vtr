@@ -58,8 +58,8 @@ type attachModel struct {
 	createCoordIdx   int
 	createFocusInput bool
 
-	hoverTabID string
-	hoverNew   bool
+	hoverTabID    string
+	hoverNewCoord string
 
 	leaderActive bool
 	showExited   bool
@@ -292,6 +292,12 @@ var (
 				Bold(true)
 	attachTabNewHoverStyle = attachTabNewStyle.Copy().
 				Underline(true)
+	attachCoordLabelStyle = attachTabBaseStyle.Copy().
+				Background(lipgloss.Color("238")).
+				Foreground(lipgloss.Color("229")).
+				Bold(true)
+	attachCoordLabelActiveStyle = attachCoordLabelStyle.Copy().
+					Background(lipgloss.Color("240"))
 	attachTabChipStyle = lipgloss.NewStyle().
 				Background(lipgloss.Color("238")).
 				Foreground(lipgloss.Color("250")).
@@ -330,6 +336,8 @@ var (
 	attachListCreateStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("120")).
 				Bold(true)
+	attachTabSeparatorStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("240"))
 	attachOverflowStyle = attachTabBaseStyle.Copy().
 				Foreground(lipgloss.Color("244"))
 	attachModalStyle = lipgloss.NewStyle().
@@ -831,15 +839,16 @@ func (m attachModel) View() string {
 		border = attachExitedBorderStyle
 	}
 	headerLeft, headerRight := renderHeaderSegments(headerView{
-		sessions:    visibleSessionItems(m),
-		activeID:    m.sessionID,
-		activeLabel: m.sessionLabel,
-		coordinator: m.coordinator.Name,
-		width:       overlayWidth,
-		exited:      m.exited,
-		exitCode:    m.exitCode,
-		hoverTabID:  m.hoverTabID,
-		hoverNew:    m.hoverNew,
+		sessions:      visibleSessionItems(m),
+		activeID:      m.sessionID,
+		activeLabel:   m.sessionLabel,
+		coords:        m.coords,
+		coordinator:   m.coordinator.Name,
+		width:         overlayWidth,
+		exited:        m.exited,
+		exitCode:      m.exitCode,
+		hoverTabID:    m.hoverTabID,
+		hoverNewCoord: m.hoverNewCoord,
 	})
 	activeItem := currentSessionItem(m)
 	footerLeft, footerRight := renderFooterSegments(footerView{
@@ -1259,11 +1268,27 @@ func spawnAutoSessionCmd(client proto.VTRClient, base string) tea.Cmd {
 }
 
 func autoSpawnBase(m attachModel, base string) (string, bool) {
+	return autoSpawnBaseWithCoord(m, coordinatorRef{}, base)
+}
+
+func autoSpawnBaseForCoordinator(m attachModel, coordName, base string) (string, bool) {
+	coord := coordinatorRef{Name: strings.TrimSpace(coordName)}
+	if coord.Name != "" {
+		if ref, ok := coordinatorByName(m.coords, coord.Name); ok {
+			coord = ref
+		}
+	}
+	return autoSpawnBaseWithCoord(m, coord, base)
+}
+
+func autoSpawnBaseWithCoord(m attachModel, coord coordinatorRef, base string) (string, bool) {
 	base = strings.TrimSpace(base)
 	if base == "" {
 		base = "session"
 	}
-	coord := m.coordinator
+	if strings.TrimSpace(coord.Name) == "" && strings.TrimSpace(coord.Path) == "" {
+		coord = m.coordinator
+	}
 	coordEmpty := strings.TrimSpace(coord.Name) == "" && strings.TrimSpace(coord.Path) == ""
 	if coordEmpty || coordinatorIndex(m.coords, coord) < 0 {
 		if len(m.coords) > 0 {
@@ -1352,24 +1377,24 @@ func handleLeaderKey(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
 func handleMouse(m attachModel, msg tea.MouseMsg) (attachModel, tea.Cmd) {
 	clearHover := func() {
 		m.hoverTabID = ""
-		m.hoverNew = false
+		m.hoverNewCoord = ""
 	}
 	if m.listActive || m.createActive {
-		if m.hoverTabID != "" || m.hoverNew {
+		if m.hoverTabID != "" || m.hoverNewCoord != "" {
 			clearHover()
 		}
 		return m, nil
 	}
 	if msg.Action == tea.MouseActionMotion {
 		if msg.Y != 0 || m.width <= 0 {
-			if m.hoverTabID != "" || m.hoverNew {
+			if m.hoverTabID != "" || m.hoverNewCoord != "" {
 				clearHover()
 			}
 			return m, nil
 		}
 		innerWidth := m.width - 2
 		if innerWidth <= 0 {
-			if m.hoverTabID != "" || m.hoverNew {
+			if m.hoverTabID != "" || m.hoverNewCoord != "" {
 				clearHover()
 			}
 			return m, nil
@@ -1378,40 +1403,42 @@ func handleMouse(m attachModel, msg tea.MouseMsg) (attachModel, tea.Cmd) {
 		startX := 1 + leftPad
 		localX := msg.X - startX
 		if localX < 0 {
-			if m.hoverTabID != "" || m.hoverNew {
+			if m.hoverTabID != "" || m.hoverNewCoord != "" {
 				clearHover()
 			}
 			return m, nil
 		}
 		headerWidth := overlayAvailableWidth(innerWidth)
 		if headerWidth <= 0 {
-			if m.hoverTabID != "" || m.hoverNew {
+			if m.hoverTabID != "" || m.hoverNewCoord != "" {
 				clearHover()
 			}
 			return m, nil
 		}
 		tab, ok := tabAtOffsetX(headerView{
-			sessions:    visibleSessionItems(m),
-			activeID:    m.sessionID,
-			activeLabel: m.sessionLabel,
-			coordinator: m.coordinator.Name,
-			width:       headerWidth,
-			exited:      m.exited,
-			exitCode:    m.exitCode,
-			hoverTabID:  m.hoverTabID,
+			sessions:      visibleSessionItems(m),
+			activeID:      m.sessionID,
+			activeLabel:   m.sessionLabel,
+			coords:        m.coords,
+			coordinator:   m.coordinator.Name,
+			width:         headerWidth,
+			exited:        m.exited,
+			exitCode:      m.exitCode,
+			hoverTabID:    m.hoverTabID,
+			hoverNewCoord: m.hoverNewCoord,
 		}, localX)
 		if !ok {
-			if m.hoverTabID != "" || m.hoverNew {
+			if m.hoverTabID != "" || m.hoverNewCoord != "" {
 				clearHover()
 			}
 			return m, nil
 		}
-		if tab.newTab {
-			m.hoverNew = true
+		if tab.kind == tabItemNew {
+			m.hoverNewCoord = tab.coord
 			m.hoverTabID = ""
 			return m, nil
 		}
-		m.hoverNew = false
+		m.hoverNewCoord = ""
 		m.hoverTabID = tab.id
 		return m, nil
 	}
@@ -1450,21 +1477,23 @@ func handleMouse(m attachModel, msg tea.MouseMsg) (attachModel, tea.Cmd) {
 		return m, nil
 	}
 	tab, ok := tabAtOffsetX(headerView{
-		sessions:    visibleSessionItems(m),
-		activeID:    m.sessionID,
-		activeLabel: m.sessionLabel,
-		coordinator: m.coordinator.Name,
-		width:       headerWidth,
-		exited:      m.exited,
-		exitCode:    m.exitCode,
-		hoverTabID:  m.hoverTabID,
+		sessions:      visibleSessionItems(m),
+		activeID:      m.sessionID,
+		activeLabel:   m.sessionLabel,
+		coords:        m.coords,
+		coordinator:   m.coordinator.Name,
+		width:         headerWidth,
+		exited:        m.exited,
+		exitCode:      m.exitCode,
+		hoverTabID:    m.hoverTabID,
+		hoverNewCoord: m.hoverNewCoord,
 	}, localX)
 	if !ok {
 		return m, nil
 	}
-	if tab.newTab {
+	if tab.kind == tabItemNew {
 		if msg.Button == tea.MouseButtonLeft {
-			base, ok := autoSpawnBase(m, "session")
+			base, ok := autoSpawnBaseForCoordinator(m, tab.coord, "session")
 			if !ok {
 				m.statusMsg = "create: no coordinators"
 				m.statusUntil = time.Now().Add(2 * time.Second)
@@ -2408,15 +2437,16 @@ func clampViewHeight(view string, height int) string {
 }
 
 type headerView struct {
-	sessions    []sessionListItem
-	activeID    string
-	activeLabel string
-	coordinator string
-	width       int
-	exited      bool
-	exitCode    int32
-	hoverTabID  string
-	hoverNew    bool
+	sessions      []sessionListItem
+	activeID      string
+	activeLabel   string
+	coords        []coordinatorRef
+	coordinator   string
+	width         int
+	exited        bool
+	exitCode      int32
+	hoverTabID    string
+	hoverNewCoord string
 }
 type footerView struct {
 	width       int
@@ -2450,7 +2480,9 @@ const (
 	sessionIconUnknown = "?"
 	tabOverflowGlyph   = "…"
 	tabNewGlyph        = "+"
+	tabSeparatorGlyph  = "|"
 	tabNameMaxWidth    = 20
+	tabCoordMaxWidth   = 16
 	sessionListIndent  = "  "
 )
 
@@ -2628,15 +2660,25 @@ func truncateTabName(name string, max int) string {
 	return ansi.Truncate(name, max, tabOverflowGlyph)
 }
 
+type tabItemKind int
+
+const (
+	tabItemSession tabItemKind = iota
+	tabItemCoordinator
+	tabItemNew
+	tabItemSeparator
+	tabItemOverflow
+)
+
 type tabItem struct {
+	kind         tabItemKind
 	id           string
 	label        string
 	sessionLabel string
+	coord        string
 	width        int
 	active       bool
 	hovered      bool
-	newTab       bool
-	overflow     bool
 }
 
 func renderTabBar(view headerView) string {
@@ -2644,47 +2686,62 @@ func renderTabBar(view headerView) string {
 	if len(tabs) == 0 || view.width <= 0 {
 		return ""
 	}
-	return joinTabItems(tabs, " ")
+	return joinTabItems(tabs, tabGapString())
 }
 
-func renderNewTabLabel() string {
+func tabGapString() string {
+	return " " + attachTabSeparatorStyle.Render(tabSeparatorGlyph) + " "
+}
+
+func tabGapWidth() int {
+	return lipgloss.Width(tabGapString())
+}
+
+func renderNewTabLabel(hovered bool) string {
+	if hovered {
+		return attachTabNewHoverStyle.Render(tabNewGlyph)
+	}
 	return attachTabNewStyle.Render(tabNewGlyph)
 }
 
-func newTabButtonItem(hovered bool) tabItem {
-	label := renderNewTabLabel()
-	if hovered {
-		label = attachTabNewHoverStyle.Render(tabNewGlyph)
-	}
+func newTabButtonItem(coord string, hovered bool) tabItem {
+	label := renderNewTabLabel(hovered)
 	return tabItem{
+		kind:    tabItemNew,
 		label:   label,
 		width:   lipgloss.Width(label),
+		coord:   coord,
 		hovered: hovered,
-		newTab:  true,
 	}
 }
+
+func renderCoordinatorLabel(name string, active bool) string {
+	if strings.TrimSpace(name) == "" {
+		return ""
+	}
+	label := truncateTabName(name, tabCoordMaxWidth)
+	style := attachCoordLabelStyle
+	if active {
+		style = attachCoordLabelActiveStyle
+	}
+	return style.Render(" " + label + " ")
+}
+
+func coordinatorLabelItem(name string, active bool) tabItem {
+	label := renderCoordinatorLabel(name, active)
+	return tabItem{
+		kind:  tabItemCoordinator,
+		label: label,
+		width: lipgloss.Width(label),
+		coord: name,
+	}
+}
+
 func headerTabItems(view headerView) []tabItem {
 	if view.width <= 0 {
 		return nil
 	}
-	plus := newTabButtonItem(view.hoverNew)
-	if plus.width <= 0 {
-		return visibleTabs(view)
-	}
-	if view.width <= plus.width {
-		return []tabItem{plus}
-	}
-	gapWidth := lipgloss.Width(" ")
-	available := view.width - plus.width
-	if available <= gapWidth {
-		return []tabItem{plus}
-	}
-	sessionWidth := available - gapWidth
-	sessionTabs := visibleTabsWithWidth(view, sessionWidth)
-	if len(sessionTabs) == 0 {
-		return []tabItem{plus}
-	}
-	return append(sessionTabs, plus)
+	return visibleTabs(view)
 }
 func collectTabSessions(items []sessionListItem, activeID, activeLabel string, exited bool, exitCode int32, fallbackCoord string) []sessionListItem {
 	if activeID == "" && len(items) == 0 {
@@ -2718,11 +2775,87 @@ func collectTabSessions(items []sessionListItem, activeID, activeLabel string, e
 	return out
 }
 
-func renderTabLabel(item sessionListItem, active, hovered bool) string {
-	coord, label := splitCoordinatorPrefix(item.label, item.coord)
-	if coord == "" {
-		coord = item.coord
+type coordinatorTabGroup struct {
+	name     string
+	sessions []sessionListItem
+}
+
+func groupTabSessionsByCoordinator(items []sessionListItem, coords []coordinatorRef, fallbackCoord string) []coordinatorTabGroup {
+	if len(items) == 0 && len(coords) == 0 {
+		return nil
 	}
+	seen := make(map[string]struct{})
+	names := make([]string, 0, len(coords))
+	addName := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return
+		}
+		if _, ok := seen[name]; ok {
+			return
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	for _, coord := range coords {
+		addName(coord.Name)
+	}
+	for _, item := range items {
+		coord := strings.TrimSpace(item.coord)
+		if coord == "" {
+			coord, _ = splitCoordinatorPrefix(item.label, fallbackCoord)
+		}
+		if coord == "" {
+			coord = strings.TrimSpace(fallbackCoord)
+		}
+		addName(coord)
+	}
+	if len(names) == 0 {
+		fallbackCoord = strings.TrimSpace(fallbackCoord)
+		if fallbackCoord != "" {
+			names = append(names, fallbackCoord)
+			seen[fallbackCoord] = struct{}{}
+		}
+	}
+	if len(coords) == 0 && len(names) > 1 {
+		sort.Strings(names)
+	}
+	fallbackCoord = strings.TrimSpace(fallbackCoord)
+	if fallbackCoord != "" {
+		for i, name := range names {
+			if name == fallbackCoord {
+				if i > 0 {
+					names = append([]string{name}, append(names[:i], names[i+1:]...)...)
+				}
+				break
+			}
+		}
+	}
+	grouped := make(map[string][]sessionListItem, len(names))
+	for _, item := range items {
+		coord := strings.TrimSpace(item.coord)
+		if coord == "" {
+			coord, _ = splitCoordinatorPrefix(item.label, fallbackCoord)
+		}
+		if coord == "" {
+			coord = fallbackCoord
+		}
+		item.coord = coord
+		grouped[coord] = append(grouped[coord], item)
+	}
+	groups := make([]coordinatorTabGroup, 0, len(names))
+	for _, name := range names {
+		sessions := grouped[name]
+		if len(sessions) > 1 {
+			sortSessionListItems(sessions)
+		}
+		groups = append(groups, coordinatorTabGroup{name: name, sessions: sessions})
+	}
+	return groups
+}
+
+func renderTabLabel(item sessionListItem, active, hovered bool) string {
+	_, label := splitCoordinatorPrefix(item.label, item.coord)
 	label = truncateTabName(label, tabNameMaxWidth)
 	tabStyle := attachTabStyle
 	if active {
@@ -2742,45 +2875,52 @@ func renderTabLabel(item sessionListItem, active, hovered bool) string {
 	textStyle = textStyle.Inherit(tabStyle)
 	statusStyle := sessionStatusStyle(item).Inherit(tabStyle)
 	padStyle := tabStyle
-	chipStyle := attachTabChipStyle
-	if active {
-		chipStyle = attachTabChipActiveStyle
-	} else if hovered {
-		chipStyle = attachTabChipHoverStyle
-	}
 
 	var b strings.Builder
 	b.WriteString(padStyle.Render(" "))
 	b.WriteString(statusStyle.Render(sessionStatusGlyph(item)))
 	b.WriteString(padStyle.Render(" "))
-	if coord != "" {
-		b.WriteString(chipStyle.Render(coord))
-		b.WriteString(padStyle.Render(" "))
-	}
 	b.WriteString(textStyle.Render(label))
 	b.WriteString(padStyle.Render(" "))
 	return b.String()
 }
 func buildTabItems(view headerView) ([]tabItem, int) {
 	sessions := collectTabSessions(view.sessions, view.activeID, view.activeLabel, view.exited, view.exitCode, view.coordinator)
-	if len(sessions) == 0 || view.width <= 0 {
+	groups := groupTabSessionsByCoordinator(sessions, view.coords, view.coordinator)
+	if len(groups) == 0 || view.width <= 0 {
 		return nil, 0
 	}
-	tabs := make([]tabItem, 0, len(sessions))
+	tabs := make([]tabItem, 0, len(sessions)+len(groups)*2)
 	activeIdx := 0
-	for i, session := range sessions {
-		active := session.id == view.activeID
-		if active {
-			activeIdx = i
+	for _, group := range groups {
+		if strings.TrimSpace(group.name) == "" {
+			continue
 		}
-		label := renderTabLabel(session, active, session.id == view.hoverTabID)
-		tabs = append(tabs, tabItem{
-			id:           session.id,
-			label:        label,
-			sessionLabel: session.label,
-			width:        lipgloss.Width(label),
-			active:       active,
-		})
+		tabs = append(tabs, coordinatorLabelItem(group.name, group.name == view.coordinator))
+		if len(group.sessions) == 0 {
+			tabs = append(tabs, newTabButtonItem(group.name, view.hoverNewCoord == group.name))
+			continue
+		}
+		for _, session := range group.sessions {
+			active := session.id == view.activeID
+			hovered := session.id == view.hoverTabID
+			label := renderTabLabel(session, active, hovered)
+			item := tabItem{
+				kind:         tabItemSession,
+				id:           session.id,
+				label:        label,
+				sessionLabel: session.label,
+				coord:        group.name,
+				width:        lipgloss.Width(label),
+				active:       active,
+				hovered:      hovered,
+			}
+			if active {
+				activeIdx = len(tabs)
+			}
+			tabs = append(tabs, item)
+		}
+		tabs = append(tabs, newTabButtonItem(group.name, view.hoverNewCoord == group.name))
 	}
 	return tabs, activeIdx
 }
@@ -2804,17 +2944,17 @@ func tabAtOffsetX(view headerView, offset int) (tabItem, bool) {
 	if len(tabs) == 0 {
 		return tabItem{}, false
 	}
-	gapWidth := lipgloss.Width(" ")
+	gapWidth := tabGapWidth()
 	cursor := 0
 	for i, tab := range tabs {
 		if offset >= cursor && offset < cursor+tab.width {
-			if tab.overflow {
+			if tab.kind == tabItemOverflow {
 				return tabItem{}, false
 			}
-			if tab.newTab {
+			if tab.kind == tabItemNew {
 				return tab, true
 			}
-			if tab.id == "" {
+			if tab.kind == tabItemCoordinator || tab.kind == tabItemSeparator || tab.id == "" {
 				return tabItem{}, false
 			}
 			return tab, true
@@ -2844,9 +2984,9 @@ func overflowLabel(count int, left bool) string {
 func overflowTabItem(count int, left bool) tabItem {
 	label := attachOverflowStyle.Render(overflowLabel(count, left))
 	return tabItem{
-		label:    label,
-		width:    lipgloss.Width(label),
-		overflow: true,
+		kind:  tabItemOverflow,
+		label: label,
+		width: lipgloss.Width(label),
 	}
 }
 
@@ -2854,7 +2994,7 @@ func fitTabsToWidthItems(tabs []tabItem, activeIdx, width int) []tabItem {
 	if len(tabs) == 0 || width <= 0 {
 		return nil
 	}
-	gapWidth := lipgloss.Width(" ")
+	gapWidth := tabGapWidth()
 	if tabItemsWidth(tabs, gapWidth) <= width {
 		return tabs
 	}

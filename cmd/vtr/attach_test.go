@@ -153,3 +153,50 @@ func TestAutoSpawnBaseFailsWithoutCoordinator(t *testing.T) {
 		t.Fatalf("expected auto spawn base to fail without coordinator")
 	}
 }
+
+func TestGroupTabSessionsByCoordinatorIncludesEmpty(t *testing.T) {
+	items := []sessionListItem{
+		{id: "id-1", label: "spoke-a:one", coord: "spoke-a", status: proto.SessionStatus_SESSION_STATUS_RUNNING},
+	}
+	coords := []coordinatorRef{
+		{Name: "spoke-a"},
+		{Name: "spoke-b"},
+	}
+	groups := groupTabSessionsByCoordinator(items, coords, "spoke-a")
+	if len(groups) != 2 {
+		t.Fatalf("expected two groups, got %d", len(groups))
+	}
+	if groups[0].name != "spoke-a" || len(groups[0].sessions) != 1 {
+		t.Fatalf("expected spoke-a group with sessions, got %#v", groups[0])
+	}
+	if groups[1].name != "spoke-b" || len(groups[1].sessions) != 0 {
+		t.Fatalf("expected spoke-b group without sessions, got %#v", groups[1])
+	}
+}
+
+func TestBuildTabItemsAddsPlusPerCoordinator(t *testing.T) {
+	view := headerView{
+		sessions: []sessionListItem{
+			{id: "id-1", label: "spoke-a:one", coord: "spoke-a", status: proto.SessionStatus_SESSION_STATUS_RUNNING},
+			{id: "id-2", label: "spoke-b:two", coord: "spoke-b", status: proto.SessionStatus_SESSION_STATUS_RUNNING},
+		},
+		activeID:    "id-1",
+		activeLabel: "spoke-a:one",
+		coords: []coordinatorRef{
+			{Name: "spoke-a"},
+			{Name: "spoke-b"},
+		},
+		coordinator: "spoke-a",
+		width:       200,
+	}
+	tabs, _ := buildTabItems(view)
+	newCount := 0
+	for _, tab := range tabs {
+		if tab.kind == tabItemNew {
+			newCount++
+		}
+	}
+	if newCount != 2 {
+		t.Fatalf("expected plus button per coordinator, got %d", newCount)
+	}
+}
