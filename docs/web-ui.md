@@ -21,7 +21,7 @@ does not aggregate per-coordinator state itself.
 ## Endpoints
 
 HTTP:
-- `GET /api/sessions` - list sessions by coordinator (debugging/tooling)
+- `GET /api/sessions` - list sessions by coordinator (debugging/tooling, sourced from session snapshots)
 - `POST /api/sessions` - spawn session
 - `POST /api/sessions/action` - send_key / signal / close / remove / rename
 

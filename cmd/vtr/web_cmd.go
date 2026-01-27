@@ -468,42 +468,62 @@ func handleWebSessions(resolver webResolver) http.HandlerFunc {
 }
 
 func handleWebSessionsList(w http.ResponseWriter, r *http.Request, resolver webResolver) {
-	coords, err := resolver.coordinators()
+	target, err := resolver.hubTarget()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
+	ctx, cancel := context.WithTimeout(r.Context(), rpcTimeout)
+	conn, err := dialClient(ctx, target.Path, resolver.cfg)
+	cancel()
+	if err != nil {
+		writeWebError(w, err)
+		return
+	}
+	defer conn.Close()
+
+	client := proto.NewVTRClient(conn)
+	ctx, cancel = context.WithTimeout(r.Context(), rpcTimeout)
+	defer cancel()
+	stream, err := client.SubscribeSessions(ctx, &proto.SubscribeSessionsRequest{})
+	if err != nil {
+		writeWebError(w, err)
+		return
+	}
+	snapshot, err := stream.Recv()
+	if err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) {
+			writeWebJSON(w, webSessionsResponse{})
+			return
+		}
+		writeWebError(w, err)
+		return
+	}
+
+	writeWebJSON(w, webSessionsResponseFromSnapshot(snapshot))
+}
+
+func webSessionsResponseFromSnapshot(snapshot *proto.SessionsSnapshot) webSessionsResponse {
+	if snapshot == nil {
+		return webSessionsResponse{}
+	}
+	coords := snapshot.GetCoordinators()
 	out := webSessionsResponse{Coordinators: make([]webCoordinator, 0, len(coords))}
 	for _, coord := range coords {
-		entry := webCoordinator{Name: coord.Name, Path: coord.Path}
-		ctx, cancel := context.WithTimeout(r.Context(), rpcTimeout)
-		conn, err := dialClient(ctx, coord.Path, resolver.cfg)
-		cancel()
-		if err != nil {
-			entry.Error = err.Error()
-			out.Coordinators = append(out.Coordinators, entry)
-			continue
+		entry := webCoordinator{
+			Name:  coord.GetName(),
+			Path:  coord.GetPath(),
+			Error: coord.GetError(),
 		}
-		client := proto.NewVTRClient(conn)
-		ctx, cancel = context.WithTimeout(r.Context(), rpcTimeout)
-		resp, err := client.List(ctx, &proto.ListRequest{})
-		cancel()
-		_ = conn.Close()
-		if err != nil {
-			entry.Error = err.Error()
-			out.Coordinators = append(out.Coordinators, entry)
-			continue
-		}
-		sessions := filterSessionsByPrefix(resp.Sessions, coord.SessionPrefix)
+		sessions := coord.GetSessions()
 		entry.Sessions = make([]webSession, 0, len(sessions))
 		for _, session := range sessions {
 			entry.Sessions = append(entry.Sessions, webSessionFromProto(session))
 		}
 		out.Coordinators = append(out.Coordinators, entry)
 	}
-
-	writeWebJSON(w, out)
+	return out
 }
 
 func handleWebSessionCreate(w http.ResponseWriter, r *http.Request, resolver webResolver) {
