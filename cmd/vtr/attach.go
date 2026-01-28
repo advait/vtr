@@ -2161,11 +2161,14 @@ func applyScreenUpdate(m attachModel, update *proto.ScreenUpdate) (attachModel, 
 }
 
 func applySessionLabelUpdate(m attachModel, id, label string) attachModel {
-	if id == "" || label == "" || id != m.sessionID || label == m.sessionLabel {
+	if id == "" || label == "" || id != m.sessionID {
 		return m
 	}
 	if m.multiCoordinator {
 		label = prefixSessionLabel(m.coordinator.Name, label)
+	}
+	if label == m.sessionLabel {
+		return m
 	}
 	m.sessionLabel = label
 	m.statusMsg = fmt.Sprintf("session renamed to %s", label)
