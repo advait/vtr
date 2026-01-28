@@ -1090,6 +1090,13 @@ func nextSessionCmd(client proto.VTRClient, currentID string, forward bool, show
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 		defer cancel()
+		if snapshot, err := fetchSessionsSnapshot(ctx, client); err == nil && snapshot != nil {
+			_, items, _ := sessionItemsFromSnapshot(snapshot)
+			entries := filterVisibleSessionItems(items, showExited, currentID)
+			if msg := nextSessionFromEntries(entries, currentID, forward); msg.err == nil || msg.id != "" {
+				return msg
+			}
+		}
 		resp, err := client.List(ctx, &proto.ListRequest{})
 		if err != nil {
 			return sessionSwitchMsg{err: err}
@@ -1115,29 +1122,33 @@ func nextSessionCmd(client proto.VTRClient, currentID string, forward bool, show
 				})
 			}
 		}
-		if len(entries) == 0 {
-			return sessionSwitchMsg{err: fmt.Errorf("no sessions")}
+		return nextSessionFromEntries(entries, currentID, forward)
+	}
+}
+
+func nextSessionFromEntries(entries []sessionListItem, currentID string, forward bool) sessionSwitchMsg {
+	if len(entries) == 0 {
+		return sessionSwitchMsg{err: fmt.Errorf("no sessions")}
+	}
+	sortSessionListItems(entries)
+	idx := -1
+	for i, entry := range entries {
+		if entry.id == currentID {
+			idx = i
+			break
 		}
-		sortSessionListItems(entries)
-		idx := -1
-		for i, entry := range entries {
-			if entry.id == currentID {
-				idx = i
-				break
-			}
-		}
-		if idx == -1 {
-			entry := entries[0]
-			return sessionSwitchMsg{id: entry.id, label: entry.label, coord: entry.coord}
-		}
-		if forward {
-			idx = (idx + 1) % len(entries)
-		} else {
-			idx = (idx - 1 + len(entries)) % len(entries)
-		}
-		entry := entries[idx]
+	}
+	if idx == -1 {
+		entry := entries[0]
 		return sessionSwitchMsg{id: entry.id, label: entry.label, coord: entry.coord}
 	}
+	if forward {
+		idx = (idx + 1) % len(entries)
+	} else {
+		idx = (idx - 1 + len(entries)) % len(entries)
+	}
+	entry := entries[idx]
+	return sessionSwitchMsg{id: entry.id, label: entry.label, coord: entry.coord}
 }
 
 func loadSessionListCmd(client proto.VTRClient, activate bool, fallbackCoord string) tea.Cmd {

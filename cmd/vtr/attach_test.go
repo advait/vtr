@@ -228,3 +228,17 @@ func TestSessionFromSpawnResponsePreservesUnprefixedLabel(t *testing.T) {
 		t.Fatalf("expected label demo, got %q", label)
 	}
 }
+
+func TestNextSessionFromEntriesPreservesCoordinator(t *testing.T) {
+	entries := []sessionListItem{
+		{id: "id-1", label: "one", coord: "spoke-a", order: 1},
+		{id: "id-2", label: "two", coord: "spoke-b", order: 2},
+	}
+	msg := nextSessionFromEntries(entries, "id-1", true)
+	if msg.err != nil {
+		t.Fatalf("unexpected error: %v", msg.err)
+	}
+	if msg.id != "id-2" || msg.coord != "spoke-b" {
+		t.Fatalf("expected spoke-b selection, got id=%q coord=%q", msg.id, msg.coord)
+	}
+}
