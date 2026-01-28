@@ -138,6 +138,7 @@ func runHub(opts hubOptions) error {
 
 	localService := server.NewGRPCServer(coord)
 	dialAddr := hubDialAddr(addr)
+	localService.SetCoordinatorInfo(hubName(dialAddr), dialAddr)
 	federated := newFederatedServer(
 		localService,
 		hubName(dialAddr),

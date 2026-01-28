@@ -122,6 +122,7 @@ func runSpoke(opts spokeOptions) error {
 			spokeName = "spoke"
 		}
 	}
+	localService.SetCoordinatorInfo(spokeName, "")
 
 	logger.Info("spoke starting",
 		"name", spokeName,

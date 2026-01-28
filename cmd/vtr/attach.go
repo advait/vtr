@@ -364,14 +364,14 @@ func newTuiCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			target := sessionTarget{Coordinator: targetCoord}
+			target := sessionTarget{}
 			if len(args) == 0 {
 				target, err = resolveFirstSessionTarget(context.Background(), targetCoord, cfg)
 				if err != nil {
 					if !errors.Is(err, errNoSessions) {
 						return err
 					}
-					target = sessionTarget{Coordinator: targetCoord}
+					target = sessionTarget{}
 				}
 			} else {
 				target.Label = args[0]
@@ -379,10 +379,7 @@ func newTuiCmd() *cobra.Command {
 
 			coords := initialCoordinatorRefs(cfg, targetCoord)
 			activeCoord := coordinatorRef{}
-			if strings.TrimSpace(target.Coordinator.Name) != "" {
-				activeCoord = target.Coordinator
-				coords = ensureCoordinator(coords, activeCoord)
-			} else if coordName, _, ok := parseSessionRef(target.Label); ok {
+			if coordName, _, ok := parseSessionRef(target.Label); ok {
 				activeCoord = coordinatorRef{Name: coordName}
 				coords = ensureCoordinator(coords, activeCoord)
 			}
@@ -400,6 +397,10 @@ func newTuiCmd() *cobra.Command {
 					return err
 				}
 				target = resolved
+			}
+			if strings.TrimSpace(target.Coordinator.Name) != "" {
+				activeCoord = target.Coordinator
+				coords = ensureCoordinator(coords, activeCoord)
 			}
 
 			listActive := false
@@ -464,7 +465,52 @@ func resolveFirstSessionTarget(ctx context.Context, coord coordinatorRef, cfg *c
 	hadSuccess := false
 	firstID := ""
 	firstLabel := ""
+	firstCoord := ""
 	err := withCoordinator(ctx, coord, cfg, func(client proto.VTRClient) error {
+		snapshot, snapErr := fetchSessionsSnapshot(ctx, client)
+		if snapErr == nil && snapshot != nil {
+			items, _ := snapshotToItems(snapshot, coordinatorRef{})
+			if len(items) > 0 {
+				sort.Slice(items, func(i, j int) bool {
+					left := items[i]
+					right := items[j]
+					leftName := ""
+					rightName := ""
+					leftOrder := uint32(0)
+					rightOrder := uint32(0)
+					if left.Session != nil {
+						leftName = left.Session.Name
+						leftOrder = left.Session.GetOrder()
+					}
+					if right.Session != nil {
+						rightName = right.Session.Name
+						rightOrder = right.Session.GetOrder()
+					}
+					if leftOrder == rightOrder {
+						if leftName == rightName {
+							return left.Coordinator < right.Coordinator
+						}
+						return leftName < rightName
+					}
+					if leftOrder == 0 {
+						return false
+					}
+					if rightOrder == 0 {
+						return true
+					}
+					return leftOrder < rightOrder
+				})
+				for _, item := range items {
+					if item.Session == nil || item.Session.GetId() == "" {
+						continue
+					}
+					firstID = item.Session.GetId()
+					firstLabel = item.Session.GetName()
+					firstCoord = item.Coordinator
+					return nil
+				}
+			}
+		}
 		resp, err := client.List(ctx, &proto.ListRequest{})
 		if err != nil {
 			return err
@@ -491,7 +537,9 @@ func resolveFirstSessionTarget(ctx context.Context, coord coordinatorRef, cfg *c
 	}
 	if firstID != "" {
 		resolvedCoord := coordinatorRef{}
-		if parsedCoord, _, ok := parseSessionRef(firstLabel); ok {
+		if strings.TrimSpace(firstCoord) != "" {
+			resolvedCoord = coordinatorRef{Name: firstCoord}
+		} else if parsedCoord, _, ok := parseSessionRef(firstLabel); ok {
 			resolvedCoord = coordinatorRef{Name: parsedCoord}
 		}
 		return sessionTarget{Coordinator: resolvedCoord, ID: firstID, Label: firstLabel}, nil

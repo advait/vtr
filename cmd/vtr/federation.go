@@ -285,6 +285,28 @@ func (s *federatedServer) SubscribeSessions(req *proto.SubscribeSessionsRequest,
 		state.ensureCoordinator(target.Name, target.Addr)
 	}
 
+	if len(targets) > 0 {
+		var wg sync.WaitGroup
+		for _, target := range targets {
+			target := target
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				resp, err := s.callList(ctx, target)
+				if err != nil {
+					state.setCoordinatorError(target.Name, target.Addr, err)
+					return
+				}
+				state.setCoordinatorSessions(target.Name, target.Addr, filterSessions(resp.GetSessions(), excludeExited))
+			}()
+		}
+		wg.Wait()
+	}
+
+	if err := stream.Send(state.snapshot()); err != nil {
+		return err
+	}
+
 	if s.localActive() {
 		go s.watchLocalSessions(ctx, excludeExited, state, signal)
 	}
@@ -295,10 +317,6 @@ func (s *federatedServer) SubscribeSessions(req *proto.SubscribeSessionsRequest,
 
 	if s.registry != nil {
 		go s.watchRegistry(ctx, excludeExited, state, signal)
-	}
-
-	if err := stream.Send(state.snapshot()); err != nil {
-		return err
 	}
 
 	for {
