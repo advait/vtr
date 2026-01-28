@@ -42,6 +42,11 @@ message Session {
   string id = 10;
 }
 
+message SessionRef {
+  string id = 1;
+  string coordinator = 2;
+}
+
 message ListRequest {}
 message ListResponse { repeated Session sessions = 1; }
 
@@ -57,10 +62,9 @@ message CoordinatorSessions {
 message SessionsSnapshot { repeated CoordinatorSessions coordinators = 1; }
 
 message SubscribeRequest {
-  string name = 1;
+  SessionRef session = 1;
   bool include_screen_updates = 2;
   bool include_raw_output = 3;
-  string id = 4;
 }
 
 message ScreenCell {
@@ -115,10 +119,10 @@ message SubscribeEvent {
   }
 }
 
-message SendTextRequest { string name = 1; string text = 2; string id = 3; }
-message SendKeyRequest { string name = 1; string key = 2; string id = 3; }
-message SendBytesRequest { string name = 1; bytes data = 2; string id = 3; }
-message ResizeRequest { string name = 1; int32 cols = 2; int32 rows = 3; string id = 4; }
+message SendTextRequest { SessionRef session = 1; string text = 2; }
+message SendKeyRequest { SessionRef session = 1; string key = 2; }
+message SendBytesRequest { SessionRef session = 1; bytes data = 2; }
+message ResizeRequest { SessionRef session = 1; int32 cols = 2; int32 rows = 3; }
 `;
 
 const root = new protobuf.Root();

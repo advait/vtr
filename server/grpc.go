@@ -71,22 +71,19 @@ type keyframeRing struct {
 	count   int
 }
 
-func (s *GRPCServer) resolveSessionID(name, id string) (string, error) {
-	if id != "" {
-		return id, nil
+func (s *GRPCServer) requireSessionID(ref *proto.SessionRef) (string, error) {
+	if ref == nil {
+		return "", status.Error(codes.InvalidArgument, "session id is required")
 	}
-	if strings.TrimSpace(name) == "" {
-		return "", status.Error(codes.InvalidArgument, "session id or name is required")
+	id := strings.TrimSpace(ref.Id)
+	if id == "" {
+		return "", status.Error(codes.InvalidArgument, "session id is required")
 	}
-	resolved, err := s.coord.LookupIDByLabel(name)
-	if err != nil {
-		return "", mapCoordinatorErr(err)
-	}
-	return resolved, nil
+	return id, nil
 }
 
-func (s *GRPCServer) resolveSession(name, id string) (*Session, error) {
-	sessionID, err := s.resolveSessionID(name, id)
+func (s *GRPCServer) resolveSession(ref *proto.SessionRef) (*Session, error) {
+	sessionID, err := s.requireSessionID(ref)
 	if err != nil {
 		return nil, err
 	}
@@ -417,9 +414,9 @@ func (s *GRPCServer) Tunnel(proto.VTR_TunnelServer) error {
 
 func (s *GRPCServer) Info(_ context.Context, req *proto.InfoRequest) (*proto.InfoResponse, error) {
 	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "session id or name is required")
+		return nil, status.Error(codes.InvalidArgument, "session id is required")
 	}
-	sessionID, err := s.resolveSessionID(req.Name, req.Id)
+	sessionID, err := s.requireSessionID(req.Session)
 	if err != nil {
 		return nil, err
 	}
@@ -432,13 +429,13 @@ func (s *GRPCServer) Info(_ context.Context, req *proto.InfoRequest) (*proto.Inf
 
 func (s *GRPCServer) Kill(_ context.Context, req *proto.KillRequest) (*proto.KillResponse, error) {
 	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "session id or name is required")
+		return nil, status.Error(codes.InvalidArgument, "session id is required")
 	}
 	sig, err := parseSignal(req.Signal)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	sessionID, err := s.resolveSessionID(req.Name, req.Id)
+	sessionID, err := s.requireSessionID(req.Session)
 	if err != nil {
 		return nil, err
 	}
@@ -450,9 +447,9 @@ func (s *GRPCServer) Kill(_ context.Context, req *proto.KillRequest) (*proto.Kil
 
 func (s *GRPCServer) Close(_ context.Context, req *proto.CloseRequest) (*proto.CloseResponse, error) {
 	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "session id or name is required")
+		return nil, status.Error(codes.InvalidArgument, "session id is required")
 	}
-	sessionID, err := s.resolveSessionID(req.Name, req.Id)
+	sessionID, err := s.requireSessionID(req.Session)
 	if err != nil {
 		return nil, err
 	}
@@ -464,9 +461,9 @@ func (s *GRPCServer) Close(_ context.Context, req *proto.CloseRequest) (*proto.C
 
 func (s *GRPCServer) Remove(_ context.Context, req *proto.RemoveRequest) (*proto.RemoveResponse, error) {
 	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "session id or name is required")
+		return nil, status.Error(codes.InvalidArgument, "session id is required")
 	}
-	sessionID, err := s.resolveSessionID(req.Name, req.Id)
+	sessionID, err := s.requireSessionID(req.Session)
 	if err != nil {
 		return nil, err
 	}
@@ -479,12 +476,12 @@ func (s *GRPCServer) Remove(_ context.Context, req *proto.RemoveRequest) (*proto
 
 func (s *GRPCServer) Rename(_ context.Context, req *proto.RenameRequest) (*proto.RenameResponse, error) {
 	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "session id or name is required")
+		return nil, status.Error(codes.InvalidArgument, "session id is required")
 	}
 	if strings.TrimSpace(req.NewName) == "" {
 		return nil, status.Error(codes.InvalidArgument, "new name is required")
 	}
-	sessionID, err := s.resolveSessionID(req.Name, req.Id)
+	sessionID, err := s.requireSessionID(req.Session)
 	if err != nil {
 		return nil, err
 	}
@@ -497,9 +494,9 @@ func (s *GRPCServer) Rename(_ context.Context, req *proto.RenameRequest) (*proto
 
 func (s *GRPCServer) GetScreen(_ context.Context, req *proto.GetScreenRequest) (*proto.GetScreenResponse, error) {
 	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "session id or name is required")
+		return nil, status.Error(codes.InvalidArgument, "session id is required")
 	}
-	session, err := s.resolveSession(req.Name, req.Id)
+	session, err := s.resolveSession(req.Session)
 	if err != nil {
 		return nil, err
 	}
@@ -512,7 +509,7 @@ func (s *GRPCServer) GetScreen(_ context.Context, req *proto.GetScreenRequest) (
 
 func (s *GRPCServer) Grep(_ context.Context, req *proto.GrepRequest) (*proto.GrepResponse, error) {
 	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "session id or name is required")
+		return nil, status.Error(codes.InvalidArgument, "session id is required")
 	}
 	if strings.TrimSpace(req.Pattern) == "" {
 		return nil, status.Error(codes.InvalidArgument, "pattern is required")
@@ -528,7 +525,7 @@ func (s *GRPCServer) Grep(_ context.Context, req *proto.GrepRequest) (*proto.Gre
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	sessionID, err := s.resolveSessionID(req.Name, req.Id)
+	sessionID, err := s.requireSessionID(req.Session)
 	if err != nil {
 		return nil, err
 	}
@@ -551,12 +548,12 @@ func (s *GRPCServer) Grep(_ context.Context, req *proto.GrepRequest) (*proto.Gre
 
 func (s *GRPCServer) SendText(_ context.Context, req *proto.SendTextRequest) (*proto.SendTextResponse, error) {
 	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "session id or name is required")
+		return nil, status.Error(codes.InvalidArgument, "session id is required")
 	}
 	if !utf8.ValidString(req.Text) {
 		return nil, status.Error(codes.InvalidArgument, "text must be valid UTF-8")
 	}
-	sessionID, err := s.resolveSessionID(req.Name, req.Id)
+	sessionID, err := s.requireSessionID(req.Session)
 	if err != nil {
 		return nil, err
 	}
@@ -568,13 +565,13 @@ func (s *GRPCServer) SendText(_ context.Context, req *proto.SendTextRequest) (*p
 
 func (s *GRPCServer) SendKey(_ context.Context, req *proto.SendKeyRequest) (*proto.SendKeyResponse, error) {
 	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "session id or name is required")
+		return nil, status.Error(codes.InvalidArgument, "session id is required")
 	}
 	seq, err := keyToBytes(req.Key)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	sessionID, err := s.resolveSessionID(req.Name, req.Id)
+	sessionID, err := s.requireSessionID(req.Session)
 	if err != nil {
 		return nil, err
 	}
@@ -586,12 +583,12 @@ func (s *GRPCServer) SendKey(_ context.Context, req *proto.SendKeyRequest) (*pro
 
 func (s *GRPCServer) SendBytes(_ context.Context, req *proto.SendBytesRequest) (*proto.SendBytesResponse, error) {
 	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "session id or name is required")
+		return nil, status.Error(codes.InvalidArgument, "session id is required")
 	}
 	if len(req.Data) > maxRawInputBytes {
 		return nil, status.Errorf(codes.InvalidArgument, "data exceeds %d bytes", maxRawInputBytes)
 	}
-	sessionID, err := s.resolveSessionID(req.Name, req.Id)
+	sessionID, err := s.requireSessionID(req.Session)
 	if err != nil {
 		return nil, err
 	}
@@ -603,7 +600,7 @@ func (s *GRPCServer) SendBytes(_ context.Context, req *proto.SendBytesRequest) (
 
 func (s *GRPCServer) Resize(ctx context.Context, req *proto.ResizeRequest) (*proto.ResizeResponse, error) {
 	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "session id or name is required")
+		return nil, status.Error(codes.InvalidArgument, "session id is required")
 	}
 	cols, err := requiredUint16(req.Cols)
 	if err != nil {
@@ -613,7 +610,7 @@ func (s *GRPCServer) Resize(ctx context.Context, req *proto.ResizeRequest) (*pro
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	sessionID, err := s.resolveSessionID(req.Name, req.Id)
+	sessionID, err := s.requireSessionID(req.Session)
 	if err != nil {
 		return nil, err
 	}
@@ -638,7 +635,7 @@ func (s *GRPCServer) Resize(ctx context.Context, req *proto.ResizeRequest) (*pro
 
 func (s *GRPCServer) WaitFor(ctx context.Context, req *proto.WaitForRequest) (*proto.WaitForResponse, error) {
 	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "session id or name is required")
+		return nil, status.Error(codes.InvalidArgument, "session id is required")
 	}
 	if strings.TrimSpace(req.Pattern) == "" {
 		return nil, status.Error(codes.InvalidArgument, "pattern is required")
@@ -651,7 +648,7 @@ func (s *GRPCServer) WaitFor(ctx context.Context, req *proto.WaitForRequest) (*p
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	sessionID, err := s.resolveSessionID(req.Name, req.Id)
+	sessionID, err := s.requireSessionID(req.Session)
 	if err != nil {
 		return nil, err
 	}
@@ -671,7 +668,7 @@ func (s *GRPCServer) WaitFor(ctx context.Context, req *proto.WaitForRequest) (*p
 
 func (s *GRPCServer) WaitForIdle(ctx context.Context, req *proto.WaitForIdleRequest) (*proto.WaitForIdleResponse, error) {
 	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "session id or name is required")
+		return nil, status.Error(codes.InvalidArgument, "session id is required")
 	}
 	idle, err := durationFromProto(req.IdleDuration)
 	if err != nil {
@@ -684,7 +681,7 @@ func (s *GRPCServer) WaitForIdle(ctx context.Context, req *proto.WaitForIdleRequ
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	sessionID, err := s.resolveSessionID(req.Name, req.Id)
+	sessionID, err := s.requireSessionID(req.Session)
 	if err != nil {
 		return nil, err
 	}
@@ -703,13 +700,13 @@ func (s *GRPCServer) WaitForIdle(ctx context.Context, req *proto.WaitForIdleRequ
 
 func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_SubscribeServer) error {
 	if req == nil {
-		return status.Error(codes.InvalidArgument, "session id or name is required")
+		return status.Error(codes.InvalidArgument, "session id is required")
 	}
 	if !req.IncludeScreenUpdates && !req.IncludeRawOutput {
 		return status.Error(codes.InvalidArgument, "subscribe requires screen updates or raw output")
 	}
 
-	session, err := s.resolveSession(req.Name, req.Id)
+	session, err := s.resolveSession(req.Session)
 	if err != nil {
 		return err
 	}

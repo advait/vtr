@@ -21,15 +21,22 @@ All streaming uses the protobuf types in `proto/vtr.proto`:
 
 ```
 message SubscribeRequest {
-  string name = 1;
+  SessionRef session = 1;
   bool include_screen_updates = 2;
   bool include_raw_output = 3;
-  string id = 4;
+}
+```
+
+```
+message SessionRef {
+  string id = 1;
+  string coordinator = 2;
 }
 ```
 
 Rules:
-- Either `id` or `name` is required; `id` is preferred and stable.
+- `session.id` is required and stable.
+- `session.coordinator` is optional for single-coordinator servers; hubs use it for routing.
 - At least one of `include_screen_updates` or `include_raw_output` must be true.
 
 ### SubscribeEvent

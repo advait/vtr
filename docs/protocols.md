@@ -48,8 +48,8 @@ Not implemented:
 ## Session identity
 
 - Sessions have stable UUIDs (`id`) and mutable labels (`name`).
-- gRPC and the WebSocket bridge accept `id` (preferred); `name` is legacy lookup.
-- For hubs with multiple coordinators, use `coordinator:session-id` when routing.
+- gRPC and the WebSocket bridge use `SessionRef` with `id`; `name` is a label only.
+- For hubs with multiple coordinators, set `SessionRef.coordinator` when routing.
 
 ## Session snapshots
 
@@ -59,7 +59,7 @@ membership and per-coordinator session lists (`CoordinatorSessions` with
 
 ## Error behavior (common cases)
 
-- `NOT_FOUND`: unknown session id/label.
+- `NOT_FOUND`: unknown session id.
 - `ALREADY_EXISTS`: spawn with an existing name.
 - `FAILED_PRECONDITION`: input to an exited session.
 - `INVALID_ARGUMENT`: missing required fields or invalid subscribe flags.

@@ -10,8 +10,8 @@ import (
 )
 
 type coordinatorRef struct {
-	Name          string
-	Path          string
+	Name string
+	Path string
 }
 
 type sessionTarget struct {
@@ -109,4 +109,32 @@ func matchSessionRef(ref string, sessions []*proto.Session) (string, string, err
 		}
 	}
 	return "", "", errSessionNotFound
+}
+
+func matchSessionRefWithCoordinator(ref string, items []sessionItem) (string, string, string, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return "", "", "", errSessionNotFound
+	}
+	for _, item := range items {
+		if item.Session != nil && item.Session.GetId() == ref {
+			return item.Session.GetId(), item.Session.GetName(), item.Coordinator, nil
+		}
+	}
+	for _, item := range items {
+		if item.Session != nil && item.Session.GetName() == ref {
+			return item.Session.GetId(), item.Session.GetName(), item.Coordinator, nil
+		}
+	}
+	if coord, session, ok := parseSessionRef(ref); ok {
+		for _, item := range items {
+			if item.Session == nil || item.Coordinator != coord {
+				continue
+			}
+			if item.Session.GetId() == session || item.Session.GetName() == session {
+				return item.Session.GetId(), item.Session.GetName(), item.Coordinator, nil
+			}
+		}
+	}
+	return "", "", "", errSessionNotFound
 }
