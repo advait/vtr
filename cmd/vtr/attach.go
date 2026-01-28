@@ -1936,11 +1936,6 @@ func switchSession(m attachModel, msg sessionSwitchMsg) (attachModel, tea.Cmd) {
 	m.sessionID = msg.id
 	m.sessionLabel = msg.label
 	m.sessionCoord = msg.coord
-	if msg.coord == "" {
-		if coord, _ := splitCoordinatorPrefix(msg.label, ""); coord != "" {
-			msg.coord = coord
-		}
-	}
 	if msg.coord != "" {
 		if coord, ok := coordinatorByName(m.coords, msg.coord); ok {
 			m.coordinator = coord
