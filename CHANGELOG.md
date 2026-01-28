@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.0.5 - 2026-01-28
+- API: require `SessionRef.id` for session operations; `name` lookup is removed.
+- Routing: support coordinator-aware session refs for hubs.
+- Web + docs: update protobuf shapes and protocol docs to use `SessionRef`.
+- Tests: refresh gRPC coverage for the new session ref requirements.
+
 ## v0.0.4 - 2026-01-27
 - Federation: make tunnel the canonical federation path and add hub-only mode.
 - Sessions: stream SessionsSnapshot for SubscribeSessions and update the TUI for snapshot/empty list handling.
