@@ -393,6 +393,16 @@ export default function App() {
     });
   }, []);
 
+  const selectSession = useCallback((ref: SessionRef, session: SessionInfo) => {
+    setSelectedSession({
+      ref,
+      label: session.name,
+      status: session.status,
+      exitCode: session.exitCode,
+    });
+    setActiveSession(session.status === "exited" ? null : ref);
+  }, []);
+
   const selectFallbackSession = useCallback(
     (preferredIndex: number | null) => {
       if (tabSessions.length === 0) {
@@ -407,17 +417,32 @@ export default function App() {
         setActiveSession(null);
         return false;
       }
-      setSelectedSession({
-        ref: next.ref,
-        label: next.session.name,
-        status: next.session.status,
-        exitCode: next.session.exitCode,
-      });
-      setActiveSession(next.session.status === "exited" ? null : next.ref);
+      selectSession(next.ref, next.session);
       return true;
     },
-    [tabSessions],
+    [selectSession, tabSessions],
   );
+
+  const selectAutoSession = useCallback(() => {
+    let fallback: { ref: SessionRef; session: SessionInfo } | null = null;
+    for (const coord of visibleCoordinators) {
+      for (const session of coord.sessions) {
+        const ref = sessionRefFromSession(coord.name, session);
+        if (session.status !== "exited") {
+          selectSession(ref, session);
+          return true;
+        }
+        if (!fallback) {
+          fallback = { ref, session };
+        }
+      }
+    }
+    if (fallback) {
+      selectSession(fallback.ref, fallback.session);
+      return true;
+    }
+    return false;
+  }, [selectSession, visibleCoordinators]);
 
   useEffect(() => {
     applySessions(streamCoordinators);
@@ -449,49 +474,25 @@ export default function App() {
     }
     const match = findSession(visibleCoordinators, hashSession);
     if (!match) {
-      writeSessionHash(null);
+      const selected = selectAutoSession();
       setHashSession(null);
+      if (!selected) {
+        writeSessionHash(null);
+      }
       return;
     }
     setSelectedSession(match);
     setActiveSession(match.status === "exited" ? null : match.ref);
-  }, [hashSession, selectedSession, sessionsLoaded, visibleCoordinators]);
+  }, [hashSession, selectedSession, sessionsLoaded, visibleCoordinators, selectAutoSession]);
 
   useEffect(() => {
     if (!sessionsLoaded || hashSession || selectedSession || autoSelectedRef.current) {
       return;
     }
-    let fallback: { ref: SessionRef; session: SessionInfo } | null = null;
-    for (const coord of visibleCoordinators) {
-      for (const session of coord.sessions) {
-        const ref = sessionRefFromSession(coord.name, session);
-        if (session.status !== "exited") {
-          setSelectedSession({
-            ref,
-            label: session.name,
-            status: session.status,
-            exitCode: session.exitCode,
-          });
-          setActiveSession(ref);
-          autoSelectedRef.current = true;
-          return;
-        }
-        if (!fallback) {
-          fallback = { ref, session };
-        }
-      }
-    }
-    if (fallback) {
-      setSelectedSession({
-        ref: fallback.ref,
-        label: fallback.session.name,
-        status: fallback.session.status,
-        exitCode: fallback.session.exitCode,
-      });
-      setActiveSession(fallback.session.status === "exited" ? null : fallback.ref);
+    if (selectAutoSession()) {
       autoSelectedRef.current = true;
     }
-  }, [hashSession, selectedSession, sessionsLoaded, visibleCoordinators]);
+  }, [hashSession, selectedSession, sessionsLoaded, selectAutoSession]);
 
   useEffect(() => {
     if (selectedSession) {
