@@ -1086,12 +1086,15 @@ func killCmd(client proto.VTRClient, id, coordinator string) tea.Cmd {
 	}
 }
 
-func nextSessionCmd(client proto.VTRClient, currentID string, forward bool, showExited bool) tea.Cmd {
+func nextSessionCmd(client proto.VTRClient, currentID string, forward bool, showExited bool, hubName string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 		defer cancel()
 		if snapshot, err := fetchSessionsSnapshot(ctx, client); err == nil && snapshot != nil {
-			_, items, _ := sessionItemsFromSnapshot(snapshot)
+			coords, items, multi := sessionItemsFromSnapshot(snapshot)
+			if multi || shouldPrefixSnapshot(coords, hubName) {
+				items = prefixSessionItems(items)
+			}
 			entries := filterVisibleSessionItems(items, showExited, currentID)
 			if msg := nextSessionFromEntries(entries, currentID, forward); msg.err == nil || msg.id != "" {
 				return msg
@@ -1439,9 +1442,9 @@ func handleLeaderKey(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
 		m.statusUntil = time.Now().Add(2 * time.Second)
 		return m, killCmd(m.client, m.sessionID, m.sessionCoord)
 	case "j", "n", "l":
-		return m, nextSessionCmd(m.client, m.sessionID, true, m.showExited)
+		return m, nextSessionCmd(m.client, m.sessionID, true, m.showExited, m.hub.Name)
 	case "k", "p", "h":
-		return m, nextSessionCmd(m.client, m.sessionID, false, m.showExited)
+		return m, nextSessionCmd(m.client, m.sessionID, false, m.showExited, m.hub.Name)
 	case "c":
 		return beginCreateModal(m)
 	case "e":
@@ -1539,9 +1542,9 @@ func handleMouse(m attachModel, msg tea.MouseMsg) (attachModel, tea.Cmd) {
 		}
 		switch msg.Button {
 		case tea.MouseButtonWheelUp, tea.MouseButtonWheelLeft:
-			return m, nextSessionCmd(m.client, m.sessionID, false, m.showExited)
+			return m, nextSessionCmd(m.client, m.sessionID, false, m.showExited, m.hub.Name)
 		default:
-			return m, nextSessionCmd(m.client, m.sessionID, true, m.showExited)
+			return m, nextSessionCmd(m.client, m.sessionID, true, m.showExited, m.hub.Name)
 		}
 	}
 	if msg.Action != tea.MouseActionPress {
@@ -1919,6 +1922,7 @@ func switchSession(m attachModel, msg sessionSwitchMsg) (attachModel, tea.Cmd) {
 		m.statusUntil = time.Now().Add(2 * time.Second)
 		return m, nil
 	}
+	msg = normalizeSessionSwitch(m, msg)
 	if msg.id == "" || msg.id == m.sessionID {
 		m.statusMsg = "switch: no other sessions"
 		m.statusUntil = time.Now().Add(2 * time.Second)
@@ -1969,6 +1973,38 @@ func switchSession(m attachModel, msg sessionSwitchMsg) (attachModel, tea.Cmd) {
 		cmds = append(cmds, resizeCmd(m.client, m.sessionID, m.sessionCoord, m.viewportWidth, m.viewportHeight))
 	}
 	return m, tea.Batch(cmds...)
+}
+
+func normalizeSessionSwitch(m attachModel, msg sessionSwitchMsg) sessionSwitchMsg {
+	coord := strings.TrimSpace(msg.coord)
+	label := strings.TrimSpace(msg.label)
+	if coord == "" && label != "" {
+		if parsedCoord, _, ok := parseSessionRef(label); ok {
+			coord = parsedCoord
+		}
+	}
+	if coord == "" && msg.id != "" {
+		for _, item := range m.sessionItems {
+			if item.id == msg.id && strings.TrimSpace(item.coord) != "" {
+				coord = item.coord
+				if label == "" {
+					label = item.label
+				}
+				break
+			}
+		}
+	}
+	if coord == "" && len(m.coords) == 1 {
+		coord = strings.TrimSpace(m.coords[0].Name)
+	}
+	if label != "" && coord != "" {
+		if m.multiCoordinator || shouldPrefixCoordinator(m.hub.Name, coord) {
+			label = prefixSessionLabel(coord, label)
+		}
+	}
+	msg.coord = coord
+	msg.label = label
+	return msg
 }
 
 func applySessionIdle(m attachModel, id, label string, idle bool) (attachModel, tea.Cmd) {

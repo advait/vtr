@@ -242,3 +242,33 @@ func TestNextSessionFromEntriesPreservesCoordinator(t *testing.T) {
 		t.Fatalf("expected spoke-b selection, got id=%q coord=%q", msg.id, msg.coord)
 	}
 }
+
+func TestNormalizeSessionSwitchResolvesCoordFromItems(t *testing.T) {
+	model := attachModel{
+		hub:              coordinatorRef{Name: "hub"},
+		multiCoordinator: true,
+		sessionItems: []sessionListItem{{
+			id:    "id-1",
+			label: "spoke-a:demo",
+			coord: "spoke-a",
+		}},
+	}
+	msg := normalizeSessionSwitch(model, sessionSwitchMsg{id: "id-1", label: "demo"})
+	if msg.coord != "spoke-a" {
+		t.Fatalf("expected coord spoke-a, got %q", msg.coord)
+	}
+	if msg.label != "spoke-a:demo" {
+		t.Fatalf("expected prefixed label, got %q", msg.label)
+	}
+}
+
+func TestNormalizeSessionSwitchUsesSingleCoordinatorFallback(t *testing.T) {
+	model := attachModel{
+		hub:   coordinatorRef{Name: "hub"},
+		coords: []coordinatorRef{{Name: "spoke-a"}},
+	}
+	msg := normalizeSessionSwitch(model, sessionSwitchMsg{id: "id-2", label: "demo"})
+	if msg.coord != "spoke-a" {
+		t.Fatalf("expected fallback coord spoke-a, got %q", msg.coord)
+	}
+}
