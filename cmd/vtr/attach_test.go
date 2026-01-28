@@ -200,3 +200,31 @@ func TestBuildTabItemsAddsPlusPerCoordinator(t *testing.T) {
 		t.Fatalf("expected plus button per coordinator, got %d", newCount)
 	}
 }
+
+func TestSessionFromSpawnResponseUsesRequestedCoordinator(t *testing.T) {
+	resp := &proto.SpawnResponse{Session: &proto.Session{Id: "id-1", Name: "demo"}}
+	id, label, coord, err := sessionFromSpawnResponse(resp, "spoke-a:demo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if id != "id-1" || coord != "spoke-a" {
+		t.Fatalf("expected id and coord, got id=%q coord=%q", id, coord)
+	}
+	if label != "spoke-a:demo" {
+		t.Fatalf("expected prefixed label, got %q", label)
+	}
+}
+
+func TestSessionFromSpawnResponsePreservesUnprefixedLabel(t *testing.T) {
+	resp := &proto.SpawnResponse{Session: &proto.Session{Id: "id-2", Name: "demo"}}
+	_, label, coord, err := sessionFromSpawnResponse(resp, "demo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if coord != "" {
+		t.Fatalf("expected empty coord, got %q", coord)
+	}
+	if label != "demo" {
+		t.Fatalf("expected label demo, got %q", label)
+	}
+}

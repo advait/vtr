@@ -593,9 +593,11 @@ func ensureSessionExists(client proto.VTRClient, ref string) (sessionTarget, err
 		return sessionTarget{}, err
 	}
 	if spawnResp != nil && spawnResp.Session != nil {
-		label := spawnResp.Session.GetName()
-		coord, _ := splitCoordinatorPrefix(label, "")
-		return sessionTarget{Coordinator: coordinatorRef{Name: coord}, ID: spawnResp.Session.GetId(), Label: label}, nil
+		id, label, coord, err := sessionFromSpawnResponse(spawnResp, ref)
+		if err != nil {
+			return sessionTarget{}, err
+		}
+		return sessionTarget{Coordinator: coordinatorRef{Name: coord}, ID: id, Label: label}, nil
 	}
 	ctx, cancel = context.WithTimeout(context.Background(), rpcTimeout)
 	defer cancel()
@@ -1265,6 +1267,21 @@ func prefixSessionItems(items []sessionListItem) []sessionListItem {
 	return items
 }
 
+func sessionFromSpawnResponse(resp *proto.SpawnResponse, requestName string) (string, string, string, error) {
+	if resp == nil || resp.Session == nil {
+		return "", "", "", fmt.Errorf("spawn: missing session response")
+	}
+	label := resp.Session.GetName()
+	coord, _ := splitCoordinatorPrefix(label, "")
+	if coord == "" {
+		if requestedCoord, _, ok := parseSessionRef(requestName); ok {
+			coord = requestedCoord
+			label = prefixSessionLabel(coord, label)
+		}
+	}
+	return resp.Session.GetId(), label, coord, nil
+}
+
 func spawnCurrentCmd(client proto.VTRClient, name string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
@@ -1273,12 +1290,11 @@ func spawnCurrentCmd(client proto.VTRClient, name string) tea.Cmd {
 		if err != nil {
 			return rpcErrMsg{err: err, op: "spawn"}
 		}
-		if resp != nil && resp.Session != nil {
-			label := resp.Session.GetName()
-			coord, _ := splitCoordinatorPrefix(label, "")
-			return sessionSwitchMsg{id: resp.Session.GetId(), label: label, coord: coord}
+		id, label, coord, err := sessionFromSpawnResponse(resp, name)
+		if err != nil {
+			return sessionSwitchMsg{err: err}
 		}
-		return sessionSwitchMsg{err: fmt.Errorf("spawn: missing session response")}
+		return sessionSwitchMsg{id: id, label: label, coord: coord}
 	}
 }
 func spawnAutoSessionCmd(client proto.VTRClient, base string) tea.Cmd {
@@ -1315,12 +1331,11 @@ func spawnAutoSessionCmd(client proto.VTRClient, base string) tea.Cmd {
 			resp, err := client.Spawn(ctx, &proto.SpawnRequest{Name: candidate})
 			cancel()
 			if err == nil {
-				if resp != nil && resp.Session != nil {
-					label := resp.Session.GetName()
-					coord, _ := splitCoordinatorPrefix(label, "")
-					return sessionSwitchMsg{id: resp.Session.GetId(), label: label, coord: coord}
+				id, label, coord, err := sessionFromSpawnResponse(resp, candidate)
+				if err != nil {
+					return sessionSwitchMsg{err: err}
 				}
-				return sessionSwitchMsg{err: fmt.Errorf("spawn: missing session response")}
+				return sessionSwitchMsg{id: id, label: label, coord: coord}
 			}
 			if status.Code(err) == codes.AlreadyExists {
 				names[candidate] = struct{}{}
