@@ -1,6 +1,5 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import "@fontsource/jetbrains-mono/latin.css";
 import "./styles.css";
 import App from "./App";
 import { loadPreferences } from "./lib/preferences";
