@@ -383,12 +383,30 @@ export function TerminalView({
     ctx.clearRect(0, 0, gridWidth, gridHeight);
     ctx.fillStyle = defaultBg;
     ctx.fillRect(0, 0, gridWidth, gridHeight);
-    ctx.textBaseline = "top";
+    ctx.textBaseline = "alphabetic";
     ctx.textAlign = "left";
 
     const fontSizePx = Math.max(1, Math.round(fontSize * 100) / 100);
     let lastFont = "";
     let lastFill = "";
+    let lastBaselineOffset = 0;
+    const baselineCache = new Map<string, number>();
+    const baselineSample = "Mg";
+
+    const baselineOffsetForFont = (font: string) => {
+      const cached = baselineCache.get(font);
+      if (cached !== undefined) {
+        return cached;
+      }
+      const metrics = ctx.measureText(baselineSample);
+      const ascent =
+        Number.isFinite(metrics.actualBoundingBoxAscent) && metrics.actualBoundingBoxAscent > 0
+          ? metrics.actualBoundingBoxAscent
+          : fontSizePx;
+      const offset = (cellSize.height - fontSizePx) / 2 + ascent;
+      baselineCache.set(font, offset);
+      return offset;
+    };
 
     for (let row = 0; row < screen.rows; row += 1) {
       const rowCells = screen.rowsData[row] ?? [];
@@ -443,6 +461,7 @@ export function TerminalView({
           if (font !== lastFont) {
             ctx.font = font;
             lastFont = font;
+            lastBaselineOffset = baselineOffsetForFont(font);
           }
           const nextFill = fgColor;
           if (nextFill !== lastFill) {
@@ -450,7 +469,7 @@ export function TerminalView({
             lastFill = nextFill;
           }
           ctx.globalAlpha = isFaint ? 0.6 : 1;
-          ctx.fillText(char, x, y);
+          ctx.fillText(char, x, y + lastBaselineOffset);
         }
 
         if (isUnderline || isStrike || isOverline) {
