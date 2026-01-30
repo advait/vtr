@@ -58,6 +58,8 @@ type attachModel struct {
 	createInput      textinput.Model
 	createCoordIdx   int
 	createFocusInput bool
+	renameActive     bool
+	renameInput      textinput.Model
 
 	hoverTabID    string
 	hoverNewCoord string
@@ -422,6 +424,7 @@ func newTuiCmd() *cobra.Command {
 				sessionsStreamID: 1,
 				sessionList:      newSessionListModel(nil, 0, 0),
 				createInput:      newCreateInput(),
+				renameInput:      newRenameInput(),
 				createCoordIdx:   coordIdx,
 				createFocusInput: true,
 				listActive:       listActive,
@@ -865,6 +868,9 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseMsg:
 		return handleMouse(m, msg)
 	case tea.KeyMsg:
+		if m.renameActive {
+			return updateRenameModal(m, msg)
+		}
 		if m.createActive {
 			return updateCreateModal(m, msg)
 		}
@@ -900,6 +906,8 @@ func (m attachModel) View() string {
 	overlayWidth := overlayAvailableWidth(innerWidth)
 	content := ""
 	switch {
+	case m.renameActive:
+		content = renderRenameModal(m)
 	case m.createActive:
 		content = renderCreateModal(m)
 	case m.listActive:
@@ -1063,6 +1071,25 @@ func sendKeyCmd(client proto.VTRClient, id, coordinator, key string) tea.Cmd {
 		})
 		if err != nil {
 			return rpcErrMsg{err: err, op: "send key"}
+		}
+		return nil
+	}
+}
+
+func renameCmd(client proto.VTRClient, id, coordinator, newName string) tea.Cmd {
+	if strings.TrimSpace(id) == "" || strings.TrimSpace(newName) == "" {
+		return nil
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
+		defer cancel()
+		sessionRef := sessionRequestRef(id, coordinator)
+		_, err := client.Rename(ctx, &proto.RenameRequest{
+			Session: sessionRef,
+			NewName: newName,
+		})
+		if err != nil {
+			return rpcErrMsg{err: err, op: "rename"}
 		}
 		return nil
 	}
@@ -1448,6 +1475,8 @@ func handleLeaderKey(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
 		return m, nextSessionCmd(m.client, m.sessionID, false, m.showExited, m.hub.Name)
 	case "c":
 		return beginCreateModal(m)
+	case "r":
+		return beginRenameModal(m)
 	case "e":
 		m.showExited = !m.showExited
 		if m.showExited {
@@ -1474,7 +1503,7 @@ func handleMouse(m attachModel, msg tea.MouseMsg) (attachModel, tea.Cmd) {
 		m.hoverTabID = ""
 		m.hoverNewCoord = ""
 	}
-	if m.listActive || m.createActive {
+	if m.listActive || m.createActive || m.renameActive {
 		if m.hoverTabID != "" || m.hoverNewCoord != "" {
 			clearHover()
 		}
@@ -1742,6 +1771,16 @@ func newCreateInput() textinput.Model {
 	return input
 }
 
+func newRenameInput() textinput.Model {
+	input := textinput.New()
+	input.Prompt = "Rename: "
+	input.Placeholder = "session"
+	input.CharLimit = 64
+	input.Width = 30
+	input.Blur()
+	return input
+}
+
 func beginCreateModal(m attachModel) (attachModel, tea.Cmd) {
 	if len(m.coords) == 0 {
 		m.statusMsg = "create: no coordinators"
@@ -1750,6 +1789,7 @@ func beginCreateModal(m attachModel) (attachModel, tea.Cmd) {
 	}
 	m.createActive = true
 	m.listActive = false
+	m.renameActive = false
 	m.createFocusInput = true
 	m.createCoordIdx = coordinatorIndex(m.coords, m.coordinator)
 	if m.createCoordIdx < 0 {
@@ -1757,6 +1797,7 @@ func beginCreateModal(m attachModel) (attachModel, tea.Cmd) {
 	}
 	m.createInput.SetValue("")
 	m.createInput.Focus()
+	m.renameInput.Blur()
 	return m, nil
 }
 
@@ -1769,6 +1810,27 @@ func beginCreateModalForCoord(m attachModel, coord coordinatorRef) (attachModel,
 		m.createCoordIdx = idx
 	}
 	return m, cmd
+}
+
+func beginRenameModal(m attachModel) (attachModel, tea.Cmd) {
+	if strings.TrimSpace(m.sessionID) == "" {
+		m.statusMsg = "rename: no active session"
+		m.statusUntil = time.Now().Add(2 * time.Second)
+		return m, nil
+	}
+	current := strings.TrimSpace(m.sessionLabel)
+	if current == "" {
+		item := currentSessionItem(m)
+		current = item.label
+	}
+	current = stripCoordinatorPrefix(current)
+	m.renameActive = true
+	m.listActive = false
+	m.createActive = false
+	m.renameInput.SetValue(current)
+	m.renameInput.Focus()
+	m.createInput.Blur()
+	return m, nil
 }
 
 func updateSessionList(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
@@ -1917,6 +1979,46 @@ func updateCreateModal(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
 	return m, nil
 }
 
+func updateRenameModal(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.renameActive = false
+		m.renameInput.Blur()
+		return m, nil
+	case "enter":
+		name := strings.TrimSpace(m.renameInput.Value())
+		if name == "" {
+			m.statusMsg = "rename: name required"
+			m.statusUntil = time.Now().Add(2 * time.Second)
+			return m, nil
+		}
+		coord := strings.TrimSpace(m.sessionCoord)
+		if coord == "" {
+			coord = strings.TrimSpace(m.coordinator.Name)
+		}
+		if parsedCoord, session, ok := parseSessionRef(name); ok {
+			if coord != "" && parsedCoord != coord {
+				m.statusMsg = fmt.Sprintf("rename: active coordinator is %s", coord)
+				m.statusUntil = time.Now().Add(2 * time.Second)
+				return m, nil
+			}
+			name = session
+		}
+		name = strings.TrimSpace(name)
+		if name == "" {
+			m.statusMsg = "rename: name required"
+			m.statusUntil = time.Now().Add(2 * time.Second)
+			return m, nil
+		}
+		m.renameActive = false
+		m.renameInput.Blur()
+		return m, renameCmd(m.client, m.sessionID, coord, name)
+	}
+	var cmd tea.Cmd
+	m.renameInput, cmd = m.renameInput.Update(msg)
+	return m, cmd
+}
+
 func switchSession(m attachModel, msg sessionSwitchMsg) (attachModel, tea.Cmd) {
 	if msg.err != nil {
 		m.statusMsg = fmt.Sprintf("switch: %v", msg.err)
@@ -1952,6 +2054,8 @@ func switchSession(m attachModel, msg sessionSwitchMsg) (attachModel, tea.Cmd) {
 	m.listActive = false
 	m.createActive = false
 	m.createInput.Blur()
+	m.renameActive = false
+	m.renameInput.Blur()
 	if msg.label != "" {
 		m.statusMsg = fmt.Sprintf("attached to %s", msg.label)
 	} else {
@@ -2505,6 +2609,34 @@ func renderCreateModal(m attachModel) string {
 	return lipgloss.Place(m.viewportWidth, m.viewportHeight, lipgloss.Center, lipgloss.Center, box)
 }
 
+func renderRenameModal(m attachModel) string {
+	if m.viewportWidth <= 0 || m.viewportHeight <= 0 {
+		return ""
+	}
+	coordName := strings.TrimSpace(m.sessionCoord)
+	if coordName == "" {
+		coordName = strings.TrimSpace(m.coordinator.Name)
+	}
+	current := strings.TrimSpace(m.sessionLabel)
+	if current == "" {
+		item := currentSessionItem(m)
+		current = item.label
+	}
+	current = stripCoordinatorPrefix(current)
+	lines := []string{
+		"Rename session",
+		"",
+		fmt.Sprintf("Current: %s", current),
+	}
+	if coordName != "" {
+		lines = append(lines, fmt.Sprintf("Coordinator: %s", coordName))
+	}
+	lines = append(lines, m.renameInput.View(), "Enter to rename, Esc to cancel")
+	content := strings.Join(lines, "\n")
+	box := attachModalStyle.Render(content)
+	return lipgloss.Place(m.viewportWidth, m.viewportHeight, lipgloss.Center, lipgloss.Center, box)
+}
+
 func coordinatorIndex(coords []coordinatorRef, target coordinatorRef) int {
 	targetPath := strings.TrimSpace(target.Path)
 	targetName := strings.TrimSpace(target.Name)
@@ -2593,6 +2725,7 @@ var leaderLegend = []legendSegment{
 	{key: "j/l", label: "NEXT"},
 	{key: "k/h", label: "PREV"},
 	{key: "c", label: "CREATE"},
+	{key: "r", label: "RENAME"},
 	{key: "e", label: "CLOSED"},
 	{key: "d", label: "DETACH"},
 	{key: "x", label: "KILL"},

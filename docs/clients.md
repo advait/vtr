@@ -13,7 +13,9 @@
 
 ## Session addressing
 
-- `vtr agent` targets a single coordinator via `--hub` or config defaults.
+- `vtr agent` targets a coordinator via `--hub` or config defaults and accepts
+  `coordinator:session` to route commands through a hub with multiple
+  coordinators.
 - `vtr tui` and `vtr web` can be configured with multiple coordinators and
   accept `coordinator:session` syntax when ambiguous.
 
@@ -27,7 +29,7 @@ vtr agent spawn <name> [--cmd "..."] [--cwd /path]
 vtr agent info <name>
 vtr agent screen <name> [--json] [--ansi]
 vtr agent grep <name> <pattern> [-A/-B/-C lines]
-vtr agent send <name> <text>
+vtr agent send <name> <text> [--submit]
 vtr agent key <name> <key>
 vtr agent raw <name> <hex>
 vtr agent resize <name> <cols> <rows>
@@ -43,6 +45,9 @@ Screen output options:
 - `--json` returns structured cells.
 - `--ansi` returns ANSI-styled text.
 
+Input helpers:
+- `vtr agent send --submit` sends Enter after the text (use when the text has no newline).
+
 ## TUI
 
 - `vtr tui [session]` attaches to a session with a live viewport.
@@ -52,6 +57,7 @@ Screen output options:
 
 Common leader actions:
 - Create session
+- Rename session
 - Detach
 - Kill session
 - Next/previous session
