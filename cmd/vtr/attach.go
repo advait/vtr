@@ -891,6 +891,7 @@ func (m attachModel) View() string {
 	if m.width <= 0 || m.height <= 0 {
 		return "loading..."
 	}
+	updateStatusAnimFrame(m.now)
 	innerWidth := m.width - 2
 	innerHeight := m.height - 2
 	if innerWidth <= 0 || innerHeight <= 0 {
@@ -1003,7 +1004,7 @@ func scheduleSessionsRetry(m attachModel) (attachModel, tea.Cmd) {
 }
 
 func tickCmd() tea.Cmd {
-	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
+	return tea.Tick(statusAnimInterval, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
 }
@@ -2599,18 +2600,42 @@ var leaderLegend = []legendSegment{
 }
 
 const (
-	sessionIconActive  = "*"
-	sessionIconIdle    = "o"
-	sessionIconExited  = "x"
-	sessionIconUnknown = "?"
+	sessionIconIdle    = ""
+	sessionIconExited  = ""
+	sessionIconUnknown = ""
 	tabOverflowGlyph   = "…"
-	tabNewGlyph        = "+"
+	tabNewGlyph        = ""
 	tabNameMaxWidth    = 20
 	tabCoordMaxWidth   = 16
 	sessionListIndent  = "  "
 )
 
 const borderOverlayOffset = 1
+
+const statusAnimInterval = 200 * time.Millisecond
+
+// Nerd Font frames for animating active status.
+var statusActiveFrames = []string{
+	"",
+	"",
+	"",
+	"",
+	"",
+	"",
+}
+
+var statusAnimFrameIndex int
+
+func updateStatusAnimFrame(now time.Time) {
+	if len(statusActiveFrames) == 0 {
+		statusAnimFrameIndex = 0
+		return
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	statusAnimFrameIndex = int(now.UnixNano()/int64(statusAnimInterval)) % len(statusActiveFrames)
+}
 
 func overlayPadding(innerWidth int) (int, int) {
 	if innerWidth < 0 {
@@ -2687,7 +2712,10 @@ func sessionStatusGlyph(item sessionListItem) string {
 		if item.idle {
 			return sessionIconIdle
 		}
-		return sessionIconActive
+		if len(statusActiveFrames) == 0 {
+			return sessionIconUnknown
+		}
+		return statusActiveFrames[statusAnimFrameIndex%len(statusActiveFrames)]
 	case proto.SessionStatus_SESSION_STATUS_EXITED:
 		return sessionIconExited
 	default:
