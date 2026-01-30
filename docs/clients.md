@@ -34,7 +34,7 @@ vtr agent key <name> <key>
 vtr agent raw <name> <hex>
 vtr agent resize <name> <cols> <rows>
 vtr agent wait <name> <pattern> [--timeout 30s]
-vtr agent idle <name> [--idle 5s] [--timeout 30s]
+vtr agent idle <name> [name...] [--idle 5s] [--timeout 30s]
 ```
 
 `vtr agent` defaults to JSON output for most commands, with plain-text output
@@ -47,6 +47,9 @@ Screen output options:
 
 Input helpers:
 - `vtr agent send --submit` sends Enter after the text (use when the text has no newline).
+
+`vtr agent idle` accepts multiple session names and returns as soon as any session
+goes idle. JSON output includes `idle_sessions` for the sessions that became idle.
 
 ## TUI
 

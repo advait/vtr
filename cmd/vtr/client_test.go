@@ -86,6 +86,30 @@ func TestCLIEndToEnd(t *testing.T) {
 	waitForCLIScreenContains(t, hubAddr, "cli-e2e", "got:hello", 2*time.Second)
 }
 
+func TestCLISendSubmit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty tests not supported on windows")
+	}
+
+	hubAddr, cleanup := startCLITestServer(t)
+	setupCLIConfig(t, hubAddr)
+	t.Cleanup(cleanup)
+
+	_, err := runCLICommand(t, "agent", "spawn", "--hub", hubAddr, "--cmd", "printf 'ready\\n'; read line; printf 'got:%s\\n' \"$line\"; sleep 0.1", "cli-submit")
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+
+	waitForCLIScreenContains(t, hubAddr, "cli-submit", "ready", 2*time.Second)
+
+	_, err = runCLICommand(t, "agent", "send", "--submit", "--hub", hubAddr, "cli-submit", "hello")
+	if err != nil {
+		t.Fatalf("send --submit: %v", err)
+	}
+
+	waitForCLIScreenContains(t, hubAddr, "cli-submit", "got:hello", 2*time.Second)
+}
+
 func TestCLIGrep(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("pty tests not supported on windows")
@@ -203,6 +227,52 @@ func TestCLIIdle(t *testing.T) {
 	}
 	if resp.TimedOut || !resp.Idle {
 		t.Fatalf("expected idle, got %+v", resp)
+	}
+}
+
+func TestCLIIdleMulti(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty tests not supported on windows")
+	}
+
+	hubAddr, cleanup := startCLITestServer(t)
+	setupCLIConfig(t, hubAddr)
+	t.Cleanup(cleanup)
+
+	_, err := runCLICommand(t, "agent", "spawn", "--hub", hubAddr, "--cmd", "printf 'ready\\n'; sleep 0.4", "cli-idle-fast")
+	if err != nil {
+		t.Fatalf("spawn fast: %v", err)
+	}
+
+	_, err = runCLICommand(t, "agent", "spawn", "--hub", hubAddr, "--cmd", "i=0; while [ $i -lt 10 ]; do printf 'tick\\n'; i=$((i+1)); sleep 0.05; done; sleep 0.3", "cli-idle-noisy")
+	if err != nil {
+		t.Fatalf("spawn noisy: %v", err)
+	}
+
+	waitForCLIScreenContains(t, hubAddr, "cli-idle-fast", "ready", 2*time.Second)
+	waitForCLIScreenContains(t, hubAddr, "cli-idle-noisy", "tick", 2*time.Second)
+
+	out, err := runCLICommand(t, "agent", "idle", "--hub", hubAddr, "--idle", "100ms", "--timeout", "500ms", "cli-idle-fast", "cli-idle-noisy")
+	if err != nil {
+		t.Fatalf("idle multi: %v", err)
+	}
+
+	var resp jsonIdle
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		t.Fatalf("decode idle multi: %v", err)
+	}
+	if resp.TimedOut || !resp.Idle {
+		t.Fatalf("expected idle, got %+v", resp)
+	}
+	foundFast := false
+	for _, session := range resp.IdleSessions {
+		if session.Name == "cli-idle-fast" {
+			foundFast = true
+			break
+		}
+	}
+	if !foundFast {
+		t.Fatalf("expected idle session cli-idle-fast, got %+v", resp.IdleSessions)
 	}
 }
 

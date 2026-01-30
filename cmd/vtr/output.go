@@ -92,8 +92,17 @@ type jsonWait struct {
 }
 
 type jsonIdle struct {
-	Idle     bool `json:"idle"`
-	TimedOut bool `json:"timed_out"`
+	Idle         bool              `json:"idle"`
+	TimedOut     bool              `json:"timed_out"`
+	IdleSessions []jsonIdleSession `json:"idle_sessions,omitempty"`
+}
+
+type jsonIdleSession struct {
+	Coordinator string `json:"coordinator,omitempty"`
+	ID          string `json:"id,omitempty"`
+	Name        string `json:"name"`
+	Idle        bool   `json:"idle"`
+	TimedOut    bool   `json:"timed_out"`
 }
 
 type jsonCoordinator struct {

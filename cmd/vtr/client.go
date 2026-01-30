@@ -309,13 +309,14 @@ func newScreenCmd() *cobra.Command {
 
 func newSendCmd() *cobra.Command {
 	var hub string
+	var submit bool
 	cmd := &cobra.Command{
 		Use:   "send <name> <text>",
 		Short: "Send text to a session",
 		Args:  cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			text := strings.Join(args[1:], " ")
-			if !strings.HasSuffix(text, "\n") && !strings.HasSuffix(text, "\r") {
+			if !submit && !strings.HasSuffix(text, "\n") && !strings.HasSuffix(text, "\r") {
 				fmt.Fprintln(cmd.ErrOrStderr(), "warning: text does not end with newline; input will not be submitted.")
 			}
 			cfg, _, err := loadConfigWithPath()
@@ -333,15 +334,20 @@ func newSendCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				_, err = client.SendText(ctx, &proto.SendTextRequest{Session: sessionRef, Text: text})
-				if err != nil {
+				if _, err = client.SendText(ctx, &proto.SendTextRequest{Session: sessionRef, Text: text}); err != nil {
 					return err
+				}
+				if submit {
+					if _, err = client.SendKey(ctx, &proto.SendKeyRequest{Session: sessionRef, Key: "enter"}); err != nil {
+						return err
+					}
 				}
 				return writeOK(cmd.OutOrStdout())
 			})
 		},
 	}
 	addHubFlag(cmd, &hub)
+	cmd.Flags().BoolVar(&submit, "submit", false, "Send Enter after the text (use when text has no newline)")
 	return cmd
 }
 
@@ -638,9 +644,9 @@ func newIdleCmd() *cobra.Command {
 	var timeout time.Duration
 	var idle time.Duration
 	cmd := &cobra.Command{
-		Use:   "idle <name>",
+		Use:   "idle <name> [name...]",
 		Short: "Wait for a period of inactivity",
-		Args:  cobra.ExactArgs(1),
+		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if idle <= 0 {
 				idle = idleDurationDefault
@@ -660,19 +666,123 @@ func newIdleCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), ctxTimeout)
 			defer cancel()
 			return withCoordinator(ctx, target, cfg, func(client proto.VTRClient) error {
-				sessionRef, _, err := resolveSessionRef(ctx, client, args[0], "")
-				if err != nil {
-					return err
+				type idleTarget struct {
+					ref   *proto.SessionRef
+					name  string
+					input string
 				}
-				resp, err := client.WaitForIdle(ctx, &proto.WaitForIdleRequest{
-					Session:      sessionRef,
-					IdleDuration: durationpb.New(idle),
-					Timeout:      durationpb.New(timeout),
+				targets := make([]idleTarget, 0, len(args))
+				for _, arg := range args {
+					sessionRef, label, err := resolveSessionRef(ctx, client, arg, "")
+					if err != nil {
+						return err
+					}
+					if strings.TrimSpace(label) == "" {
+						label = arg
+					}
+					targets = append(targets, idleTarget{
+						ref:   sessionRef,
+						name:  label,
+						input: arg,
+					})
+				}
+
+				type idleResult struct {
+					target   idleTarget
+					idle     bool
+					timedOut bool
+					err      error
+				}
+
+				results := make(chan idleResult, len(targets))
+				idleCtx, idleCancel := context.WithCancel(ctx)
+				defer idleCancel()
+
+				for _, target := range targets {
+					target := target
+					go func() {
+						resp, err := client.WaitForIdle(idleCtx, &proto.WaitForIdleRequest{
+							Session:      target.ref,
+							IdleDuration: durationpb.New(idle),
+							Timeout:      durationpb.New(timeout),
+						})
+						if err != nil {
+							results <- idleResult{target: target, err: err}
+							return
+						}
+						results <- idleResult{
+							target:   target,
+							idle:     resp.Idle,
+							timedOut: resp.TimedOut,
+						}
+					}()
+				}
+
+				collectIdle := func(out []jsonIdleSession, res idleResult) []jsonIdleSession {
+					if !res.idle {
+						return out
+					}
+					out = append(out, jsonIdleSession{
+						Coordinator: strings.TrimSpace(res.target.ref.GetCoordinator()),
+						ID:          res.target.ref.GetId(),
+						Name:        res.target.name,
+						Idle:        res.idle,
+						TimedOut:    res.timedOut,
+					})
+					return out
+				}
+
+				idleSessions := make([]jsonIdleSession, 0)
+				allTimedOut := true
+				received := 0
+				for received < len(targets) {
+					select {
+					case res := <-results:
+						received++
+						if res.err != nil {
+							if errors.Is(res.err, context.Canceled) || errors.Is(res.err, context.DeadlineExceeded) {
+								continue
+							}
+							return res.err
+						}
+						if !res.timedOut {
+							allTimedOut = false
+						}
+						if res.idle {
+							idleSessions = collectIdle(idleSessions, res)
+							idleCancel()
+							for {
+								select {
+								case res := <-results:
+									received++
+									if res.err != nil {
+										if errors.Is(res.err, context.Canceled) || errors.Is(res.err, context.DeadlineExceeded) {
+											continue
+										}
+										return res.err
+									}
+									if !res.timedOut {
+										allTimedOut = false
+									}
+									idleSessions = collectIdle(idleSessions, res)
+								default:
+									return writeJSON(cmd.OutOrStdout(), jsonIdle{
+										Idle:         true,
+										TimedOut:     false,
+										IdleSessions: idleSessions,
+									})
+								}
+							}
+						}
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+				}
+				return writeJSON(cmd.OutOrStdout(), jsonIdle{
+					Idle:         false,
+					TimedOut:     allTimedOut,
+					IdleSessions: idleSessions,
 				})
-				if err != nil {
-					return err
-				}
-				return writeJSON(cmd.OutOrStdout(), jsonIdle{Idle: resp.Idle, TimedOut: resp.TimedOut})
 			})
 		},
 	}
