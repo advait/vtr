@@ -6,6 +6,7 @@ Start here. This folder is the canonical documentation set for vtr.
 
 - `docs/overview.md` - What vtr is, core ideas, and a quick orientation.
 - `docs/architecture.md` - Components, data flow, session lifecycle, and core invariants.
+- `docs/diagrams/vtr-data-flow.md` - Hub/spoke data flow diagram (Mermaid).
 - `docs/operations.md` - Configuration, runtime flags, auth, and deployment notes.
 - `docs/protocols.md` - gRPC + WebSocket contract summary (proto is source of truth).
 - `docs/clients.md` - CLI/TUI/Web UI usage patterns and behaviors.
