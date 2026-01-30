@@ -39,6 +39,8 @@ const (
 	tunnelMethodDumpAsciinema     = "DumpAsciinema"
 )
 
+const tunnelSlowCallThreshold = time.Second
+
 type tunnelRegistry struct {
 	mu     sync.RWMutex
 	spokes map[string]*tunnelEndpoint
@@ -119,6 +121,14 @@ type tunnelCall struct {
 	closed bool
 }
 
+type tunnelSendResult int
+
+const (
+	tunnelSendOk tunnelSendResult = iota
+	tunnelSendDroppedOldest
+	tunnelSendFailed
+)
+
 func newTunnelCall(id string) *tunnelCall {
 	return &tunnelCall{
 		id: id,
@@ -126,14 +136,28 @@ func newTunnelCall(id string) *tunnelCall {
 	}
 }
 
-func (c *tunnelCall) send(frame *proto.TunnelFrame) bool {
+func (c *tunnelCall) send(frame *proto.TunnelFrame) tunnelSendResult {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
-		return false
+		return tunnelSendFailed
 	}
-	c.ch <- frame
-	return true
+	select {
+	case c.ch <- frame:
+		return tunnelSendOk
+	default:
+	}
+	// Drop the oldest frame to avoid blocking the tunnel reader.
+	select {
+	case <-c.ch:
+	default:
+	}
+	select {
+	case c.ch <- frame:
+		return tunnelSendDroppedOldest
+	default:
+		return tunnelSendFailed
+	}
 }
 
 func (c *tunnelCall) close() {
@@ -221,7 +245,18 @@ func (e *tunnelEndpoint) dispatch(frame *proto.TunnelFrame) {
 		return
 	}
 	terminal := isTerminalTunnelFrame(frame)
-	if !call.send(frame) {
+	switch call.send(frame) {
+	case tunnelSendDroppedOldest:
+		if e.logger != nil {
+			e.logger.Debug("tunnel call backlog drop", "spoke", e.name, "call_id", callID, "kind", tunnelFrameKind(frame))
+		}
+	case tunnelSendFailed:
+		if terminal {
+			e.endCall(callID)
+		}
+		if e.logger != nil {
+			e.logger.Debug("tunnel call enqueue failed", "spoke", e.name, "call_id", callID, "kind", tunnelFrameKind(frame))
+		}
 		return
 	}
 	if terminal {
@@ -265,6 +300,8 @@ func (e *tunnelEndpoint) CallUnary(ctx context.Context, method string, req gopro
 	if err != nil {
 		return err
 	}
+	start := time.Now()
+	e.logger.Info("tunnel call start", "spoke", e.name, "method", method, "call_id", call.id)
 	frame := &proto.TunnelFrame{
 		CallId: call.id,
 		Kind: &proto.TunnelFrame_Request{
@@ -282,6 +319,10 @@ func (e *tunnelEndpoint) CallUnary(ctx context.Context, method string, req gopro
 	for {
 		select {
 		case <-ctx.Done():
+			elapsed := time.Since(start)
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				e.logger.Warn("tunnel call timeout", "spoke", e.name, "method", method, "call_id", call.id, "elapsed", elapsed)
+			}
 			_ = e.send(&proto.TunnelFrame{
 				CallId: call.id,
 				Kind: &proto.TunnelFrame_Cancel{
@@ -307,6 +348,11 @@ func (e *tunnelEndpoint) CallUnary(ctx context.Context, method string, req gopro
 					}
 				}
 				if respFrame.Done {
+					elapsed := time.Since(start)
+					e.logger.Info("tunnel call success", "spoke", e.name, "method", method, "call_id", call.id, "elapsed", elapsed)
+					if elapsed > tunnelSlowCallThreshold {
+						e.logger.Warn("tunnel call slow", "spoke", e.name, "method", method, "call_id", call.id, "elapsed", elapsed)
+					}
 					return nil
 				}
 			}
@@ -326,6 +372,8 @@ func (e *tunnelEndpoint) CallStream(ctx context.Context, method string, req gopr
 	if err != nil {
 		return err
 	}
+	start := time.Now()
+	e.logger.Info("tunnel call start", "spoke", e.name, "method", method, "call_id", call.id)
 	frame := &proto.TunnelFrame{
 		CallId: call.id,
 		Kind: &proto.TunnelFrame_Request{
@@ -343,6 +391,10 @@ func (e *tunnelEndpoint) CallStream(ctx context.Context, method string, req gopr
 	for {
 		select {
 		case <-ctx.Done():
+			elapsed := time.Since(start)
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				e.logger.Warn("tunnel call timeout", "spoke", e.name, "method", method, "call_id", call.id, "elapsed", elapsed)
+			}
 			_ = e.send(&proto.TunnelFrame{
 				CallId: call.id,
 				Kind: &proto.TunnelFrame_Cancel{
@@ -370,6 +422,11 @@ func (e *tunnelEndpoint) CallStream(ctx context.Context, method string, req gopr
 				continue
 			}
 			if resp := frame.GetResponse(); resp != nil && resp.Done {
+				elapsed := time.Since(start)
+				e.logger.Info("tunnel call success", "spoke", e.name, "method", method, "call_id", call.id, "elapsed", elapsed)
+				if elapsed > tunnelSlowCallThreshold {
+					e.logger.Warn("tunnel call slow", "spoke", e.name, "method", method, "call_id", call.id, "elapsed", elapsed)
+				}
 				return nil
 			}
 		}
@@ -387,6 +444,28 @@ func isTerminalTunnelFrame(frame *proto.TunnelFrame) bool {
 		return true
 	}
 	return false
+}
+
+func tunnelFrameKind(frame *proto.TunnelFrame) string {
+	if frame == nil {
+		return "none"
+	}
+	switch {
+	case frame.GetResponse() != nil:
+		return "response"
+	case frame.GetEvent() != nil:
+		return "event"
+	case frame.GetError() != nil:
+		return "error"
+	case frame.GetRequest() != nil:
+		return "request"
+	case frame.GetCancel() != nil:
+		return "cancel"
+	case frame.GetHello() != nil:
+		return "hello"
+	default:
+		return "unknown"
+	}
 }
 
 func tunnelErrorFrom(err error) *proto.TunnelError {
