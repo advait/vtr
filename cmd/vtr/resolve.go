@@ -98,6 +98,9 @@ func matchSessionRef(ref string, sessions []*proto.Session) (string, string, err
 	if ref == "" {
 		return "", "", errSessionNotFound
 	}
+	if _, session, ok := parseSessionRef(ref); ok {
+		ref = session
+	}
 	for _, session := range sessions {
 		if session != nil && session.GetId() == ref {
 			return session.GetId(), session.GetName(), nil
