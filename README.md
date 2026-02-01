@@ -98,6 +98,7 @@ vtr agent wait build '\$ '
 
 # Run a command and wait for it to complete (idle = no output for 5s)
 vtr agent send build 'make test\n'
+vtr agent send --submit build 'make test'
 vtr agent idle build --timeout 120s
 
 # Search scrollback for results
