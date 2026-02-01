@@ -143,7 +143,7 @@ If a Subscribe is routed through the tunnel:
 1. Client layer
    - vtr agent / tui gRPC client (otelgrpc client stats handler)
    - web UI WebSocket bridge (server-side Go, otelhttp middleware)
-   - optional browser OTel for Web UI (OTLP over HTTP)
+   - optional browser tracing forwarded to the hub and written to JSONL
 
 2. Transport layer
    - gRPC server stats handler on coordinator (otelgrpc.NewServerHandler)
@@ -171,8 +171,8 @@ If a Subscribe is routed through the tunnel:
    - dropped frame accounting
 
 7. Storage + query layer
-   - exporter spans (OTLP)
-   - backend query spans (optional, for agent trace queries)
+   - exporter spans (JSONL writer)
+   - no backend query service
 
 ## Recommended OTel libraries for Go
 
@@ -187,8 +187,8 @@ Transport instrumentation
 - go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp
 
 Exporters
-- go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc
-- go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp
+- Custom JSONL SpanExporter (write one span per line)
+- Optional: JSONL metric snapshot writer (periodic flush)
 
 Recommended defaults:
 - Set a composite propagator: TraceContext + Baggage.
@@ -197,37 +197,45 @@ Recommended defaults:
 - Use otelhttp.NewMiddleware for inbound HTTP and otelhttp.NewTransport for
   outbound HTTP.
 
-Use the OpenTelemetry Collector in front of the backend to keep export
-configuration stable and allow fan-out.
-
 ## Sink strategy (agent-queryable traces)
 
-Agents need programmatic access to traces. Favor backends with stable query
-APIs and low-latency trace lookup.
+Keep this lightweight and self-contained. Do not depend on a backend service
+or query API. Instead, write spans and derived metrics to a local JSONL file
+that agents can parse with rg/jq.
 
-Recommended options:
+Recommended approach:
 
-1) Grafana Tempo (open source)
-- HTTP API for trace-by-id and search; supports tag search and TraceQL queries.
-- Good fit for agent queries (simple HTTP calls).
-- Query endpoints include /api/traces/<traceID>, /api/v2/traces/<traceID>, and
-  /api/search (plus /api/search/tags and /api/search/tag/<tag>/values).
+- Implement a custom JSONL SpanExporter that writes one JSON object per span.
+- Add a periodic metrics snapshot writer (JSONL) for counters/gauges derived
+  from spans (dropped_frames, queue_delay_ms, frame_id_gap, rtt_ms, etc).
+- Store files locally (e.g., ~/.local/share/vtr/traces.jsonl and
+  ~/.local/share/vtr/metrics.jsonl) and make the path configurable via config
+  or env var (VTR_TRACE_JSONL_PATH, VTR_METRICS_JSONL_PATH).
+- Rotate files by size/time (simple daily or size-based rotation) to keep
+  the file bounded.
 
-2) Jaeger
-- Stable gRPC QueryService for programmatic access to traces.
-- HTTP JSON API exists but is explicitly internal; use gRPC for automation.
+Example JSONL span line:
 
-Suggested pipeline:
-- vtr -> OTLP exporter -> OpenTelemetry Collector -> Tempo or Jaeger
-- Add a vtr agent command that queries the backend API and renders results
-  (trace tree, span timing, dropped frame annotations).
+```
+{\"ts\":\"2026-02-01T17:30:05.123Z\",\"type\":\"span\",\"trace_id\":\"4bf92f...\",\"span_id\":\"00f067aa...\",\"parent_span_id\":\"9f1c2d...\",\"name\":\"vtr.grpc.Subscribe\",\"start_ns\":1738431000000000000,\"end_ns\":1738431001240000000,\"attrs\":{\"session.id\":\"...\",\"coordinator\":\"hub-1\"},\"events\":[{\"name\":\"screen.keyframe\",\"attrs\":{\"frame_id\":120,\"bytes\":6521,\"dropped_frames\":2}}]}
+```
+
+Example JSONL metrics line:
+
+```
+{\"ts\":\"2026-02-01T17:30:05.200Z\",\"type\":\"metric\",\"name\":\"stream.dropped_frames\",\"value\":2,\"unit\":\"1\",\"attrs\":{\"session.id\":\"...\",\"coordinator\":\"hub-1\"}}
+```
+
+Agents can then run:
+- rg 'session.id\":\"<id>' ~/.local/share/vtr/traces.jsonl
+- jq 'select(.type==\"metric\" and .name==\"stream.dropped_frames\")' ~/.local/share/vtr/metrics.jsonl
 
 ## Implementation phases
 
 Phase 0: baseline plumbing
 - Add OTel SDK init, resource attributes (service.name, service.version,
   coordinator.name, session.id).
-- OTLP exporter + Collector wiring.
+- JSONL exporter wiring.
 - gRPC client/server interceptors for all RPCs.
 
 Phase 1: tunnel propagation
@@ -246,9 +254,10 @@ Phase 3: PTY/VT instrumentation
 - Correlate render -> send latency.
 
 Phase 4: agent-query tooling
-- vtr agent trace <trace-id> (Tempo or Jaeger backend)
-- vtr agent trace-search --session <id> --since 5m
-- Add output that highlights drops, delays, and idle transitions.
+- vtr agent trace --jsonl <path> --trace <trace-id>
+- vtr agent trace-search --jsonl <path> --session <id> --since 5m
+- Add output that highlights drops, delays, and idle transitions using the
+  local JSONL files (no backend).
 
 ## Example span output (abbreviated)
 
