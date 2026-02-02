@@ -601,6 +601,27 @@ func TestGRPCWaitForIdle(t *testing.T) {
 	if resp.TimedOut || !resp.Idle {
 		t.Fatalf("expected idle, got %+v", resp)
 	}
+
+	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+	resp, err = client.WaitForIdle(ctx, &proto.WaitForIdleRequest{
+		Session:       &proto.SessionRef{Id: sessionID},
+		IdleDuration:  durationpb.New(100 * time.Millisecond),
+		Timeout:       durationpb.New(1 * time.Second),
+		IncludeScreen: true,
+	})
+	cancel()
+	if err != nil {
+		t.Fatalf("WaitForIdle screen: %v", err)
+	}
+	if resp.TimedOut || !resp.Idle {
+		t.Fatalf("expected idle with screen, got %+v", resp)
+	}
+	if resp.Screen == nil {
+		t.Fatalf("expected screen snapshot with idle response")
+	}
+	if !strings.Contains(screenToString(resp.Screen), "ready") {
+		t.Fatalf("expected idle screen to contain ready, got %q", screenToString(resp.Screen))
+	}
 }
 
 func TestGRPCSubscribeIdleEvents(t *testing.T) {

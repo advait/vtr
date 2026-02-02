@@ -692,10 +692,22 @@ func (s *GRPCServer) WaitForIdle(ctx context.Context, req *proto.WaitForIdleRequ
 		}
 		return nil, mapCoordinatorErr(err)
 	}
-	return &proto.WaitForIdleResponse{
+	resp := &proto.WaitForIdleResponse{
 		Idle:     idleReached,
 		TimedOut: timedOut,
-	}, nil
+	}
+	if idleReached && req.IncludeScreen {
+		session, err := s.resolveSession(req.Session)
+		if err != nil {
+			return nil, err
+		}
+		snap, err := session.vt.Snapshot()
+		if err != nil {
+			return nil, mapCoordinatorErr(err)
+		}
+		resp.Screen = screenResponseFromSnapshot(session.ID(), session.Label(), snap)
+	}
+	return resp, nil
 }
 
 func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_SubscribeServer) error {

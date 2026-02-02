@@ -98,11 +98,12 @@ type jsonIdle struct {
 }
 
 type jsonIdleSession struct {
-	Coordinator string `json:"coordinator,omitempty"`
-	ID          string `json:"id,omitempty"`
-	Name        string `json:"name"`
-	Idle        bool   `json:"idle"`
-	TimedOut    bool   `json:"timed_out"`
+	Coordinator string      `json:"coordinator,omitempty"`
+	ID          string      `json:"id,omitempty"`
+	Name        string      `json:"name"`
+	Idle        bool        `json:"idle"`
+	TimedOut    bool        `json:"timed_out"`
+	Screen      *jsonScreen `json:"screen,omitempty"`
 }
 
 type jsonCoordinator struct {
@@ -305,6 +306,14 @@ func screenToJSON(resp *proto.GetScreenResponse) jsonScreen {
 		CursorY:    resp.CursorY,
 		ScreenRows: rows,
 	}
+}
+
+func screenJSONFromProto(resp *proto.GetScreenResponse) *jsonScreen {
+	if resp == nil {
+		return nil
+	}
+	screen := screenToJSON(resp)
+	return &screen
 }
 
 func printGrepHuman(w io.Writer, matches []*proto.GrepMatch) {

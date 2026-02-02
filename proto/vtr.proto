@@ -282,11 +282,13 @@ message WaitForIdleRequest {
   SessionRef session = 1;
   google.protobuf.Duration idle_duration = 2;  // default: 5s of silence
   google.protobuf.Duration timeout = 3;  // overall deadline
+  bool include_screen = 4;  // include screen snapshot when idle is reached
 }
 
 message WaitForIdleResponse {
   bool idle = 1;
   bool timed_out = 2;
+  GetScreenResponse screen = 3;
 }
 
 // Streaming messages

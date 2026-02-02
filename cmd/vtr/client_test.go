@@ -230,6 +230,46 @@ func TestCLIIdle(t *testing.T) {
 	}
 }
 
+func TestCLIIdleScreen(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty tests not supported on windows")
+	}
+
+	hubAddr, cleanup := startCLITestServer(t)
+	setupCLIConfig(t, hubAddr)
+	t.Cleanup(cleanup)
+
+	_, err := runCLICommand(t, "agent", "spawn", "--hub", hubAddr, "--cmd", "printf 'ready\\n'; sleep 0.4", "cli-idle-screen")
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+
+	waitForCLIScreenContains(t, hubAddr, "cli-idle-screen", "ready", 2*time.Second)
+
+	out, err := runCLICommand(t, "agent", "idle", "--hub", hubAddr, "--idle", "100ms", "--timeout", "1s", "--screen", "cli-idle-screen")
+	if err != nil {
+		t.Fatalf("idle: %v", err)
+	}
+
+	var resp jsonIdle
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		t.Fatalf("decode idle: %v", err)
+	}
+	if resp.TimedOut || !resp.Idle {
+		t.Fatalf("expected idle, got %+v", resp)
+	}
+	if len(resp.IdleSessions) != 1 {
+		t.Fatalf("expected one idle session, got %+v", resp.IdleSessions)
+	}
+	session := resp.IdleSessions[0]
+	if session.Screen == nil {
+		t.Fatalf("expected idle session screen payload")
+	}
+	if !strings.Contains(screenJSONToString(*session.Screen), "ready") {
+		t.Fatalf("expected idle screen to contain ready, got %q", screenJSONToString(*session.Screen))
+	}
+}
+
 func TestCLIIdleMulti(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("pty tests not supported on windows")

@@ -34,7 +34,7 @@ vtr agent key <name> <key>
 vtr agent raw <name> <hex>
 vtr agent resize <name> <cols> <rows>
 vtr agent wait <name> <pattern> [--timeout 30s]
-vtr agent idle <name> [name...] [--idle 5s] [--timeout 30s]
+vtr agent idle <name> [name...] [--idle 5s] [--timeout 30s] [--screen]
 ```
 
 `vtr agent` defaults to JSON output for most commands, with plain-text output
@@ -46,10 +46,16 @@ Screen output options:
 - `--ansi` returns ANSI-styled text.
 
 Input helpers:
-- `vtr agent send --submit` sends Enter after the text (use when the text has no newline).
+- `vtr agent send --submit` appends a return keypress after the text (use when the text has no newline).
+
+Example:
+```
+vtr agent send --submit <name> "git status"
+```
 
 `vtr agent idle` accepts multiple session names and returns as soon as any session
 goes idle. JSON output includes `idle_sessions` for the sessions that became idle.
+Use `--screen` to include a screen snapshot for idle sessions.
 
 ## TUI
 

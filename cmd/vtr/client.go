@@ -316,7 +316,11 @@ func newSendCmd() *cobra.Command {
 		Args:  cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			text := strings.Join(args[1:], " ")
-			if !submit && !strings.HasSuffix(text, "\n") && !strings.HasSuffix(text, "\r") {
+			if submit {
+				if !strings.HasSuffix(text, "\n") && !strings.HasSuffix(text, "\r") {
+					text += "\r"
+				}
+			} else if !strings.HasSuffix(text, "\n") && !strings.HasSuffix(text, "\r") {
 				fmt.Fprintln(cmd.ErrOrStderr(), "warning: text does not end with newline; input will not be submitted.")
 			}
 			cfg, _, err := loadConfigWithPath()
@@ -336,11 +340,6 @@ func newSendCmd() *cobra.Command {
 				}
 				if _, err = client.SendText(ctx, &proto.SendTextRequest{Session: sessionRef, Text: text}); err != nil {
 					return err
-				}
-				if submit {
-					if _, err = client.SendKey(ctx, &proto.SendKeyRequest{Session: sessionRef, Key: "enter"}); err != nil {
-						return err
-					}
 				}
 				return writeOK(cmd.OutOrStdout())
 			})
@@ -643,6 +642,7 @@ func newIdleCmd() *cobra.Command {
 	var hub string
 	var timeout time.Duration
 	var idle time.Duration
+	var includeScreen bool
 	cmd := &cobra.Command{
 		Use:   "idle <name> [name...]",
 		Short: "Wait for a period of inactivity",
@@ -692,6 +692,7 @@ func newIdleCmd() *cobra.Command {
 					idle     bool
 					timedOut bool
 					err      error
+					screen   *proto.GetScreenResponse
 				}
 
 				results := make(chan idleResult, len(targets))
@@ -702,9 +703,10 @@ func newIdleCmd() *cobra.Command {
 					target := target
 					go func() {
 						resp, err := client.WaitForIdle(idleCtx, &proto.WaitForIdleRequest{
-							Session:      target.ref,
-							IdleDuration: durationpb.New(idle),
-							Timeout:      durationpb.New(timeout),
+							Session:       target.ref,
+							IdleDuration:  durationpb.New(idle),
+							Timeout:       durationpb.New(timeout),
+							IncludeScreen: includeScreen,
 						})
 						if err != nil {
 							results <- idleResult{target: target, err: err}
@@ -714,6 +716,7 @@ func newIdleCmd() *cobra.Command {
 							target:   target,
 							idle:     resp.Idle,
 							timedOut: resp.TimedOut,
+							screen:   resp.Screen,
 						}
 					}()
 				}
@@ -728,6 +731,7 @@ func newIdleCmd() *cobra.Command {
 						Name:        res.target.name,
 						Idle:        res.idle,
 						TimedOut:    res.timedOut,
+						Screen:      screenJSONFromProto(res.screen),
 					})
 					return out
 				}
@@ -789,6 +793,7 @@ func newIdleCmd() *cobra.Command {
 	addHubFlag(cmd, &hub)
 	cmd.Flags().DurationVar(&idle, "idle", idleDurationDefault, "idle duration")
 	cmd.Flags().DurationVar(&timeout, "timeout", idleTimeoutDefault, "overall timeout")
+	cmd.Flags().BoolVar(&includeScreen, "screen", false, "include a screen snapshot when idle is reached")
 	return cmd
 }
 
