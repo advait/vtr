@@ -254,6 +254,10 @@ func buildSetupConfig(configDir string) string {
 		fmt.Sprintf("cert_file = %q", filepath.Join(configDir, "server.crt")),
 		fmt.Sprintf("key_file = %q", filepath.Join(configDir, "server.key")),
 		"",
+		"[tui]",
+		"spinner = \"tick\"",
+		"status_icons = \"nerd\"",
+		"",
 	}
 	return strings.Join(lines, "\n")
 }

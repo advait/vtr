@@ -362,6 +362,7 @@ func newTuiCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			applyTuiStatusConfig(cfg)
 			targetCoord, err := resolveHubTarget(cfg, hub)
 			if err != nil {
 				return err
@@ -2733,29 +2734,69 @@ var leaderLegend = []legendSegment{
 }
 
 const (
-	sessionIconIdle    = ""
-	sessionIconExited  = ""
-	sessionIconUnknown = ""
-	tabOverflowGlyph   = "…"
-	tabNewGlyph        = ""
-	tabNameMaxWidth    = 20
-	tabCoordMaxWidth   = 16
-	sessionListIndent  = "  "
+	tabOverflowGlyph  = "…"
+	tabNewGlyph       = ""
+	tabNameMaxWidth   = 20
+	tabCoordMaxWidth  = 16
+	sessionListIndent = "  "
 )
 
 const borderOverlayOffset = 1
 
 const statusAnimInterval = 200 * time.Millisecond
 
-// Nerd Font frames for animating active status.
-var statusActiveFrames = []string{
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
+const (
+	envTuiSpinner     = "VTR_TUI_SPINNER"
+	envTuiStatusIcons = "VTR_TUI_STATUS_ICONS"
+)
+
+type statusIconSet struct {
+	Idle    string
+	Exited  string
+	Unknown string
 }
+
+var statusIconSets = map[string]statusIconSet{
+	"nerd":  {Idle: "", Exited: "", Unknown: ""},
+	"ascii": {Idle: "i", Exited: "x", Unknown: "?"},
+}
+
+const defaultStatusIcons = "nerd"
+
+func statusIconSetByName(name string) statusIconSet {
+	if set, ok := statusIconSets[name]; ok {
+		return set
+	}
+	return statusIconSets[defaultStatusIcons]
+}
+
+var statusIcons = statusIconSetByName(defaultStatusIcons)
+
+// Status spinner frames for animating active sessions.
+var statusSpinnerSets = map[string][]string{
+	"block-wave":    {"▉", "▊", "▋", "▌", "▍", "▎", "▏", "▎", "▍", "▌", "▋", "▊", "▉"},
+	"bar-wave":      {"▁", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅", "▄", "▃", "▁"},
+	"braille":       {"⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"},
+	"tick":          {"⠁", "⠂", "⠄", "⡀", "⢀", "⠠", "⠐", "⠈"},
+	"static-dot":    {"•"},
+	"static-circle": {"●"},
+	"static-block":  {"▉"},
+	// Nerd Font Material Design Icons:
+	// md-circle_small -> md-clock_time_ten -> md-clock_time_two -> md-clock_time_four
+	// -> md-clock_time_eight -> md-clock_time_nine -> md-circle_medium.
+	"md-clock-loader": {"󰧟", "󱑈", "󱑀", "󱑂", "󱑆", "󱑇", "󰧞"},
+}
+
+const defaultStatusSpinner = "tick"
+
+func statusSpinnerFrames(name string) []string {
+	if frames, ok := statusSpinnerSets[name]; ok && len(frames) > 0 {
+		return frames
+	}
+	return statusSpinnerSets[defaultStatusSpinner]
+}
+
+var statusActiveFrames = statusSpinnerFrames(defaultStatusSpinner)
 
 var statusAnimFrameIndex int
 
@@ -2768,6 +2809,35 @@ func updateStatusAnimFrame(now time.Time) {
 		now = time.Now()
 	}
 	statusAnimFrameIndex = int(now.UnixNano()/int64(statusAnimInterval)) % len(statusActiveFrames)
+}
+
+func resolveTuiSpinner(cfg *clientConfig) string {
+	if value := strings.TrimSpace(os.Getenv(envTuiSpinner)); value != "" {
+		return value
+	}
+	if cfg != nil {
+		if value := strings.TrimSpace(cfg.TUI.Spinner); value != "" {
+			return value
+		}
+	}
+	return defaultStatusSpinner
+}
+
+func resolveTuiStatusIcons(cfg *clientConfig) string {
+	if value := strings.TrimSpace(os.Getenv(envTuiStatusIcons)); value != "" {
+		return value
+	}
+	if cfg != nil {
+		if value := strings.TrimSpace(cfg.TUI.StatusIcons); value != "" {
+			return value
+		}
+	}
+	return defaultStatusIcons
+}
+
+func applyTuiStatusConfig(cfg *clientConfig) {
+	statusActiveFrames = statusSpinnerFrames(resolveTuiSpinner(cfg))
+	statusIcons = statusIconSetByName(resolveTuiStatusIcons(cfg))
 }
 
 func overlayPadding(innerWidth int) (int, int) {
@@ -2843,16 +2913,16 @@ func sessionStatusGlyph(item sessionListItem) string {
 	switch item.status {
 	case proto.SessionStatus_SESSION_STATUS_RUNNING:
 		if item.idle {
-			return sessionIconIdle
+			return statusIcons.Idle
 		}
 		if len(statusActiveFrames) == 0 {
-			return sessionIconUnknown
+			return statusIcons.Unknown
 		}
 		return statusActiveFrames[statusAnimFrameIndex%len(statusActiveFrames)]
 	case proto.SessionStatus_SESSION_STATUS_EXITED:
-		return sessionIconExited
+		return statusIcons.Exited
 	default:
-		return sessionIconUnknown
+		return statusIcons.Unknown
 	}
 }
 

@@ -14,6 +14,7 @@ type clientConfig struct {
 	Hub    hubConfig    `toml:"hub"`
 	Auth   authConfig   `toml:"auth"`
 	Server serverConfig `toml:"server"`
+	TUI    tuiConfig    `toml:"tui"`
 
 	// Legacy client config fields (pre-vtrpc.toml).
 	Defaults defaultsConfig `toml:"defaults"`
@@ -43,6 +44,11 @@ type serverConfig struct {
 	KeyFile  string `toml:"key_file"`
 }
 
+type tuiConfig struct {
+	Spinner     string `toml:"spinner"`
+	StatusIcons string `toml:"status_icons"`
+}
+
 type defaultsConfig struct {
 	OutputFormat string `toml:"output_format"`
 }
@@ -51,7 +57,7 @@ const (
 	defaultConfigDirName  = "vtrpc"
 	defaultConfigFileName = "vtrpc.toml"
 
-	defaultHubAddr       = "127.0.0.1:4620"
+	defaultHubAddr = "127.0.0.1:4620"
 )
 
 func configDir() string {

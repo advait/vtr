@@ -22,9 +22,17 @@ key_file = "~/.config/vtrpc/client.key"
 [server]
 cert_file = "~/.config/vtrpc/server.crt"
 key_file = "~/.config/vtrpc/server.key"
+
+[tui]
+spinner = "tick"        # status spinner name
+status_icons = "nerd"   # status icon set name
 ```
 
 `vtr setup` writes a local hub config and generates auth material (0600 for keys/tokens).
+
+TUI overrides:
+- `VTR_TUI_SPINNER` selects a spinner set at runtime.
+- `VTR_TUI_STATUS_ICONS` selects a status icon set at runtime.
 
 ## Hub runtime
 
