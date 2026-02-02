@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.0.6 - 2026-02-02
+- Tracing: add hub JSONL sink with spoke spooling and tunnel propagation; JSONL-only sink with named spool files.
+- CLI/agent: `idle` supports multiple sessions and optional `--screen` snapshots; accept `coordinator:session` refs; document `send --submit`.
+- TUI: session rename workflow plus configurable spinner and status icons (including idle state).
+- Web UI: fix canvas text baseline alignment and clear rename modal input after use.
+- Ops: add `vtr service` to install/manage the systemd user unit for the hub.
+- Docs/diagrams: add hub/spoke data flow diagram and tracing strategy/consumer docs.
+- Networking: prevent tunnel backpressure stalls.
+
 ## v0.0.5 - 2026-01-28
 - API: require `SessionRef.id` for session operations; `name` lookup is removed.
 - Routing: support coordinator-aware session refs for hubs.
