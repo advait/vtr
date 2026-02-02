@@ -22,6 +22,7 @@ import (
 	proto "github.com/advait/vtrpc/proto"
 	webassets "github.com/advait/vtrpc/web"
 	"github.com/spf13/cobra"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	statuspb "google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -144,7 +145,7 @@ func newWebHandler(opts webOptions, resolver webResolver) (http.Handler, error) 
 		}
 		mux.Handle("/", http.FileServer(http.FS(dist)))
 	}
-	return mux, nil
+	return otelhttp.NewHandler(mux, "vtr.http"), nil
 }
 
 func newWebServer(opts webOptions, resolver webResolver) (*http.Server, error) {

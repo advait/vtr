@@ -6,13 +6,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	proto "github.com/advait/vtrpc/proto"
+	"github.com/advait/vtrpc/tracing"
 	"github.com/spf13/cobra"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/durationpb"
@@ -25,6 +29,21 @@ const (
 	idleTimeoutDefault  = 30 * time.Second
 	idleDurationDefault = 5 * time.Second
 )
+
+var clientTraceOnce sync.Once
+
+func ensureClientTracing() {
+	clientTraceOnce.Do(func() {
+		_, err := tracing.Init(tracing.Options{
+			Role:           tracing.RoleClient,
+			ServiceName:    "vtr",
+			ServiceVersion: Version,
+		})
+		if err != nil {
+			slog.Default().Warn("tracing init failed", "err", err)
+		}
+	})
+}
 
 func newListCmd() *cobra.Command {
 	var hub string
@@ -810,6 +829,7 @@ func loadConfigAndOutput(jsonFlag bool) (*clientConfig, string, outputFormat, er
 }
 
 func withCoordinator(ctx context.Context, coord coordinatorRef, cfg *clientConfig, fn func(proto.VTRClient) error) error {
+	ensureClientTracing()
 	conn, err := dialClient(ctx, coord.Path, cfg)
 	if err != nil {
 		return err
@@ -897,6 +917,7 @@ func dialTCP(ctx context.Context, addr string, cfg *clientConfig) (*grpc.ClientC
 		}
 		opts = append(opts, grpc.WithPerRPCCredentials(tokenAuth{token: token, requireTransport: requireTLS}))
 	}
+	opts = append(opts, grpc.WithStatsHandler(otelgrpc.NewClientHandler()))
 	return grpc.DialContext(ctx, addr, opts...)
 }
 

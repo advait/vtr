@@ -11,7 +11,10 @@ import (
 	"time"
 
 	proto "github.com/advait/vtrpc/proto"
+	"github.com/advait/vtrpc/tracing"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -302,14 +305,16 @@ func (e *tunnelEndpoint) CallUnary(ctx context.Context, method string, req gopro
 	}
 	start := time.Now()
 	e.logger.Info("tunnel call start", "spoke", e.name, "method", method, "call_id", call.id)
+	reqFrame := &proto.TunnelRequest{
+		Method:  method,
+		Payload: payload,
+		Stream:  false,
+	}
+	injectTunnelTrace(reqFrame, ctx)
 	frame := &proto.TunnelFrame{
 		CallId: call.id,
 		Kind: &proto.TunnelFrame_Request{
-			Request: &proto.TunnelRequest{
-				Method:  method,
-				Payload: payload,
-				Stream:  false,
-			},
+			Request: reqFrame,
 		},
 	}
 	if err := e.send(frame); err != nil {
@@ -374,14 +379,16 @@ func (e *tunnelEndpoint) CallStream(ctx context.Context, method string, req gopr
 	}
 	start := time.Now()
 	e.logger.Info("tunnel call start", "spoke", e.name, "method", method, "call_id", call.id)
+	reqFrame := &proto.TunnelRequest{
+		Method:  method,
+		Payload: payload,
+		Stream:  true,
+	}
+	injectTunnelTrace(reqFrame, ctx)
 	frame := &proto.TunnelFrame{
 		CallId: call.id,
 		Kind: &proto.TunnelFrame_Request{
-			Request: &proto.TunnelRequest{
-				Method:  method,
-				Payload: payload,
-				Stream:  true,
-			},
+			Request: reqFrame,
 		},
 	}
 	if err := e.send(frame); err != nil {
@@ -457,6 +464,8 @@ func tunnelFrameKind(frame *proto.TunnelFrame) string {
 		return "event"
 	case frame.GetError() != nil:
 		return "error"
+	case frame.GetTrace() != nil:
+		return "trace"
 	case frame.GetRequest() != nil:
 		return "request"
 	case frame.GetCancel() != nil:
@@ -489,6 +498,43 @@ func tunnelErrorToStatus(err *proto.TunnelError) error {
 	return status.Error(code, err.Message)
 }
 
+func injectTunnelTrace(req *proto.TunnelRequest, ctx context.Context) {
+	if req == nil || ctx == nil {
+		return
+	}
+	carrier := propagation.MapCarrier{}
+	otel.GetTextMapPropagator().Inject(ctx, carrier)
+	if value := carrier.Get("traceparent"); value != "" {
+		req.TraceParent = value
+	}
+	if value := carrier.Get("tracestate"); value != "" {
+		req.TraceState = value
+	}
+	if value := carrier.Get("baggage"); value != "" {
+		req.Baggage = value
+	}
+}
+
+func extractTunnelTrace(ctx context.Context, req *proto.TunnelRequest) context.Context {
+	if ctx == nil || req == nil {
+		return ctx
+	}
+	carrier := propagation.MapCarrier{}
+	if value := strings.TrimSpace(req.TraceParent); value != "" {
+		carrier.Set("traceparent", value)
+	}
+	if value := strings.TrimSpace(req.TraceState); value != "" {
+		carrier.Set("tracestate", value)
+	}
+	if value := strings.TrimSpace(req.Baggage); value != "" {
+		carrier.Set("baggage", value)
+	}
+	if len(carrier) == 0 {
+		return ctx
+	}
+	return otel.GetTextMapPropagator().Extract(ctx, carrier)
+}
+
 type tunnelSpoke struct {
 	ctx     context.Context
 	stream  proto.VTR_TunnelClient
@@ -498,9 +544,11 @@ type tunnelSpoke struct {
 	sendMu sync.Mutex
 	mu     sync.Mutex
 	calls  map[string]context.CancelFunc
+
+	onReady func()
 }
 
-func runSpokeTunnelLoop(ctx context.Context, addr string, cfg *clientConfig, token string, info *proto.SpokeInfo, service proto.VTRServer, logger *slog.Logger) {
+func runSpokeTunnelLoop(ctx context.Context, addr string, cfg *clientConfig, token string, info *proto.SpokeInfo, service proto.VTRServer, traceHandle *tracing.Handle, transport *traceTransport, logger *slog.Logger) {
 	if service == nil {
 		return
 	}
@@ -544,8 +592,20 @@ func runSpokeTunnelLoop(ctx context.Context, addr string, cfg *clientConfig, tok
 			logger:  logger,
 			calls:   make(map[string]context.CancelFunc),
 		}
+		if transport != nil {
+			tunnel.onReady = func() {
+				transport.SetTunnel(tunnel)
+				if traceHandle != nil {
+					traceHandle.SetTransport(transport)
+					_ = traceHandle.Flush(context.Background())
+				}
+			}
+		}
 		if err := tunnel.serve(name, info); err != nil {
 			logger.Warn("spoke: tunnel stopped", "addr", addr, "err", err)
+		}
+		if transport != nil {
+			transport.ClearTunnel(tunnel)
 		}
 		_ = conn.Close()
 		if waitOrDone(ctx, backoff) {
@@ -573,6 +633,9 @@ func (t *tunnelSpoke) serve(name string, info *proto.SpokeInfo) error {
 	}
 	if err := t.send(hello); err != nil {
 		return err
+	}
+	if t.onReady != nil {
+		t.onReady()
 	}
 	for {
 		frame, err := t.stream.Recv()
@@ -644,6 +707,7 @@ func (t *tunnelSpoke) handleRequest(callID string, req *proto.TunnelRequest) {
 		return
 	}
 	ctx, cancel := context.WithCancel(t.stream.Context())
+	ctx = extractTunnelTrace(ctx, req)
 	t.registerCall(key, cancel)
 	if req.Stream {
 		go func() {

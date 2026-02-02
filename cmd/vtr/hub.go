@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/advait/vtrpc/server"
+	"github.com/advait/vtrpc/tracing"
 	"github.com/spf13/cobra"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
@@ -139,6 +140,18 @@ func runHub(opts hubOptions) error {
 	localService := server.NewGRPCServer(coord)
 	dialAddr := hubDialAddr(addr)
 	localService.SetCoordinatorInfo(hubName(dialAddr), dialAddr)
+	traceHandle, err := tracing.Init(tracing.Options{
+		Role:           tracing.RoleHub,
+		ServiceName:    "vtr",
+		ServiceVersion: Version,
+		Coordinator:    hubName(dialAddr),
+		Logger:         logger,
+	})
+	if err != nil {
+		logger.Warn("tracing init failed", "err", err)
+	} else {
+		defer func() { _ = traceHandle.Shutdown(context.Background()) }()
+	}
 	federated := newFederatedServer(
 		localService,
 		hubName(dialAddr),

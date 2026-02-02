@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	proto "github.com/advait/vtrpc/proto"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
@@ -147,6 +148,7 @@ func NewGRPCServerWithTokenAndService(service proto.VTRServer, token string) *gr
 		grpc.StreamInterceptor(tokenStreamInterceptor(token)),
 		grpc.KeepaliveParams(grpcKeepaliveParams),
 		grpc.KeepaliveEnforcementPolicy(grpcKeepalivePolicy),
+		grpc.StatsHandler(otelgrpc.NewServerHandler()),
 	}
 	grpcServer := grpc.NewServer(opts...)
 	proto.RegisterVTRServer(grpcServer, service)
@@ -175,6 +177,7 @@ func ServeTCP(ctx context.Context, coord *Coordinator, addr string, tlsConfig *t
 		grpc.StreamInterceptor(tokenStreamInterceptor(token)),
 		grpc.KeepaliveParams(grpcKeepaliveParams),
 		grpc.KeepaliveEnforcementPolicy(grpcKeepalivePolicy),
+		grpc.StatsHandler(otelgrpc.NewServerHandler()),
 	}
 	if tlsConfig != nil {
 		opts = append(opts, grpc.Creds(credentials.NewTLS(tlsConfig)))

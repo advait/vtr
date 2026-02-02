@@ -110,6 +110,7 @@ message TunnelFrame {
     TunnelStreamEvent event = 13;
     TunnelCancel cancel = 14;
     TunnelError error = 15;
+    TunnelTraceBatch trace = 16;
   }
   reserved 1;
   reserved "spoke_name";
@@ -125,6 +126,9 @@ message TunnelRequest {
   string method = 1;
   bytes payload = 2;
   bool stream = 3;
+  string trace_parent = 4;
+  string trace_state = 5;
+  string baggage = 6;
 }
 
 message TunnelResponse {
@@ -143,6 +147,10 @@ message TunnelCancel {
 message TunnelError {
   int32 code = 1;
   string message = 2;
+}
+
+message TunnelTraceBatch {
+  bytes payload = 1;
 }
 
 message CoordinatorSessions {

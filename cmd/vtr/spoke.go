@@ -13,7 +13,9 @@ import (
 
 	proto "github.com/advait/vtrpc/proto"
 	"github.com/advait/vtrpc/server"
+	"github.com/advait/vtrpc/tracing"
 	"github.com/spf13/cobra"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
@@ -124,6 +126,21 @@ func runSpoke(opts spokeOptions) error {
 	}
 	localService.SetCoordinatorInfo(spokeName, "")
 
+	traceTransport := &traceTransport{}
+	traceHandle, err := tracing.Init(tracing.Options{
+		Role:           tracing.RoleSpoke,
+		ServiceName:    "vtr",
+		ServiceVersion: Version,
+		Coordinator:    spokeName,
+		Transport:      traceTransport,
+		Logger:         logger,
+	})
+	if err != nil {
+		logger.Warn("tracing init failed", "err", err)
+	} else {
+		defer func() { _ = traceHandle.Shutdown(context.Background()) }()
+	}
+
 	logger.Info("spoke starting",
 		"name", spokeName,
 		"hub", hubAddr,
@@ -139,7 +156,7 @@ func runSpoke(opts spokeOptions) error {
 			Name:    spokeName,
 			Version: Version,
 		}
-		go runSpokeTunnelLoop(ctx, hubAddr, cfg, token, info, localService, logger)
+		go runSpokeTunnelLoop(ctx, hubAddr, cfg, token, info, localService, traceHandle, traceTransport, logger)
 	}
 
 	<-ctx.Done()
@@ -178,6 +195,7 @@ func dialHub(ctx context.Context, addr string, cfg *clientConfig, token string) 
 	if requireToken && token != "" {
 		opts = append(opts, grpc.WithPerRPCCredentials(tokenAuth{token: token, requireTransport: requireTLS}))
 	}
+	opts = append(opts, grpc.WithStatsHandler(otelgrpc.NewClientHandler()))
 	return grpc.DialContext(ctx, addr, opts...)
 }
 

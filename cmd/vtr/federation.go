@@ -13,6 +13,7 @@ import (
 
 	proto "github.com/advait/vtrpc/proto"
 	"github.com/advait/vtrpc/server"
+	"github.com/advait/vtrpc/tracing"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
@@ -183,6 +184,10 @@ func (s *federatedServer) Tunnel(stream proto.VTR_TunnelServer) error {
 		}
 		s.registry.Touch(name)
 		switch {
+		case frame.GetTrace() != nil:
+			if err := tracing.Ingest(frame.GetTrace().GetPayload()); err != nil && s.logger != nil {
+				s.logger.Warn("trace ingest failed", "name", name, "err", err)
+			}
 		case frame.GetResponse() != nil || frame.GetEvent() != nil || frame.GetError() != nil:
 			endpoint.dispatch(frame)
 		default:
