@@ -1819,16 +1819,10 @@ func beginRenameModal(m attachModel) (attachModel, tea.Cmd) {
 		m.statusUntil = time.Now().Add(2 * time.Second)
 		return m, nil
 	}
-	current := strings.TrimSpace(m.sessionLabel)
-	if current == "" {
-		item := currentSessionItem(m)
-		current = item.label
-	}
-	current = stripCoordinatorPrefix(current)
 	m.renameActive = true
 	m.listActive = false
 	m.createActive = false
-	m.renameInput.SetValue(current)
+	m.renameInput.SetValue("")
 	m.renameInput.Focus()
 	m.createInput.Blur()
 	return m, nil
