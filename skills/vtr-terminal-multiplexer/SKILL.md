@@ -43,14 +43,17 @@ vtr agent spawn --hub localhost:8080 my-session --cmd "bash" --cols 130 --rows 6
 
 ### Send Text to Session
 ```bash
-# IMPORTANT: Include trailing \n to submit the command!
-vtr agent send --hub localhost:8080 my-session "ls -la\n"
+# Preferred: use --submit to append a return keypress
+vtr agent send --hub localhost:8080 --submit my-session "ls -la"
 
-# Without \n, text appears at prompt but is NOT submitted
+# Without --submit or a trailing \n, text appears at prompt but is NOT submitted
 # The CLI will warn: "warning: text does not end with newline; input will not be submitted."
+
+# Alternative: include a trailing newline
+vtr agent send --hub localhost:8080 my-session "ls -la\n"
 ```
 
-**Newline behavior:** The server converts `\n` → `\r` (carriage return / Enter keypress) in the PTY. Always end text with `\n` unless you intentionally want to type without submitting.
+**Newline behavior:** The server converts `\n` → `\r` (carriage return / Enter keypress) in the PTY. `--submit` appends a return keypress for you.
 
 ### Send Special Keys
 ```bash
@@ -98,7 +101,7 @@ vtr agent grep --hub localhost:8080 my-session "error" --context 3
 vtr agent spawn --hub localhost:8080 codex-1 --cmd "codex" --cols 130 --rows 63
 
 # Or send to existing shell session:
-vtr agent send --hub localhost:8080 shell-1 "codex\n"
+vtr agent send --hub localhost:8080 --submit shell-1 "codex"
 ```
 
 ### Sending Prompts to Coding Agents
@@ -107,7 +110,7 @@ vtr agent send --hub localhost:8080 shell-1 "codex\n"
 
 | Key | Behavior | When to use |
 |-----|----------|-------------|
-| Enter (`\n`) | Send immediately, interrupts current work | Urgent queries, idle agents |
+| Enter (`\n` or `--submit`) | Send immediately, interrupts current work | Urgent queries, idle agents |
 | Tab | Queue message for next agent stop | Agent is busy, non-urgent follow-ups |
 
 **Use queueing (Tab) strategically:**
@@ -122,7 +125,7 @@ vtr agent send --hub localhost:8080 shell-1 "codex\n"
 
 ```bash
 # Send immediately (agent is idle)
-vtr agent send --hub $HUB $SESSION "Run git status and show me the output\n"
+vtr agent send --hub $HUB --submit $SESSION "Run git status and show me the output"
 
 # Queue for next stop (agent is busy working)
 vtr agent send --hub $HUB $SESSION "After that, also check for lint errors"
@@ -183,8 +186,8 @@ vtr agent idle --hub $HUB --timeout 120s --idle 10s $SESSION
 HUB="localhost:8080"
 SESSION="codex-1"
 
-# 1. Send the prompt (with trailing newline!)
-vtr agent send --hub $HUB $SESSION "Is git clean? Run git status.\n"
+# 1. Send the prompt (use --submit to press Enter)
+vtr agent send --hub $HUB --submit $SESSION "Is git clean? Run git status."
 
 # 2. Block until agent finishes (PREFERRED over sleep+poll)
 vtr agent wait --hub $HUB --timeout 90s $SESSION "context left"
@@ -205,12 +208,12 @@ echo "$SCREEN" | tail -5 | grep -q "context left" && echo "IDLE" || echo "BUSY"
 
 ## Tips & Gotchas
 
-### Always Include Trailing Newline
-When sending commands to shells or coding agents, **always append `\n`** to your text. Without it, the text sits at the prompt without being submitted.
+### Always Submit Input
+When sending commands to shells or coding agents, **use `--submit`** (preferred) or append `\n`. Without either, the text sits at the prompt without being submitted.
 
 ```bash
 # ✅ Correct - command is submitted
-vtr agent send --hub $HUB $SESSION "git status\n"
+vtr agent send --hub $HUB --submit $SESSION "git status"
 
 # ❌ Wrong - text just appears, not submitted
 vtr agent send --hub $HUB $SESSION "git status"
