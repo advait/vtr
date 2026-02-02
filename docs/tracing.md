@@ -200,19 +200,21 @@ Recommended defaults:
 ## Sink strategy (agent-queryable traces)
 
 Keep this lightweight and self-contained. Do not depend on a backend service
-or query API. Instead, write spans and derived metrics to a local JSONL file
-that agents can parse with rg/jq.
+or query API. Use a hybrid hub-primary sink so traces are centralized but
+spokes can continue recording during hub outages.
 
 Recommended approach:
 
 - Implement a custom JSONL SpanExporter that writes one JSON object per span.
 - Add a periodic metrics snapshot writer (JSONL) for counters/gauges derived
   from spans (dropped_frames, queue_delay_ms, frame_id_gap, rtt_ms, etc).
-- Store files locally (e.g., ~/.local/share/vtr/traces.jsonl and
-  ~/.local/share/vtr/metrics.jsonl) and make the path configurable via config
-  or env var (VTR_TRACE_JSONL_PATH, VTR_METRICS_JSONL_PATH).
-- Rotate files by size/time (simple daily or size-based rotation) to keep
-  the file bounded.
+- Hub is the canonical sink: write traces and metrics to local JSONL on the hub
+  (e.g., ~/.local/share/vtr/traces.jsonl and ~/.local/share/vtr/metrics.jsonl).
+- Spokes always attempt to forward spans/metrics to the hub. If the tunnel is
+  unavailable, write to a local rotating spool (e.g., ~/.local/share/vtr/spool/).
+  When the tunnel returns, ship the backlog to the hub and truncate the spool.
+- Rotate hub and spool files by size/time to keep them bounded, and record
+  drop counters when the spool is forced to evict old data.
 
 Example JSONL span line:
 
@@ -226,7 +228,7 @@ Example JSONL metrics line:
 {\"ts\":\"2026-02-01T17:30:05.200Z\",\"type\":\"metric\",\"name\":\"stream.dropped_frames\",\"value\":2,\"unit\":\"1\",\"attrs\":{\"session.id\":\"...\",\"coordinator\":\"hub-1\"}}
 ```
 
-Agents can then run:
+Agents can then run (on the hub):
 - rg 'session.id\":\"<id>' ~/.local/share/vtr/traces.jsonl
 - jq 'select(.type==\"metric\" and .name==\"stream.dropped_frames\")' ~/.local/share/vtr/metrics.jsonl
 
@@ -235,7 +237,7 @@ Agents can then run:
 Phase 0: baseline plumbing
 - Add OTel SDK init, resource attributes (service.name, service.version,
   coordinator.name, session.id).
-- JSONL exporter wiring.
+- JSONL exporter wiring with hub sink + spoke spool + backfill.
 - gRPC client/server interceptors for all RPCs.
 
 Phase 1: tunnel propagation
