@@ -197,7 +197,11 @@ func newSpawnCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "spawn <name>",
 		Short: "Spawn a new session",
-		Args:  cobra.ExactArgs(1),
+		Long: "Spawn a new session. When connected to a hub with multiple coordinators, " +
+			"prefix the name with \"coordinator:\" to target a specific coordinator.",
+		Example: `vtr agent spawn demo --cmd "bash"
+vtr agent spawn spoke-a:demo --cmd "bash"`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, _, err := loadConfigWithPath()
 			if err != nil {
