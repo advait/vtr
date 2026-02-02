@@ -51,7 +51,7 @@ func Init(opts Options) (*Handle, error) {
 	if baseDir == "" {
 		baseDir = defaultBaseDir()
 	}
-	sink, err := buildSink(opts.Role, baseDir, opts.Transport)
+	sink, err := buildSink(opts.Role, baseDir, opts.Transport, opts.Coordinator)
 	if err != nil {
 		logger.Warn("tracing sink unavailable; falling back to discard", "err", err)
 		sink = discardSink{}
@@ -154,6 +154,27 @@ func expandPath(value string) string {
 	return value
 }
 
+func sanitizeSpoolPrefix(name string) string {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return "spoke"
+	}
+	var out strings.Builder
+	out.Grow(len(trimmed))
+	for _, r := range trimmed {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			out.WriteRune(r)
+		} else {
+			out.WriteByte('_')
+		}
+	}
+	result := out.String()
+	if result == "" {
+		return "spoke"
+	}
+	return result
+}
+
 func tracePath(baseDir string) string {
 	if strings.TrimSpace(baseDir) == "" {
 		return ""
@@ -168,12 +189,12 @@ func spoolDir(baseDir string) string {
 	return filepath.Join(baseDir, "spool")
 }
 
-func buildSink(role Role, baseDir string, transport Transport) (Sink, error) {
+func buildSink(role Role, baseDir string, transport Transport, coordinator string) (Sink, error) {
 	switch role {
 	case RoleHub:
 		return newFileSink(tracePath(baseDir))
 	case RoleSpoke:
-		spool, err := newSpoolWriter(spoolDir(baseDir))
+		spool, err := newSpoolWriter(spoolDir(baseDir), sanitizeSpoolPrefix(coordinator))
 		if err != nil {
 			return nil, err
 		}

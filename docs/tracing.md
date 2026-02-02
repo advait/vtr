@@ -7,7 +7,7 @@ unreachable.
 ## Where traces live
 
 - Hub JSONL: `~/.config/vtrpc/traces.jsonl`
-- Spoke spool (temporary): `~/.config/vtrpc/spool/spool-*.jsonl`
+- Spoke spool (temporary): `~/.config/vtrpc/spool/spool-<spoke>-*.jsonl`
 
 `VTRPC_CONFIG_DIR` overrides the base directory (all paths above become
 `$VTRPC_CONFIG_DIR/...`).
@@ -44,9 +44,9 @@ Examples (run on the hub):
 
 - The hub writes spans to `traces.jsonl` and rotates by size (64MB).
 - Spokes try to send spans to the hub immediately.
-- If the tunnel is down, spokes append to `spool.jsonl` and rotate to
-  `spool-*.jsonl`. When the tunnel reconnects, the backlog is sent to the hub
-  and the spool files are deleted.
+- If the tunnel is down, spokes append to `spool-<spoke>.jsonl` and rotate to
+  `spool-<spoke>-*.jsonl`. When the tunnel reconnects, the backlog is sent to
+  the hub and the spool files are deleted.
 
 ## Roadmap (not implemented yet)
 

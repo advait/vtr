@@ -295,10 +295,11 @@ func renameWithTimestamp(path string, now time.Time) string {
 type spoolWriter struct {
 	mu     sync.Mutex
 	dir    string
+	prefix string
 	writer *rotatingWriter
 }
 
-func newSpoolWriter(dir string) (*spoolWriter, error) {
+func newSpoolWriter(dir string, prefix string) (*spoolWriter, error) {
 	dir = strings.TrimSpace(dir)
 	if dir == "" {
 		return nil, errors.New("spool dir is required")
@@ -306,12 +307,18 @@ func newSpoolWriter(dir string) (*spoolWriter, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	path := filepath.Join(dir, "spool.jsonl")
-	writer, err := newRotatingWriter(path, defaultMaxFileBytes, spoolRenamer)
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		prefix = "spoke"
+	}
+	path := filepath.Join(dir, fmt.Sprintf("spool-%s.jsonl", prefix))
+	writer, err := newRotatingWriter(path, defaultMaxFileBytes, func(path string, now time.Time) string {
+		return spoolRenamer(path, now, prefix)
+	})
 	if err != nil {
 		return nil, err
 	}
-	return &spoolWriter{dir: dir, writer: writer}, nil
+	return &spoolWriter{dir: dir, prefix: prefix, writer: writer}, nil
 }
 
 func (s *spoolWriter) Write(payload []byte) error {
@@ -334,7 +341,7 @@ func (s *spoolWriter) Flush(ctx context.Context, transport Transport) error {
 	if s.writer != nil {
 		_ = s.writer.Rotate()
 	}
-	files := listSpoolFilesLocked(s.dir)
+	files := listSpoolFilesLocked(s.dir, s.prefix)
 	s.mu.Unlock()
 
 	for _, path := range files {
@@ -346,24 +353,29 @@ func (s *spoolWriter) Flush(ctx context.Context, transport Transport) error {
 	return nil
 }
 
-func spoolRenamer(path string, now time.Time) string {
+func spoolRenamer(path string, now time.Time, prefix string) string {
 	dir := filepath.Dir(path)
 	stamp := now.UTC().Format("20060102-150405")
-	return filepath.Join(dir, fmt.Sprintf("spool-%s.jsonl", stamp))
+	return filepath.Join(dir, fmt.Sprintf("spool-%s-%s.jsonl", prefix, stamp))
 }
 
-func listSpoolFilesLocked(dir string) []string {
+func listSpoolFilesLocked(dir string, prefix string) []string {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
 	}
 	files := make([]string, 0, len(entries))
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		prefix = "spoke"
+	}
+	prefix = "spool-" + prefix + "-"
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
 		}
 		name := entry.Name()
-		if !strings.HasPrefix(name, "spool-") || !strings.HasSuffix(name, ".jsonl") {
+		if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, ".jsonl") {
 			continue
 		}
 		files = append(files, filepath.Join(dir, name))
