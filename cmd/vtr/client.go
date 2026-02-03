@@ -333,10 +333,18 @@ func newScreenCmd() *cobra.Command {
 func newSendCmd() *cobra.Command {
 	var hub string
 	var submit bool
+	var waitForIdle bool
+	var idle time.Duration
+	var timeout time.Duration
 	cmd := &cobra.Command{
 		Use:   "send <name> <text>",
 		Short: "Send text to a session",
-		Args:  cobra.MinimumNArgs(2),
+		Long: "Send text to a session. Use --submit to append Enter when the text has no newline, " +
+			"or --wait-for-idle to block until the session is idle after sending.",
+		Example: `vtr agent send demo "git status\n"
+vtr agent send --submit demo "git status"
+vtr agent send --wait-for-idle --idle 2s --timeout 30s demo "make test\n"`,
+		Args: cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			text := strings.Join(args[1:], " ")
 			if submit {
@@ -346,6 +354,14 @@ func newSendCmd() *cobra.Command {
 			} else if !strings.HasSuffix(text, "\n") && !strings.HasSuffix(text, "\r") {
 				fmt.Fprintln(cmd.ErrOrStderr(), "warning: text does not end with newline; input will not be submitted.")
 			}
+			if waitForIdle {
+				if idle <= 0 {
+					idle = idleDurationDefault
+				}
+				if timeout <= 0 {
+					timeout = idleTimeoutDefault
+				}
+			}
 			cfg, _, err := loadConfigWithPath()
 			if err != nil {
 				return err
@@ -354,7 +370,11 @@ func newSendCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
+			ctxTimeout := rpcTimeout
+			if waitForIdle {
+				ctxTimeout = timeout + 2*time.Second
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), ctxTimeout)
 			defer cancel()
 			return withCoordinator(ctx, target, cfg, func(client proto.VTRClient) error {
 				sessionRef, _, err := resolveSessionRef(ctx, client, args[0], "")
@@ -364,12 +384,28 @@ func newSendCmd() *cobra.Command {
 				if _, err = client.SendText(ctx, &proto.SendTextRequest{Session: sessionRef, Text: text}); err != nil {
 					return err
 				}
-				return writeOK(cmd.OutOrStdout())
+				result := jsonSend{OK: true}
+				if waitForIdle {
+					resp, err := client.WaitForIdle(ctx, &proto.WaitForIdleRequest{
+						Session:      sessionRef,
+						IdleDuration: durationpb.New(idle),
+						Timeout:      durationpb.New(timeout),
+					})
+					if err != nil {
+						return err
+					}
+					result.Idle = resp.Idle
+					result.TimedOut = resp.TimedOut
+				}
+				return writeJSON(cmd.OutOrStdout(), result)
 			})
 		},
 	}
 	addHubFlag(cmd, &hub)
 	cmd.Flags().BoolVar(&submit, "submit", false, "Send Enter after the text (use when text has no newline)")
+	cmd.Flags().BoolVar(&waitForIdle, "wait-for-idle", false, "Wait for the session to go idle after sending")
+	cmd.Flags().DurationVar(&idle, "idle", idleDurationDefault, "idle duration before session is considered idle (used with --wait-for-idle)")
+	cmd.Flags().DurationVar(&timeout, "timeout", idleTimeoutDefault, "overall idle wait timeout (used with --wait-for-idle)")
 	return cmd
 }
 

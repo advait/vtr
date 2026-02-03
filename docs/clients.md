@@ -29,7 +29,7 @@ vtr agent spawn <name> [--cmd "..."] [--cwd /path]
 vtr agent info <name>
 vtr agent screen <name> [--json] [--ansi]
 vtr agent grep <name> <pattern> [-A/-B/-C lines]
-vtr agent send <name> <text> [--submit]
+vtr agent send <name> <text> [--submit] [--wait-for-idle] [--idle 5s] [--timeout 30s]
 vtr agent key <name> <key>
 vtr agent raw <name> <hex>
 vtr agent resize <name> <cols> <rows>
@@ -47,6 +47,8 @@ Screen output options:
 
 Input helpers:
 - `vtr agent send --submit` appends a return keypress after the text (use when the text has no newline).
+- `vtr agent send --wait-for-idle` blocks until the session is idle after sending (configure with `--idle` and `--timeout`).
+  Output includes `idle`/`timed_out` when `--wait-for-idle` is used.
 
 Example:
 ```

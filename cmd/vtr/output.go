@@ -74,6 +74,12 @@ type jsonOK struct {
 	OK bool `json:"ok"`
 }
 
+type jsonSend struct {
+	OK       bool `json:"ok"`
+	Idle     bool `json:"idle,omitempty"`
+	TimedOut bool `json:"timed_out,omitempty"`
+}
+
 type jsonGrepMatch struct {
 	LineNumber    int32    `json:"line_number"`
 	Line          string   `json:"line"`

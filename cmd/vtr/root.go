@@ -16,7 +16,6 @@ func newRootCmd() *cobra.Command {
 		newAgentCmd(),
 		newTuiCmd(),
 		newSetupCmd(),
-		newServiceCmd(),
 	)
 
 	return root

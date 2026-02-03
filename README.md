@@ -40,6 +40,7 @@ vtr tui
 vtr agent spawn my-session-name
 vtr agent send my-session-name $'codex\n'
 vtr agent send my-session-name $'Controlling codex through CLI!\n'
+vtr agent send --wait-for-idle --idle 2s my-session-name $'echo done\n'
 
 # See the results in both Web UI and TUI!
 ```
@@ -99,6 +100,7 @@ vtr agent wait build '\$ '
 # Run a command and wait for it to complete (idle = no output for 5s)
 vtr agent send build 'make test\n'
 vtr agent send --submit build 'make test'
+vtr agent send --wait-for-idle --idle 2s --timeout 120s build 'make test\n'
 vtr agent idle build --timeout 120s
 
 # Search scrollback for results

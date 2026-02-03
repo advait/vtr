@@ -110,6 +110,36 @@ func TestCLISendSubmit(t *testing.T) {
 	waitForCLIScreenContains(t, hubAddr, "cli-submit", "got:hello", 2*time.Second)
 }
 
+func TestCLISendWaitForIdle(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty tests not supported on windows")
+	}
+
+	hubAddr, cleanup := startCLITestServer(t)
+	setupCLIConfig(t, hubAddr)
+	t.Cleanup(cleanup)
+
+	_, err := runCLICommand(t, "agent", "spawn", "--hub", hubAddr, "--cmd", "printf 'ready\\n'; read line; printf 'got:%s\\n' \"$line\"; sleep 0.1", "cli-send-idle")
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+
+	waitForCLIScreenContains(t, hubAddr, "cli-send-idle", "ready", 2*time.Second)
+
+	out, err := runCLICommand(t, "agent", "send", "--wait-for-idle", "--idle", "100ms", "--timeout", "1s", "--hub", hubAddr, "cli-send-idle", "hello\n")
+	if err != nil {
+		t.Fatalf("send --wait-for-idle: %v", err)
+	}
+
+	var resp jsonSend
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		t.Fatalf("decode send: %v", err)
+	}
+	if !resp.OK || resp.TimedOut || !resp.Idle {
+		t.Fatalf("expected idle send response, got %+v", resp)
+	}
+}
+
 func TestCLIGrep(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("pty tests not supported on windows")

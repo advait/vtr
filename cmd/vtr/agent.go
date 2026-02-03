@@ -10,6 +10,7 @@ func newAgentCmd() *cobra.Command {
 vtr agent spawn demo --cmd "bash"
 vtr agent spawn spoke-a:demo --cmd "bash"
 vtr agent send --submit demo "git status"
+vtr agent send --wait-for-idle --idle 5s demo "make test"
 vtr agent screen demo --ansi
 vtr agent idle demo other --idle 5s --timeout 30s`,
 	}

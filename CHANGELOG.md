@@ -7,7 +7,6 @@ All notable changes to this project will be documented in this file.
 - CLI/agent: `idle` supports multiple sessions and optional `--screen` snapshots; accept `coordinator:session` refs; document `send --submit`.
 - TUI: session rename workflow plus configurable spinner and status icons (including idle state).
 - Web UI: fix canvas text baseline alignment and clear rename modal input after use.
-- Ops: add `vtr service` to install/manage the systemd user unit for the hub.
 - Docs/diagrams: add hub/spoke data flow diagram and tracing strategy/consumer docs.
 - Networking: prevent tunnel backpressure stalls.
 
