@@ -24,8 +24,8 @@ cert_file = "~/.config/vtrpc/server.crt"
 key_file = "~/.config/vtrpc/server.key"
 
 [tui]
-spinner = "tick"        # status spinner name
-status_icons = "nerd"   # status icon set name
+spinner = "static-dot"  # status spinner name
+status_icons = "simple" # status icon set name
 ```
 
 `vtr setup` writes a local hub config and generates auth material (0600 for keys/tokens).

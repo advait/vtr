@@ -255,8 +255,8 @@ func buildSetupConfig(configDir string) string {
 		fmt.Sprintf("key_file = %q", filepath.Join(configDir, "server.key")),
 		"",
 		"[tui]",
-		"spinner = \"tick\"",
-		"status_icons = \"nerd\"",
+		"spinner = \"static-dot\"",
+		"status_icons = \"simple\"",
 		"",
 	}
 	return strings.Join(lines, "\n")

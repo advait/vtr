@@ -2873,11 +2873,12 @@ type statusIconSet struct {
 }
 
 var statusIconSets = map[string]statusIconSet{
-	"nerd":  {Idle: "", Exited: "", Unknown: ""},
-	"ascii": {Idle: "i", Exited: "x", Unknown: "?"},
+	"simple": {Idle: "○", Exited: "■", Unknown: "□"},
+	"nerd":   {Idle: "○", Exited: "■", Unknown: "□"},
+	"ascii":  {Idle: "o", Exited: "x", Unknown: "?"},
 }
 
-const defaultStatusIcons = "nerd"
+const defaultStatusIcons = "simple"
 
 func statusIconSetByName(name string) statusIconSet {
 	if set, ok := statusIconSets[name]; ok {
@@ -2888,7 +2889,7 @@ func statusIconSetByName(name string) statusIconSet {
 
 var statusIcons = statusIconSetByName(defaultStatusIcons)
 
-// Status spinner frames for animating active sessions.
+// Status glyphs for active sessions (single frame, no animation).
 var statusSpinnerSets = map[string][]string{
 	"block-wave":    {"▉", "▊", "▋", "▌", "▍", "▎", "▏", "▎", "▍", "▌", "▋", "▊", "▉"},
 	"bar-wave":      {"▁", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅", "▄", "▃", "▁"},
@@ -2903,7 +2904,7 @@ var statusSpinnerSets = map[string][]string{
 	"md-clock-loader": {"󰧟", "󱑈", "󱑀", "󱑂", "󱑆", "󱑇", "󰧞"},
 }
 
-const defaultStatusSpinner = "tick"
+const defaultStatusSpinner = "static-dot"
 
 func statusSpinnerFrames(name string) []string {
 	if frames, ok := statusSpinnerSets[name]; ok && len(frames) > 0 {
@@ -2921,10 +2922,7 @@ func updateStatusAnimFrame(now time.Time) {
 		statusAnimFrameIndex = 0
 		return
 	}
-	if now.IsZero() {
-		now = time.Now()
-	}
-	statusAnimFrameIndex = int(now.UnixNano()/int64(statusAnimInterval)) % len(statusActiveFrames)
+	statusAnimFrameIndex = 0
 }
 
 func resolveTuiSpinner(cfg *clientConfig) string {
