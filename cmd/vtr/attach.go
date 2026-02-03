@@ -1212,6 +1212,61 @@ func nextSessionCmd(client proto.VTRClient, currentID string, forward bool, show
 	}
 }
 
+func nextSessionFromTabs(m attachModel, forward bool) (sessionSwitchMsg, bool) {
+	width := 1
+	if m.width > 2 {
+		innerWidth := m.width - 2
+		if innerWidth > 0 {
+			if overlay := overlayAvailableWidth(innerWidth); overlay > 0 {
+				width = overlay
+			}
+		}
+	}
+	tabs, _ := buildTabItems(headerView{
+		sessions:      visibleSessionItems(m),
+		activeID:      m.sessionID,
+		activeLabel:   m.sessionLabel,
+		coords:        m.coords,
+		coordinator:   m.coordinator.Name,
+		width:         width,
+		exited:        m.exited,
+		exitCode:      m.exitCode,
+		hoverTabID:    m.hoverTabID,
+		hoverNewCoord: m.hoverNewCoord,
+	})
+	if len(tabs) == 0 {
+		return sessionSwitchMsg{}, false
+	}
+	sessions := make([]tabItem, 0, len(tabs))
+	for _, tab := range tabs {
+		if tab.kind != tabItemSession || tab.id == "" {
+			continue
+		}
+		sessions = append(sessions, tab)
+	}
+	if len(sessions) == 0 {
+		return sessionSwitchMsg{}, false
+	}
+	idx := -1
+	for i, tab := range sessions {
+		if tab.id == m.sessionID {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		tab := sessions[0]
+		return sessionSwitchMsg{id: tab.id, label: tab.sessionLabel, coord: tab.coord}, true
+	}
+	if forward {
+		idx = (idx + 1) % len(sessions)
+	} else {
+		idx = (idx - 1 + len(sessions)) % len(sessions)
+	}
+	tab := sessions[idx]
+	return sessionSwitchMsg{id: tab.id, label: tab.sessionLabel, coord: tab.coord}, true
+}
+
 func nextSessionFromEntries(entries []sessionListItem, currentID string, forward bool) sessionSwitchMsg {
 	if len(entries) == 0 {
 		return sessionSwitchMsg{err: fmt.Errorf("no sessions")}
@@ -1525,8 +1580,14 @@ func handleLeaderKey(m attachModel, msg tea.KeyMsg) (attachModel, tea.Cmd) {
 		m.statusUntil = time.Now().Add(2 * time.Second)
 		return m, killCmd(m.client, m.sessionID, m.sessionCoord)
 	case "j", "n", "l":
+		if msg, ok := nextSessionFromTabs(m, true); ok {
+			return switchSession(m, msg)
+		}
 		return m, nextSessionCmd(m.client, m.sessionID, true, m.showExited, m.hub.Name)
 	case "k", "p", "h":
+		if msg, ok := nextSessionFromTabs(m, false); ok {
+			return switchSession(m, msg)
+		}
 		return m, nextSessionCmd(m.client, m.sessionID, false, m.showExited, m.hub.Name)
 	case "c":
 		return beginCreateModal(m)
@@ -1627,8 +1688,14 @@ func handleMouse(m attachModel, msg tea.MouseMsg) (attachModel, tea.Cmd) {
 		}
 		switch msg.Button {
 		case tea.MouseButtonWheelUp, tea.MouseButtonWheelLeft:
+			if msg, ok := nextSessionFromTabs(m, false); ok {
+				return switchSession(m, msg)
+			}
 			return m, nextSessionCmd(m.client, m.sessionID, false, m.showExited, m.hub.Name)
 		default:
+			if msg, ok := nextSessionFromTabs(m, true); ok {
+				return switchSession(m, msg)
+			}
 			return m, nextSessionCmd(m.client, m.sessionID, true, m.showExited, m.hub.Name)
 		}
 	}
