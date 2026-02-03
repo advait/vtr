@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -71,6 +72,9 @@ type attachModel struct {
 	statusMsg    string
 	statusUntil  time.Time
 
+	profiler         *renderProfiler
+	profileQuitAfter time.Duration
+
 	now time.Time
 	err error
 }
@@ -126,6 +130,8 @@ type sessionsRetryMsg struct {
 }
 
 type tickMsg time.Time
+
+type profileDoneMsg struct{}
 
 type rpcErrMsg struct {
 	err error
@@ -353,6 +359,9 @@ var errNoSessions = errors.New("no sessions found")
 
 func newTuiCmd() *cobra.Command {
 	var hub string
+	var profile bool
+	var profileDump bool
+	var profileDuration time.Duration
 	cmd := &cobra.Command{
 		Use:   "tui [name]",
 		Short: "Attach to a session (TUI)",
@@ -363,6 +372,7 @@ func newTuiCmd() *cobra.Command {
 				return err
 			}
 			applyTuiStatusConfig(cfg)
+			profileEnabled := profile || profileDump || profileDuration > 0
 			targetCoord, err := resolveHubTarget(cfg, hub)
 			if err != nil {
 				return err
@@ -411,6 +421,10 @@ func newTuiCmd() *cobra.Command {
 				listActive = true
 			}
 
+			var profiler *renderProfiler
+			if profileEnabled {
+				profiler = newRenderProfiler(true)
+			}
 			model := attachModel{
 				conn:             conn,
 				client:           client,
@@ -429,11 +443,29 @@ func newTuiCmd() *cobra.Command {
 				createCoordIdx:   coordIdx,
 				createFocusInput: true,
 				listActive:       listActive,
+				profiler:         profiler,
+				profileQuitAfter: profileDuration,
 				now:              time.Now(),
 			}
 
 			prog := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseAllMotion())
 			finalModel, err := prog.Run()
+			if profileDump && profiler != nil && err == nil {
+				snapshot := profiler.Snapshot(time.Now())
+				payload := map[string]any{
+					"fps":            snapshot.FPS,
+					"frames":         snapshot.Frames,
+					"window_ms":      durationMs(snapshot.Window),
+					"render_avg_ms":  durationMs(snapshot.RenderAvg),
+					"render_min_ms":  durationMs(snapshot.RenderMin),
+					"render_max_ms":  durationMs(snapshot.RenderMax),
+					"render_last_ms": durationMs(snapshot.RenderLast),
+				}
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				if err := enc.Encode(payload); err != nil {
+					return err
+				}
+			}
 			if fm, ok := finalModel.(attachModel); ok && fm.conn != nil {
 				_ = fm.conn.Close()
 			} else {
@@ -448,6 +480,9 @@ func newTuiCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&profile, "profile", false, "show render FPS/latency in the footer")
+	cmd.Flags().BoolVar(&profileDump, "profile-dump", false, "print render profiling JSON on exit")
+	cmd.Flags().DurationVar(&profileDuration, "profile-duration", 0, "auto-exit after duration when profiling")
 	addHubFlag(cmd, &hub)
 	return cmd
 }
@@ -642,6 +677,9 @@ func (m attachModel) Init() tea.Cmd {
 		startSessionsStreamCmd(m.client, m.sessionsStreamID),
 		tickCmd(),
 	}
+	if m.profileQuitAfter > 0 {
+		cmds = append(cmds, profileQuitCmd(m.profileQuitAfter))
+	}
 	if strings.TrimSpace(m.sessionID) != "" || strings.TrimSpace(m.sessionLabel) != "" {
 		cmds = append(cmds, startSubscribeCmd(m.client, m.sessionID, m.sessionCoord, m.streamID))
 	}
@@ -779,6 +817,8 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, startSessionsStreamCmd(m.client, m.sessionsStreamID)
+	case profileDoneMsg:
+		return m, tea.Quit
 	case tickMsg:
 		m.now = time.Time(msg)
 		if m.statusMsg != "" && !m.statusUntil.IsZero() && m.now.After(m.statusUntil) {
@@ -895,54 +935,59 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m attachModel) View() string {
-	if m.width <= 0 || m.height <= 0 {
-		return "loading..."
+	start := time.Now()
+	view := "loading..."
+	if m.width > 0 && m.height > 0 {
+		updateStatusAnimFrame(m.now)
+		innerWidth := m.width - 2
+		innerHeight := m.height - 2
+		if innerWidth > 0 && innerHeight > 0 {
+			overlayWidth := overlayAvailableWidth(innerWidth)
+			content := ""
+			switch {
+			case m.renameActive:
+				content = renderRenameModal(m)
+			case m.createActive:
+				content = renderCreateModal(m)
+			case m.listActive:
+				content = renderSessionList(m)
+			default:
+				content = renderScreen(m.screen, m.viewportWidth, m.viewportHeight, m.now)
+			}
+			border := attachBorderStyle
+			if m.exited {
+				border = attachExitedBorderStyle
+			}
+			headerLeft, headerRight := renderHeaderSegments(headerView{
+				sessions:      visibleSessionItems(m),
+				activeID:      m.sessionID,
+				activeLabel:   m.sessionLabel,
+				coords:        m.coords,
+				coordinator:   m.coordinator.Name,
+				width:         overlayWidth,
+				exited:        m.exited,
+				exitCode:      m.exitCode,
+				hoverTabID:    m.hoverTabID,
+				hoverNewCoord: m.hoverNewCoord,
+			})
+			activeItem := currentSessionItem(m)
+			footerLeft, footerRight := renderFooterSegments(footerView{
+				width:       overlayWidth,
+				leader:      m.leaderActive,
+				statusMsg:   m.statusMsg,
+				exited:      m.exited,
+				coordinator: m.coordinator.Name,
+				active:      activeItem,
+				profiler:    m.profiler,
+			})
+			view = renderBorderOverlay(content, m.width, m.height, border, headerLeft, headerRight, footerLeft, footerRight)
+			view = clampViewHeight(view, m.height)
+		}
 	}
-	updateStatusAnimFrame(m.now)
-	innerWidth := m.width - 2
-	innerHeight := m.height - 2
-	if innerWidth <= 0 || innerHeight <= 0 {
-		return "loading..."
+	if m.profiler != nil {
+		m.profiler.Observe(time.Since(start), time.Now())
 	}
-	overlayWidth := overlayAvailableWidth(innerWidth)
-	content := ""
-	switch {
-	case m.renameActive:
-		content = renderRenameModal(m)
-	case m.createActive:
-		content = renderCreateModal(m)
-	case m.listActive:
-		content = renderSessionList(m)
-	default:
-		content = renderScreen(m.screen, m.viewportWidth, m.viewportHeight, m.now)
-	}
-	border := attachBorderStyle
-	if m.exited {
-		border = attachExitedBorderStyle
-	}
-	headerLeft, headerRight := renderHeaderSegments(headerView{
-		sessions:      visibleSessionItems(m),
-		activeID:      m.sessionID,
-		activeLabel:   m.sessionLabel,
-		coords:        m.coords,
-		coordinator:   m.coordinator.Name,
-		width:         overlayWidth,
-		exited:        m.exited,
-		exitCode:      m.exitCode,
-		hoverTabID:    m.hoverTabID,
-		hoverNewCoord: m.hoverNewCoord,
-	})
-	activeItem := currentSessionItem(m)
-	footerLeft, footerRight := renderFooterSegments(footerView{
-		width:       overlayWidth,
-		leader:      m.leaderActive,
-		statusMsg:   m.statusMsg,
-		exited:      m.exited,
-		coordinator: m.coordinator.Name,
-		active:      activeItem,
-	})
-	view := renderBorderOverlay(content, m.width, m.height, border, headerLeft, headerRight, footerLeft, footerRight)
-	return clampViewHeight(view, m.height)
+	return view
 }
 
 func startSubscribeCmd(client proto.VTRClient, id, coordinator string, streamID int) tea.Cmd {
@@ -1015,6 +1060,15 @@ func scheduleSessionsRetry(m attachModel) (attachModel, tea.Cmd) {
 func tickCmd() tea.Cmd {
 	return tea.Tick(statusAnimInterval, func(t time.Time) tea.Msg {
 		return tickMsg(t)
+	})
+}
+
+func profileQuitCmd(after time.Duration) tea.Cmd {
+	if after <= 0 {
+		return nil
+	}
+	return tea.Tick(after, func(time.Time) tea.Msg {
+		return profileDoneMsg{}
 	})
 }
 
@@ -2708,6 +2762,7 @@ type footerView struct {
 	exited      bool
 	coordinator string
 	active      sessionListItem
+	profiler    *renderProfiler
 }
 
 type legendSegment struct {
@@ -2834,6 +2889,140 @@ func applyTuiStatusConfig(cfg *clientConfig) {
 	statusIcons = statusIconSetByName(resolveTuiStatusIcons(cfg))
 }
 
+const renderProfileWindow = time.Second
+
+type renderProfiler struct {
+	enabled bool
+
+	windowStart     time.Time
+	windowFrames    int
+	windowRenderSum time.Duration
+	windowRenderMin time.Duration
+	windowRenderMax time.Duration
+
+	lastRender   time.Duration
+	lastSnapshot renderProfilerSnapshot
+}
+
+type renderProfilerSnapshot struct {
+	FPS        float64
+	Frames     int
+	Window     time.Duration
+	RenderAvg  time.Duration
+	RenderMin  time.Duration
+	RenderMax  time.Duration
+	RenderLast time.Duration
+}
+
+func newRenderProfiler(enabled bool) *renderProfiler {
+	return &renderProfiler{enabled: enabled}
+}
+
+func (p *renderProfiler) Enabled() bool {
+	return p != nil && p.enabled
+}
+
+func (p *renderProfiler) Observe(render time.Duration, now time.Time) {
+	if !p.Enabled() {
+		return
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	if p.windowStart.IsZero() {
+		p.windowStart = now
+		p.windowRenderMin = render
+		p.windowRenderMax = render
+	}
+	p.windowFrames++
+	p.windowRenderSum += render
+	if p.windowRenderMin == 0 || render < p.windowRenderMin {
+		p.windowRenderMin = render
+	}
+	if render > p.windowRenderMax {
+		p.windowRenderMax = render
+	}
+	p.lastRender = render
+	if now.Sub(p.windowStart) >= renderProfileWindow {
+		p.lastSnapshot = buildRenderSnapshot(p.windowFrames, now.Sub(p.windowStart), p.windowRenderSum, p.windowRenderMin, p.windowRenderMax, p.lastRender)
+		p.windowStart = now
+		p.windowFrames = 0
+		p.windowRenderSum = 0
+		p.windowRenderMin = 0
+		p.windowRenderMax = 0
+	}
+}
+
+func (p *renderProfiler) Snapshot(now time.Time) renderProfilerSnapshot {
+	if !p.Enabled() {
+		return renderProfilerSnapshot{}
+	}
+	if p.windowFrames == 0 {
+		return p.lastSnapshot
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	window := now.Sub(p.windowStart)
+	if window <= 0 {
+		return p.lastSnapshot
+	}
+	return buildRenderSnapshot(p.windowFrames, window, p.windowRenderSum, p.windowRenderMin, p.windowRenderMax, p.lastRender)
+}
+
+func (p *renderProfiler) FooterText(now time.Time) string {
+	snap := p.Snapshot(now)
+	if snap.Frames == 0 && snap.FPS == 0 {
+		return ""
+	}
+	return fmt.Sprintf("fps %.1f render %s", snap.FPS, formatRenderDuration(snap.RenderAvg))
+}
+
+func buildRenderSnapshot(frames int, window time.Duration, sum, min, max, last time.Duration) renderProfilerSnapshot {
+	avg := time.Duration(0)
+	if frames > 0 {
+		avg = time.Duration(int64(sum) / int64(frames))
+	}
+	fps := 0.0
+	if window > 0 {
+		fps = float64(frames) / window.Seconds()
+	}
+	return renderProfilerSnapshot{
+		FPS:        fps,
+		Frames:     frames,
+		Window:     window,
+		RenderAvg:  avg,
+		RenderMin:  min,
+		RenderMax:  max,
+		RenderLast: last,
+	}
+}
+
+func formatRenderDuration(d time.Duration) string {
+	if d <= 0 {
+		return "0ms"
+	}
+	if d < time.Millisecond {
+		return fmt.Sprintf("%dus", d.Microseconds())
+	}
+	ms := float64(d) / float64(time.Millisecond)
+	switch {
+	case ms < 10:
+		return fmt.Sprintf("%.2fms", ms)
+	case ms < 100:
+		return fmt.Sprintf("%.1fms", ms)
+	default:
+		return fmt.Sprintf("%.0fms", ms)
+	}
+}
+
+func durationMs(d time.Duration) float64 {
+	if d <= 0 {
+		return 0
+	}
+	return float64(d) / float64(time.Millisecond)
+}
+
 func overlayPadding(innerWidth int) (int, int) {
 	if innerWidth < 0 {
 		innerWidth = 0
@@ -2875,6 +3064,11 @@ func renderFooterSegments(view footerView) (string, string) {
 	}
 	if view.statusMsg != "" {
 		leftSegments = append(leftSegments, attachStatusStyle.Render(" "+view.statusMsg+" "))
+	}
+	if view.profiler != nil && view.profiler.Enabled() {
+		if text := view.profiler.FooterText(time.Now()); text != "" {
+			leftSegments = append(leftSegments, attachFooterTagStyle.Render(" "+text+" "))
+		}
 	}
 	left := strings.Join(leftSegments, " ")
 

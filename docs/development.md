@@ -60,6 +60,17 @@ Ghostty logs during dev with:
 GHOSTTY_LOG=false mise run dev
 ```
 
+## TUI render profiling
+
+Use `vtr tui --profile` to show render FPS/latency in the footer. For automated
+baselines, run:
+
+```
+vtr tui --profile --profile-duration 10s --profile-dump
+```
+
+The command prints a JSON summary on exit (FPS and render timing in ms).
+
 ## Memory safety and CGO boundaries
 
 Key invariants for the Ghostty shim:
