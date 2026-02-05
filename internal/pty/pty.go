@@ -1,4 +1,4 @@
-package server
+package pty
 
 import (
 	"errors"
@@ -8,8 +8,11 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/advait/vtrpc/internal/vt"
 	"github.com/creack/pty"
 )
+
+type VT = vt.VT
 
 // PTY wraps a started command running on a pseudo-terminal.
 type PTY struct {
@@ -18,7 +21,7 @@ type PTY struct {
 	writeMu sync.Mutex
 }
 
-func startPTY(cmd *exec.Cmd, cols, rows uint16) (*PTY, error) {
+func Start(cmd *exec.Cmd, cols, rows uint16) (*PTY, error) {
 	if cmd == nil {
 		return nil, errors.New("pty: command is nil")
 	}

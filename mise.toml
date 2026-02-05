@@ -102,6 +102,7 @@ sources = [
   "go.sum",
   "cmd/**/*.go",
   "server/**/*.go",
+  "internal/**/*.go",
   "web/**/*.go",
   "go-ghostty/**/*.go",
   "proto/*.go",
@@ -119,6 +120,7 @@ sources = [
   "go.sum",
   "cmd/**/*.go",
   "server/**/*.go",
+  "internal/**/*.go",
   "web/**/*.go",
   "go-ghostty/**/*.go",
   "proto/*.go",
@@ -142,6 +144,7 @@ sources = [
   "go.sum",
   "cmd/**/*.go",
   "server/**/*.go",
+  "internal/**/*.go",
   "web/**/*.go",
   "go-ghostty/**/*.go",
   "proto/*.go",
@@ -152,11 +155,12 @@ outputs = ["bin/.mise-test.stamp"]
 
 [tasks.test-race-cgo]
 depends = ["proto", "shim"]
-run = "CGO_ENABLED=1 CC=clang CXX=clang++ go test -race ./go-ghostty/... ./server/... && mkdir -p bin && touch bin/.mise-test-race-cgo.stamp"
+run = "CGO_ENABLED=1 CC=clang CXX=clang++ go test -race ./go-ghostty/... ./internal/... ./server/... && mkdir -p bin && touch bin/.mise-test-race-cgo.stamp"
 sources = [
   "go.mod",
   "go.sum",
   "server/**/*.go",
+  "internal/**/*.go",
   "go-ghostty/**/*.go",
   "proto/*.go",
   "go-ghostty/shim/zig-out/lib/libvtr-ghostty-vt.a",
@@ -166,11 +170,12 @@ outputs = ["bin/.mise-test-race-cgo.stamp"]
 
 [tasks.test-sanitize-cgo]
 depends = ["proto", "shim-llvm-asan"]
-run = "GOEXPERIMENT=${GOEXPERIMENT:-cgocheck2} ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:suppressions=$PWD/go-ghostty/shim/sanitizers/asan.supp LSAN_OPTIONS=suppressions=$PWD/go-ghostty/shim/sanitizers/lsan.supp CGO_ENABLED=1 CC=clang CXX=clang++ go test -asan -tags=asan ./go-ghostty/... ./server/... && mkdir -p bin && touch bin/.mise-test-sanitize-cgo.stamp"
+run = "GOEXPERIMENT=${GOEXPERIMENT:-cgocheck2} ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:suppressions=$PWD/go-ghostty/shim/sanitizers/asan.supp LSAN_OPTIONS=suppressions=$PWD/go-ghostty/shim/sanitizers/lsan.supp CGO_ENABLED=1 CC=clang CXX=clang++ go test -asan -tags=asan ./go-ghostty/... ./internal/... ./server/... && mkdir -p bin && touch bin/.mise-test-sanitize-cgo.stamp"
 sources = [
   "go.mod",
   "go.sum",
   "server/**/*.go",
+  "internal/**/*.go",
   "go-ghostty/**/*.go",
   "proto/*.go",
   "go-ghostty/shim/zig-out-asan/lib/libvtr-ghostty-vt.a",
@@ -186,6 +191,7 @@ sources = [
   "go.sum",
   "cmd/**/*.go",
   "server/**/*.go",
+  "internal/**/*.go",
   "proto/*.go",
   "web/package.json",
   "web/bun.lock",

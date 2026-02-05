@@ -1,10 +1,11 @@
-package server
+package pty
 
 import (
 	"os"
 	"testing"
 	"time"
 
+	"github.com/advait/vtrpc/internal/vt"
 	"github.com/charmbracelet/x/term"
 	"github.com/creack/pty"
 )
@@ -12,13 +13,13 @@ import (
 func TestHeadlessCPRResponse(t *testing.T) {
 	ptyHandle, slave, cleanup := openTestPTY(t)
 
-	vt, err := NewVT(80, 24, 0)
+	termVT, err := vt.NewVT(80, 24, 0)
 	if err != nil {
 		t.Fatalf("new vt: %v", err)
 	}
-	defer vt.Close()
+	defer termVT.Close()
 
-	done := ptyHandle.StartReadLoop(vt, nil, nil)
+	done := ptyHandle.StartReadLoop(termVT, nil, nil)
 	t.Cleanup(func() {
 		cleanup()
 		waitDone(t, done)
@@ -37,13 +38,13 @@ func TestHeadlessCPRResponse(t *testing.T) {
 func TestHeadlessCPRPrivateResponse(t *testing.T) {
 	ptyHandle, slave, cleanup := openTestPTY(t)
 
-	vt, err := NewVT(80, 24, 0)
+	termVT, err := vt.NewVT(80, 24, 0)
 	if err != nil {
 		t.Fatalf("new vt: %v", err)
 	}
-	defer vt.Close()
+	defer termVT.Close()
 
-	done := ptyHandle.StartReadLoop(vt, nil, nil)
+	done := ptyHandle.StartReadLoop(termVT, nil, nil)
 	t.Cleanup(func() {
 		cleanup()
 		waitDone(t, done)

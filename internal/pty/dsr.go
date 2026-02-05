@@ -1,6 +1,12 @@
-package server
+package pty
 
-import "strconv"
+import (
+	"strconv"
+
+	"github.com/advait/vtrpc/internal/vt"
+)
+
+type Snapshot = vt.Snapshot
 
 type dsrState uint8
 

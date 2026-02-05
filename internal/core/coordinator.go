@@ -1,4 +1,4 @@
-package server
+package core
 
 import (
 	"errors"
@@ -11,8 +11,30 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/advait/vtrpc/internal/pty"
+	"github.com/advait/vtrpc/internal/vt"
 	"github.com/google/uuid"
 )
+
+type PTY = pty.PTY
+type VT = vt.VT
+type Snapshot = vt.Snapshot
+type Cell = vt.Cell
+type DumpScope = vt.DumpScope
+
+const (
+	DumpViewport DumpScope = vt.DumpViewport
+	DumpScreen   DumpScope = vt.DumpScreen
+	DumpHistory  DumpScope = vt.DumpHistory
+)
+
+func NewVT(cols, rows, scrollback uint32) (*VT, error) {
+	return vt.NewVT(cols, rows, scrollback)
+}
+
+func startPTY(cmd *exec.Cmd, cols, rows uint16) (*PTY, error) {
+	return pty.Start(cmd, cols, rows)
+}
 
 // SessionState tracks the lifecycle of a session.
 type SessionState int
