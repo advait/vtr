@@ -39,6 +39,10 @@ func (s *Session) idleState() (bool, <-chan struct{}) {
 	return idle, ch
 }
 
+func (s *Session) IdleState() (bool, <-chan struct{}) {
+	return s.idleState()
+}
+
 func (s *Session) activityState() (time.Time, <-chan struct{}) {
 	s.activityMu.Lock()
 	last := s.lastActivity

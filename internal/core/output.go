@@ -2,7 +2,7 @@ package core
 
 import "time"
 
-const maxOutputBuffer = 1 << 20
+const MaxOutputBuffer = 1 << 20
 
 func (s *Session) recordOutput(data []byte) {
 	if s == nil || len(data) == 0 {
@@ -11,8 +11,8 @@ func (s *Session) recordOutput(data []byte) {
 	s.outputMu.Lock()
 	s.outputBuf = append(s.outputBuf, data...)
 	s.outputTotal += int64(len(data))
-	if len(s.outputBuf) > maxOutputBuffer {
-		drop := len(s.outputBuf) - maxOutputBuffer
+	if len(s.outputBuf) > MaxOutputBuffer {
+		drop := len(s.outputBuf) - MaxOutputBuffer
 		s.outputBuf = s.outputBuf[drop:]
 	}
 	s.lastOutput = time.Now()
@@ -32,6 +32,10 @@ func (s *Session) outputState() (int64, <-chan struct{}, time.Time) {
 	return total, ch, last
 }
 
+func (s *Session) OutputState() (int64, <-chan struct{}, time.Time) {
+	return s.outputState()
+}
+
 func (s *Session) outputSnapshot(offset int64) ([]byte, int64, <-chan struct{}) {
 	s.outputMu.Lock()
 	start := s.outputTotal - int64(len(s.outputBuf))
@@ -47,4 +51,8 @@ func (s *Session) outputSnapshot(offset int64) ([]byte, int64, <-chan struct{}) 
 	ch := s.outputCh
 	s.outputMu.Unlock()
 	return data, total, ch
+}
+
+func (s *Session) OutputSnapshot(offset int64) ([]byte, int64, <-chan struct{}) {
+	return s.outputSnapshot(offset)
 }

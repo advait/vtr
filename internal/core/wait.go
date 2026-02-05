@@ -49,8 +49,8 @@ func (s *Session) waitForPattern(ctx context.Context, re *regexp.Regexp, timeout
 		if len(data) > 0 {
 			offset = newOffset
 			pending += string(data)
-			if len(pending) > maxOutputBuffer {
-				pending = pending[len(pending)-maxOutputBuffer:]
+			if len(pending) > MaxOutputBuffer {
+				pending = pending[len(pending)-MaxOutputBuffer:]
 			}
 			for {
 				idx := strings.IndexByte(pending, '\n')

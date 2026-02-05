@@ -1,4 +1,4 @@
-package core
+package transportgrpc
 
 import (
 	"context"
@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	core "github.com/advait/vtrpc/internal/core"
 	proto "github.com/advait/vtrpc/proto"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
@@ -27,6 +28,34 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+type Coordinator = core.Coordinator
+type Session = core.Session
+type SessionInfo = core.SessionInfo
+type SessionState = core.SessionState
+type SpawnOptions = core.SpawnOptions
+type GrepMatch = core.GrepMatch
+type SpokeRegistry = core.SpokeRegistry
+type SpokeRecord = core.SpokeRecord
+type Snapshot = core.Snapshot
+
+const (
+	SessionRunning SessionState = core.SessionRunning
+	SessionClosing SessionState = core.SessionClosing
+	SessionExited  SessionState = core.SessionExited
+)
+
+var (
+	ErrSessionNotFound   = core.ErrSessionNotFound
+	ErrSessionExists     = core.ErrSessionExists
+	ErrSessionNotRunning = core.ErrSessionNotRunning
+	ErrInvalidName       = core.ErrInvalidName
+	ErrInvalidSize       = core.ErrInvalidSize
+)
+
+func NewSpokeRegistry() *SpokeRegistry {
+	return core.NewSpokeRegistry()
+}
 
 const (
 	maxRawInputBytes = 1 << 20
@@ -88,7 +117,7 @@ func (s *GRPCServer) resolveSession(ref *proto.SessionRef) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	session, err := s.coord.getSession(sessionID)
+	session, err := s.coord.GetSession(sessionID)
 	if err != nil {
 		return nil, mapCoordinatorErr(err)
 	}
@@ -361,7 +390,7 @@ func (s *GRPCServer) SubscribeSessions(req *proto.SubscribeSessionsRequest, stre
 	}
 
 	ctx := stream.Context()
-	signal := s.coord.sessionsChanged()
+	signal := s.coord.SessionsChanged()
 	for {
 		select {
 		case <-ctx.Done():
@@ -370,7 +399,7 @@ func (s *GRPCServer) SubscribeSessions(req *proto.SubscribeSessionsRequest, stre
 			if err := sendSnapshot(); err != nil {
 				return err
 			}
-			signal = s.coord.sessionsChanged()
+			signal = s.coord.SessionsChanged()
 		}
 	}
 }
@@ -503,7 +532,7 @@ func (s *GRPCServer) GetScreen(_ context.Context, req *proto.GetScreenRequest) (
 	if err != nil {
 		return nil, err
 	}
-	snap, err := session.vt.Snapshot()
+	snap, err := session.Snapshot()
 	if err != nil {
 		return nil, mapCoordinatorErr(err)
 	}
@@ -704,7 +733,7 @@ func (s *GRPCServer) WaitForIdle(ctx context.Context, req *proto.WaitForIdleRequ
 		if err != nil {
 			return nil, err
 		}
-		snap, err := session.vt.Snapshot()
+		snap, err := session.Snapshot()
 		if err != nil {
 			return nil, mapCoordinatorErr(err)
 		}
@@ -729,10 +758,10 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 	sessionLabel := func() string {
 		return session.Label()
 	}
-	offset, outputCh, _ := session.outputState()
+	offset, outputCh, _ := session.OutputState()
 	includeScreen := req.IncludeScreenUpdates
 	includeRaw := req.IncludeRawOutput
-	resizeCh := session.resizeState()
+	resizeCh := session.ResizeState()
 	ctx := stream.Context()
 
 	screenSignal := make(chan struct{}, 1)
@@ -741,13 +770,13 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 	sendErrCh := make(chan error, 1)
 	exitSignal := make(chan exitPayload, 1)
 	makeKeyframe := func() (*proto.ScreenUpdate, error) {
-		snap, err := session.vt.Snapshot()
+		snap, err := session.Snapshot()
 		if err != nil {
 			return nil, err
 		}
 		label := sessionLabel()
 		update := keyframeUpdateFromSnapshot(session, sessionID, label, snap)
-		total, _, _ := session.outputState()
+		total, _, _ := session.OutputState()
 		s.cacheKeyframe(sessionID, update, total)
 		return update, nil
 	}
@@ -782,8 +811,8 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 		}
 		rawMu.Lock()
 		pendingRaw = append(pendingRaw, data...)
-		if len(pendingRaw) > maxOutputBuffer {
-			drop := len(pendingRaw) - maxOutputBuffer
+		if len(pendingRaw) > core.MaxOutputBuffer {
+			drop := len(pendingRaw) - core.MaxOutputBuffer
 			pendingRaw = pendingRaw[drop:]
 		}
 		rawMu.Unlock()
@@ -836,12 +865,12 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 		)
 	}()
 
-	_, idleCh := session.idleState()
+	_, idleCh := session.IdleState()
 
 	info := session.Info()
 	if info.State == SessionExited {
 		if includeRaw {
-			data, nextOffset, nextCh := session.outputSnapshot(offset)
+			data, nextOffset, nextCh := session.OutputSnapshot(offset)
 			offset = nextOffset
 			outputCh = nextCh
 			appendRaw(data)
@@ -908,17 +937,17 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-idleCh:
-			idleState, nextCh := session.idleState()
+			idleState, nextCh := session.IdleState()
 			idleCh = nextCh
 			setLatestIdle(&proto.SessionIdle{Name: sessionLabel(), Idle: idleState, Id: sessionID})
-		case <-session.exitCh:
+		case <-session.ExitCh():
 			if includeRaw {
-				data, nextOffset, nextCh := session.outputSnapshot(offset)
+				data, nextOffset, nextCh := session.OutputSnapshot(offset)
 				offset = nextOffset
 				outputCh = nextCh
 				appendRaw(data)
 			} else {
-				total, nextCh, _ := session.outputState()
+				total, nextCh, _ := session.OutputState()
 				offset = total
 				outputCh = nextCh
 			}
@@ -944,12 +973,12 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 			return err
 		case <-outputCh:
 			if includeRaw {
-				data, nextOffset, nextCh := session.outputSnapshot(offset)
+				data, nextOffset, nextCh := session.OutputSnapshot(offset)
 				offset = nextOffset
 				outputCh = nextCh
 				appendRaw(data)
 			} else {
-				total, nextCh, _ := session.outputState()
+				total, nextCh, _ := session.OutputState()
 				offset = total
 				outputCh = nextCh
 			}
@@ -960,7 +989,7 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 			if includeScreen {
 				pendingScreen = true
 			}
-			resizeCh = session.resizeState()
+			resizeCh = session.ResizeState()
 		case <-tick:
 			if includeScreen && pendingScreen {
 				update, err := makeKeyframe()
@@ -1115,7 +1144,7 @@ func (s *GRPCServer) cachedKeyframe(session *Session, id string) *proto.ScreenUp
 	if session == nil {
 		return nil
 	}
-	total, _, _ := session.outputState()
+	total, _, _ := session.OutputState()
 	info := session.Info()
 	s.keyframeMu.Lock()
 	ring := s.keyframeRing[id]
@@ -1268,7 +1297,7 @@ func keyframeUpdateFromSnapshot(session *Session, id, label string, snap *Snapsh
 		return nil
 	}
 	return &proto.ScreenUpdate{
-		FrameId:     session.nextFrameID(),
+		FrameId:     session.NextFrameID(),
 		BaseFrameId: 0,
 		IsKeyframe:  true,
 		Screen:      screenResponseFromSnapshot(id, label, snap),

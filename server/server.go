@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 
 	corepkg "github.com/advait/vtrpc/internal/core"
+	transportgrpc "github.com/advait/vtrpc/internal/transport/grpc"
 	vtpkg "github.com/advait/vtrpc/internal/vt"
 	proto "github.com/advait/vtrpc/proto"
 	"google.golang.org/grpc"
@@ -44,30 +45,30 @@ const (
 	DumpHistory  DumpScope = vtpkg.DumpHistory
 )
 
-type GRPCServer = corepkg.GRPCServer
-type SpokeRecord = corepkg.SpokeRecord
-type SpokeRegistry = corepkg.SpokeRegistry
+type GRPCServer = transportgrpc.GRPCServer
+type SpokeRecord = transportgrpc.SpokeRecord
+type SpokeRegistry = transportgrpc.SpokeRegistry
 
 func NewCoordinator(opts CoordinatorOptions) *Coordinator {
 	return corepkg.NewCoordinator(opts)
 }
 
 func NewGRPCServer(coord *Coordinator) *GRPCServer {
-	return corepkg.NewGRPCServer(coord)
+	return transportgrpc.NewGRPCServer(coord)
 }
 
 func NewGRPCServerWithToken(coord *Coordinator, token string) *grpc.Server {
-	return corepkg.NewGRPCServerWithToken(coord, token)
+	return transportgrpc.NewGRPCServerWithToken(coord, token)
 }
 
 func NewGRPCServerWithTokenAndService(service proto.VTRServer, token string) *grpc.Server {
-	return corepkg.NewGRPCServerWithTokenAndService(service, token)
+	return transportgrpc.NewGRPCServerWithTokenAndService(service, token)
 }
 
 func ServeTCP(ctx context.Context, coord *Coordinator, addr string, tlsConfig *tls.Config, token string) error {
-	return corepkg.ServeTCP(ctx, coord, addr, tlsConfig, token)
+	return transportgrpc.ServeTCP(ctx, coord, addr, tlsConfig, token)
 }
 
 func NewSpokeRegistry() *SpokeRegistry {
-	return corepkg.NewSpokeRegistry()
+	return transportgrpc.NewSpokeRegistry()
 }

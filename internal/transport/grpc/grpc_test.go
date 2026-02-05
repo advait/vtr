@@ -1,4 +1,4 @@
-package core
+package transportgrpc
 
 import (
 	"context"
@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	core "github.com/advait/vtrpc/internal/core"
 	proto "github.com/advait/vtrpc/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -19,6 +20,17 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
 )
+
+func newTestCoordinator() *Coordinator {
+	return core.NewCoordinator(core.CoordinatorOptions{
+		DefaultShell:  "/bin/sh",
+		DefaultCols:   80,
+		DefaultRows:   24,
+		Scrollback:    2000,
+		KillTimeout:   500 * time.Millisecond,
+		IdleThreshold: 200 * time.Millisecond,
+	})
+}
 
 func startGRPCTestServer(t *testing.T) (proto.VTRClient, func()) {
 	t.Helper()

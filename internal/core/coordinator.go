@@ -272,6 +272,10 @@ func (c *Coordinator) sessionsChanged() <-chan struct{} {
 	return ch
 }
 
+func (c *Coordinator) SessionsChanged() <-chan struct{} {
+	return c.sessionsChanged()
+}
+
 func (c *Coordinator) signalSessionsChanged() {
 	c.changeMu.Lock()
 	ch := c.changeCh
@@ -488,6 +492,10 @@ func (c *Coordinator) getSession(id string) (*Session, error) {
 	return session, nil
 }
 
+func (c *Coordinator) GetSession(id string) (*Session, error) {
+	return c.getSession(id)
+}
+
 func mergeEnv(base []string, extra []string) []string {
 	if len(extra) == 0 {
 		return append([]string(nil), base...)
@@ -700,11 +708,19 @@ func (s *Session) nextFrameID() uint64 {
 	return atomic.AddUint64(&s.frameID, 1)
 }
 
+func (s *Session) NextFrameID() uint64 {
+	return s.nextFrameID()
+}
+
 func (s *Session) resizeState() <-chan struct{} {
 	s.resizeMu.Lock()
 	ch := s.resizeCh
 	s.resizeMu.Unlock()
 	return ch
+}
+
+func (s *Session) ResizeState() <-chan struct{} {
+	return s.resizeState()
 }
 
 func (s *Session) signalResize() {
@@ -725,6 +741,17 @@ func (s *Session) WaitExited(timeout time.Duration) bool {
 	case <-time.After(timeout):
 		return false
 	}
+}
+
+func (s *Session) ExitCh() <-chan struct{} {
+	return s.exitCh
+}
+
+func (s *Session) Snapshot() (*Snapshot, error) {
+	if s == nil || s.vt == nil {
+		return nil, errors.New("session: terminal not available")
+	}
+	return s.vt.Snapshot()
 }
 
 func (s *Session) Close(ioTimeout time.Duration) {
