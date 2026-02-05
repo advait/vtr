@@ -1,4 +1,4 @@
-package main
+package federation
 
 import (
 	"context"
@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -43,6 +44,8 @@ const (
 )
 
 const tunnelSlowCallThreshold = time.Second
+
+type HubDialer func(ctx context.Context, addr string) (*grpc.ClientConn, error)
 
 type tunnelRegistry struct {
 	mu     sync.RWMutex
@@ -548,8 +551,11 @@ type tunnelSpoke struct {
 	onReady func()
 }
 
-func runSpokeTunnelLoop(ctx context.Context, addr string, cfg *clientConfig, token string, info *proto.SpokeInfo, service proto.VTRServer, traceHandle *tracing.Handle, transport *traceTransport, logger *slog.Logger) {
+func RunSpokeTunnelLoop(ctx context.Context, addr string, dialHub HubDialer, info *proto.SpokeInfo, service proto.VTRServer, traceHandle *tracing.Handle, transport *TraceTransport, logger *slog.Logger) {
 	if service == nil {
+		return
+	}
+	if dialHub == nil {
 		return
 	}
 	if logger == nil {
@@ -560,7 +566,7 @@ func runSpokeTunnelLoop(ctx context.Context, addr string, cfg *clientConfig, tok
 		if ctx.Err() != nil {
 			return
 		}
-		conn, err := dialHub(ctx, addr, cfg, token)
+		conn, err := dialHub(ctx, addr)
 		if err != nil {
 			logger.Warn("spoke: tunnel dial failed", "addr", addr, "err", err)
 			if waitOrDone(ctx, backoff) {

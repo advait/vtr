@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/advait/vtrpc/internal/federation"
 	proto "github.com/advait/vtrpc/proto"
 	"github.com/advait/vtrpc/server"
 	"github.com/advait/vtrpc/tracing"
@@ -126,7 +127,7 @@ func runSpoke(opts spokeOptions) error {
 	}
 	localService.SetCoordinatorInfo(spokeName, "")
 
-	traceTransport := &traceTransport{}
+	traceTransport := &federation.TraceTransport{}
 	traceHandle, err := tracing.Init(tracing.Options{
 		Role:           tracing.RoleSpoke,
 		ServiceName:    "vtr",
@@ -156,7 +157,10 @@ func runSpoke(opts spokeOptions) error {
 			Name:    spokeName,
 			Version: Version,
 		}
-		go runSpokeTunnelLoop(ctx, hubAddr, cfg, token, info, localService, traceHandle, traceTransport, logger)
+		dial := func(ctx context.Context, addr string) (*grpc.ClientConn, error) {
+			return dialHub(ctx, addr, cfg, token)
+		}
+		go federation.RunSpokeTunnelLoop(ctx, hubAddr, dial, info, localService, traceHandle, traceTransport, logger)
 	}
 
 	<-ctx.Done()

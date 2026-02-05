@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/advait/vtrpc/internal/federation"
+	webtransport "github.com/advait/vtrpc/internal/transport/web"
 	"github.com/advait/vtrpc/server"
 	"github.com/advait/vtrpc/tracing"
 	"github.com/spf13/cobra"
@@ -152,7 +154,7 @@ func runHub(opts hubOptions) error {
 	} else {
 		defer func() { _ = traceHandle.Shutdown(context.Background()) }()
 	}
-	federated := newFederatedServer(
+	federated := federation.NewServer(
 		localService,
 		hubName(dialAddr),
 		dialAddr,
@@ -183,8 +185,8 @@ func runHub(opts hubOptions) error {
 	if webEnabled {
 		webOpts := webOptions{
 			addr:      addr,
-			dev:       envBool("VTR_WEB_DEV", false),
-			devServer: envString("VTR_WEB_DEV_SERVER", defaultViteDevServer),
+			dev:       webtransport.EnvBool("VTR_WEB_DEV", false),
+			devServer: webtransport.EnvString("VTR_WEB_DEV_SERVER", webtransport.DefaultViteDevServer),
 		}
 		handler, err := newWebHandler(webOpts, resolver)
 		if err != nil {

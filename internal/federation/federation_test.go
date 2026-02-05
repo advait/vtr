@@ -1,4 +1,4 @@
-package main
+package federation
 
 import (
 	"context"
@@ -62,7 +62,7 @@ func TestFederatedHubOnlyRejectsLocalSpawn(t *testing.T) {
 	defer coord.CloseAll()
 	local := server.NewGRPCServer(coord)
 
-	federated := newFederatedServer(local, "hub", "", false, nil, nil)
+	federated := NewServer(local, "hub", "", false, nil, nil)
 	_, err := federated.Spawn(context.Background(), &proto.SpawnRequest{Name: "local-session"})
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("expected FailedPrecondition, got %v", err)
@@ -80,7 +80,7 @@ func TestTunnelListAndInfoRoutesToSpoke(t *testing.T) {
 
 	listener := bufconn.Listen(bufSize)
 	grpcServer := grpc.NewServer()
-	federated := newFederatedServer(local, "hub", "", true, nil, nil)
+	federated := NewServer(local, "hub", "", true, nil, nil)
 	proto.RegisterVTRServer(grpcServer, federated)
 	go func() {
 		_ = grpcServer.Serve(listener)
@@ -153,7 +153,7 @@ func TestTunnelRegistersAndRemovesSpoke(t *testing.T) {
 	local := server.NewGRPCServer(coord)
 
 	registry := server.NewSpokeRegistry()
-	federated := newFederatedServer(local, "hub", "", true, registry, nil)
+	federated := NewServer(local, "hub", "", true, registry, nil)
 
 	listener := bufconn.Listen(bufSize)
 	grpcServer := grpc.NewServer()
@@ -223,7 +223,7 @@ func TestFederatedSubscribeSessionsAddsEmptyCoordinator(t *testing.T) {
 	local := server.NewGRPCServer(coord)
 
 	registry := server.NewSpokeRegistry()
-	federated := newFederatedServer(local, "hub", "", true, registry, nil)
+	federated := NewServer(local, "hub", "", true, registry, nil)
 
 	listener := bufconn.Listen(bufSize)
 	grpcServer := grpc.NewServer()
@@ -316,7 +316,7 @@ func TestFederatedSubscribeSessionsKeepsSpokeNames(t *testing.T) {
 	defer coord.CloseAll()
 	local := server.NewGRPCServer(coord)
 
-	federated := newFederatedServer(local, "hub", "", true, nil, nil)
+	federated := NewServer(local, "hub", "", true, nil, nil)
 
 	listener := bufconn.Listen(bufSize)
 	grpcServer := grpc.NewServer()

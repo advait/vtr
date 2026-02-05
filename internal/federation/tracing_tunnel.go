@@ -1,4 +1,4 @@
-package main
+package federation
 
 import (
 	"context"
@@ -8,12 +8,12 @@ import (
 	proto "github.com/advait/vtrpc/proto"
 )
 
-type traceTransport struct {
+type TraceTransport struct {
 	mu     sync.RWMutex
 	tunnel *tunnelSpoke
 }
 
-func (t *traceTransport) SetTunnel(tunnel *tunnelSpoke) {
+func (t *TraceTransport) SetTunnel(tunnel *tunnelSpoke) {
 	if t == nil {
 		return
 	}
@@ -22,7 +22,7 @@ func (t *traceTransport) SetTunnel(tunnel *tunnelSpoke) {
 	t.mu.Unlock()
 }
 
-func (t *traceTransport) ClearTunnel(tunnel *tunnelSpoke) {
+func (t *TraceTransport) ClearTunnel(tunnel *tunnelSpoke) {
 	if t == nil {
 		return
 	}
@@ -33,7 +33,7 @@ func (t *traceTransport) ClearTunnel(tunnel *tunnelSpoke) {
 	t.mu.Unlock()
 }
 
-func (t *traceTransport) Connected() bool {
+func (t *TraceTransport) Connected() bool {
 	if t == nil {
 		return false
 	}
@@ -43,7 +43,7 @@ func (t *traceTransport) Connected() bool {
 	return connected
 }
 
-func (t *traceTransport) Send(ctx context.Context, payload []byte) error {
+func (t *TraceTransport) Send(ctx context.Context, payload []byte) error {
 	if t == nil {
 		return errors.New("trace transport unavailable")
 	}

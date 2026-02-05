@@ -1,4 +1,4 @@
-package main
+package federation
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"sort"
 	"strings"
 	"sync"
@@ -26,7 +27,7 @@ type spokeTarget struct {
 	Addr string
 }
 
-type federatedServer struct {
+type Server struct {
 	proto.UnimplementedVTRServer
 	local        *server.GRPCServer
 	localName    string
@@ -37,7 +38,7 @@ type federatedServer struct {
 	logger       *slog.Logger
 }
 
-func newFederatedServer(local *server.GRPCServer, localName string, localPath string, localEnabled bool, registry *server.SpokeRegistry, logger *slog.Logger) *federatedServer {
+func NewServer(local *server.GRPCServer, localName string, localPath string, localEnabled bool, registry *server.SpokeRegistry, logger *slog.Logger) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -49,7 +50,7 @@ func newFederatedServer(local *server.GRPCServer, localName string, localPath st
 	if localName == "" && localPath != "" {
 		localName = hubName(localPath)
 	}
-	return &federatedServer{
+	return &Server{
 		local:        local,
 		localName:    localName,
 		localPath:    localPath,
@@ -60,18 +61,18 @@ func newFederatedServer(local *server.GRPCServer, localName string, localPath st
 	}
 }
 
-func (s *federatedServer) localActive() bool {
+func (s *Server) localActive() bool {
 	return s != nil && s.localEnabled
 }
 
-func (s *federatedServer) localNameForTargets() string {
+func (s *Server) localNameForTargets() string {
 	if s == nil || !s.localEnabled {
 		return ""
 	}
 	return s.localName
 }
 
-func (s *federatedServer) localDisabledError() error {
+func (s *Server) localDisabledError() error {
 	return status.Error(codes.FailedPrecondition, "hub coordinator is disabled")
 }
 
@@ -118,7 +119,7 @@ func mergeSpokeTargets(registry *server.SpokeRegistry, localName string, tunnels
 	return out
 }
 
-func (s *federatedServer) Tunnel(stream proto.VTR_TunnelServer) error {
+func (s *Server) Tunnel(stream proto.VTR_TunnelServer) error {
 	if stream == nil {
 		return status.Error(codes.InvalidArgument, "tunnel stream is required")
 	}
@@ -195,7 +196,7 @@ func (s *federatedServer) Tunnel(stream proto.VTR_TunnelServer) error {
 	}
 }
 
-func (s *federatedServer) Spawn(ctx context.Context, req *proto.SpawnRequest) (*proto.SpawnResponse, error) {
+func (s *Server) Spawn(ctx context.Context, req *proto.SpawnRequest) (*proto.SpawnResponse, error) {
 	if req == nil || strings.TrimSpace(req.Name) == "" {
 		if !s.localActive() {
 			return nil, s.localDisabledError()
@@ -228,7 +229,7 @@ func (s *federatedServer) Spawn(ctx context.Context, req *proto.SpawnRequest) (*
 	return s.local.Spawn(ctx, req)
 }
 
-func (s *federatedServer) List(ctx context.Context, _ *proto.ListRequest) (*proto.ListResponse, error) {
+func (s *Server) List(ctx context.Context, _ *proto.ListRequest) (*proto.ListResponse, error) {
 	sessions := make([]*proto.Session, 0)
 	if s.localActive() {
 		localResp, err := s.local.List(ctx, &proto.ListRequest{})
@@ -270,7 +271,7 @@ func (s *federatedServer) List(ctx context.Context, _ *proto.ListRequest) (*prot
 	return &proto.ListResponse{Sessions: sessions}, nil
 }
 
-func (s *federatedServer) SubscribeSessions(req *proto.SubscribeSessionsRequest, stream proto.VTR_SubscribeSessionsServer) error {
+func (s *Server) SubscribeSessions(req *proto.SubscribeSessionsRequest, stream proto.VTR_SubscribeSessionsServer) error {
 	ctx := stream.Context()
 	excludeExited := req != nil && req.ExcludeExited
 	state := newFederatedSessionState()
@@ -336,7 +337,7 @@ func (s *federatedServer) SubscribeSessions(req *proto.SubscribeSessionsRequest,
 	}
 }
 
-func (s *federatedServer) watchLocalSessions(ctx context.Context, excludeExited bool, state *federatedSessionState, signal *updateSignal) {
+func (s *Server) watchLocalSessions(ctx context.Context, excludeExited bool, state *federatedSessionState, signal *updateSignal) {
 	stream := &localSessionsStream{
 		ctx: ctx,
 		send: func(snapshot *proto.SessionsSnapshot) error {
@@ -359,7 +360,7 @@ func (s *federatedServer) watchLocalSessions(ctx context.Context, excludeExited 
 	}
 }
 
-func (s *federatedServer) Info(ctx context.Context, req *proto.InfoRequest) (*proto.InfoResponse, error) {
+func (s *Server) Info(ctx context.Context, req *proto.InfoRequest) (*proto.InfoResponse, error) {
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "session id is required")
 	}
@@ -382,7 +383,7 @@ func (s *federatedServer) Info(ctx context.Context, req *proto.InfoRequest) (*pr
 	return resp, nil
 }
 
-func (s *federatedServer) Kill(ctx context.Context, req *proto.KillRequest) (*proto.KillResponse, error) {
+func (s *Server) Kill(ctx context.Context, req *proto.KillRequest) (*proto.KillResponse, error) {
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "session id is required")
 	}
@@ -401,7 +402,7 @@ func (s *federatedServer) Kill(ctx context.Context, req *proto.KillRequest) (*pr
 	return s.callKill(ctx, spoke, &reqCopy)
 }
 
-func (s *federatedServer) Close(ctx context.Context, req *proto.CloseRequest) (*proto.CloseResponse, error) {
+func (s *Server) Close(ctx context.Context, req *proto.CloseRequest) (*proto.CloseResponse, error) {
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "session id is required")
 	}
@@ -420,7 +421,7 @@ func (s *federatedServer) Close(ctx context.Context, req *proto.CloseRequest) (*
 	return s.callClose(ctx, spoke, &reqCopy)
 }
 
-func (s *federatedServer) Remove(ctx context.Context, req *proto.RemoveRequest) (*proto.RemoveResponse, error) {
+func (s *Server) Remove(ctx context.Context, req *proto.RemoveRequest) (*proto.RemoveResponse, error) {
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "session id is required")
 	}
@@ -439,7 +440,7 @@ func (s *federatedServer) Remove(ctx context.Context, req *proto.RemoveRequest) 
 	return s.callRemove(ctx, spoke, &reqCopy)
 }
 
-func (s *federatedServer) Rename(ctx context.Context, req *proto.RenameRequest) (*proto.RenameResponse, error) {
+func (s *Server) Rename(ctx context.Context, req *proto.RenameRequest) (*proto.RenameResponse, error) {
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "session id is required")
 	}
@@ -465,7 +466,7 @@ func (s *federatedServer) Rename(ctx context.Context, req *proto.RenameRequest) 
 	return s.callRename(ctx, spoke, &reqCopy)
 }
 
-func (s *federatedServer) GetScreen(ctx context.Context, req *proto.GetScreenRequest) (*proto.GetScreenResponse, error) {
+func (s *Server) GetScreen(ctx context.Context, req *proto.GetScreenRequest) (*proto.GetScreenResponse, error) {
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "session id is required")
 	}
@@ -488,7 +489,7 @@ func (s *federatedServer) GetScreen(ctx context.Context, req *proto.GetScreenReq
 	return resp, nil
 }
 
-func (s *federatedServer) Grep(ctx context.Context, req *proto.GrepRequest) (*proto.GrepResponse, error) {
+func (s *Server) Grep(ctx context.Context, req *proto.GrepRequest) (*proto.GrepResponse, error) {
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "session id is required")
 	}
@@ -507,7 +508,7 @@ func (s *federatedServer) Grep(ctx context.Context, req *proto.GrepRequest) (*pr
 	return s.callGrep(ctx, spoke, &reqCopy)
 }
 
-func (s *federatedServer) SendText(ctx context.Context, req *proto.SendTextRequest) (*proto.SendTextResponse, error) {
+func (s *Server) SendText(ctx context.Context, req *proto.SendTextRequest) (*proto.SendTextResponse, error) {
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "session id is required")
 	}
@@ -526,7 +527,7 @@ func (s *federatedServer) SendText(ctx context.Context, req *proto.SendTextReque
 	return s.callSendText(ctx, spoke, &reqCopy)
 }
 
-func (s *federatedServer) SendKey(ctx context.Context, req *proto.SendKeyRequest) (*proto.SendKeyResponse, error) {
+func (s *Server) SendKey(ctx context.Context, req *proto.SendKeyRequest) (*proto.SendKeyResponse, error) {
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "session id is required")
 	}
@@ -545,7 +546,7 @@ func (s *federatedServer) SendKey(ctx context.Context, req *proto.SendKeyRequest
 	return s.callSendKey(ctx, spoke, &reqCopy)
 }
 
-func (s *federatedServer) SendBytes(ctx context.Context, req *proto.SendBytesRequest) (*proto.SendBytesResponse, error) {
+func (s *Server) SendBytes(ctx context.Context, req *proto.SendBytesRequest) (*proto.SendBytesResponse, error) {
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "session id is required")
 	}
@@ -564,7 +565,7 @@ func (s *federatedServer) SendBytes(ctx context.Context, req *proto.SendBytesReq
 	return s.callSendBytes(ctx, spoke, &reqCopy)
 }
 
-func (s *federatedServer) Resize(ctx context.Context, req *proto.ResizeRequest) (*proto.ResizeResponse, error) {
+func (s *Server) Resize(ctx context.Context, req *proto.ResizeRequest) (*proto.ResizeResponse, error) {
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "session id is required")
 	}
@@ -583,7 +584,7 @@ func (s *federatedServer) Resize(ctx context.Context, req *proto.ResizeRequest) 
 	return s.callResize(ctx, spoke, &reqCopy)
 }
 
-func (s *federatedServer) WaitFor(ctx context.Context, req *proto.WaitForRequest) (*proto.WaitForResponse, error) {
+func (s *Server) WaitFor(ctx context.Context, req *proto.WaitForRequest) (*proto.WaitForResponse, error) {
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "session id is required")
 	}
@@ -602,7 +603,7 @@ func (s *federatedServer) WaitFor(ctx context.Context, req *proto.WaitForRequest
 	return s.callWaitFor(ctx, spoke, &reqCopy)
 }
 
-func (s *federatedServer) WaitForIdle(ctx context.Context, req *proto.WaitForIdleRequest) (*proto.WaitForIdleResponse, error) {
+func (s *Server) WaitForIdle(ctx context.Context, req *proto.WaitForIdleRequest) (*proto.WaitForIdleResponse, error) {
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "session id is required")
 	}
@@ -621,7 +622,7 @@ func (s *federatedServer) WaitForIdle(ctx context.Context, req *proto.WaitForIdl
 	return s.callWaitForIdle(ctx, spoke, &reqCopy)
 }
 
-func (s *federatedServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_SubscribeServer) error {
+func (s *Server) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_SubscribeServer) error {
 	if req == nil {
 		return status.Error(codes.InvalidArgument, "session id is required")
 	}
@@ -651,7 +652,7 @@ func (s *federatedServer) Subscribe(req *proto.SubscribeRequest, stream proto.VT
 	})
 }
 
-func (s *federatedServer) DumpAsciinema(ctx context.Context, req *proto.DumpAsciinemaRequest) (*proto.DumpAsciinemaResponse, error) {
+func (s *Server) DumpAsciinema(ctx context.Context, req *proto.DumpAsciinemaRequest) (*proto.DumpAsciinemaResponse, error) {
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "session id is required")
 	}
@@ -670,7 +671,7 @@ func (s *federatedServer) DumpAsciinema(ctx context.Context, req *proto.DumpAsci
 	return s.callDumpAsciinema(ctx, spoke, &reqCopy)
 }
 
-func (s *federatedServer) routeSessionRef(ref *proto.SessionRef) (string, string, bool, error) {
+func (s *Server) routeSessionRef(ref *proto.SessionRef) (string, string, bool, error) {
 	if ref == nil || strings.TrimSpace(ref.Id) == "" {
 		return "", "", false, status.Error(codes.InvalidArgument, "session id is required")
 	}
@@ -693,7 +694,7 @@ func (s *federatedServer) routeSessionRef(ref *proto.SessionRef) (string, string
 	return "", "", false, status.Error(codes.NotFound, fmt.Sprintf("unknown coordinator %q", coord))
 }
 
-func (s *federatedServer) resolveSpoke(name string) (spokeTarget, bool) {
+func (s *Server) resolveSpoke(name string) (spokeTarget, bool) {
 	for _, target := range s.spokeTargets() {
 		if target.Name == name {
 			return target, true
@@ -702,18 +703,18 @@ func (s *federatedServer) resolveSpoke(name string) (spokeTarget, bool) {
 	return spokeTarget{}, false
 }
 
-func (s *federatedServer) spokeTargets() []spokeTarget {
+func (s *Server) spokeTargets() []spokeTarget {
 	return mergeSpokeTargets(s.registry, s.localNameForTargets(), tunnelNames(s.tunnels))
 }
 
-func (s *federatedServer) tunnel(name string) *tunnelEndpoint {
+func (s *Server) tunnel(name string) *tunnelEndpoint {
 	if s == nil || s.tunnels == nil {
 		return nil
 	}
 	return s.tunnels.Get(name)
 }
 
-func (s *federatedServer) requireTunnel(name string) (*tunnelEndpoint, error) {
+func (s *Server) requireTunnel(name string) (*tunnelEndpoint, error) {
 	tunnel := s.tunnel(name)
 	if tunnel == nil {
 		return nil, status.Error(codes.Unavailable, "spoke tunnel is not connected")
@@ -721,7 +722,7 @@ func (s *federatedServer) requireTunnel(name string) (*tunnelEndpoint, error) {
 	return tunnel, nil
 }
 
-func (s *federatedServer) callList(ctx context.Context, target spokeTarget) (*proto.ListResponse, error) {
+func (s *Server) callList(ctx context.Context, target spokeTarget) (*proto.ListResponse, error) {
 	tunnel, err := s.requireTunnel(target.Name)
 	if err != nil {
 		return nil, err
@@ -733,7 +734,7 @@ func (s *federatedServer) callList(ctx context.Context, target spokeTarget) (*pr
 	return resp, nil
 }
 
-func (s *federatedServer) callSpawn(ctx context.Context, spoke string, req *proto.SpawnRequest) (*proto.SpawnResponse, error) {
+func (s *Server) callSpawn(ctx context.Context, spoke string, req *proto.SpawnRequest) (*proto.SpawnResponse, error) {
 	tunnel, err := s.requireTunnel(spoke)
 	if err != nil {
 		return nil, err
@@ -745,7 +746,7 @@ func (s *federatedServer) callSpawn(ctx context.Context, spoke string, req *prot
 	return resp, nil
 }
 
-func (s *federatedServer) callInfo(ctx context.Context, spoke string, req *proto.InfoRequest) (*proto.InfoResponse, error) {
+func (s *Server) callInfo(ctx context.Context, spoke string, req *proto.InfoRequest) (*proto.InfoResponse, error) {
 	tunnel, err := s.requireTunnel(spoke)
 	if err != nil {
 		return nil, err
@@ -757,7 +758,7 @@ func (s *federatedServer) callInfo(ctx context.Context, spoke string, req *proto
 	return resp, nil
 }
 
-func (s *federatedServer) callKill(ctx context.Context, spoke string, req *proto.KillRequest) (*proto.KillResponse, error) {
+func (s *Server) callKill(ctx context.Context, spoke string, req *proto.KillRequest) (*proto.KillResponse, error) {
 	tunnel, err := s.requireTunnel(spoke)
 	if err != nil {
 		return nil, err
@@ -769,7 +770,7 @@ func (s *federatedServer) callKill(ctx context.Context, spoke string, req *proto
 	return resp, nil
 }
 
-func (s *federatedServer) callClose(ctx context.Context, spoke string, req *proto.CloseRequest) (*proto.CloseResponse, error) {
+func (s *Server) callClose(ctx context.Context, spoke string, req *proto.CloseRequest) (*proto.CloseResponse, error) {
 	tunnel, err := s.requireTunnel(spoke)
 	if err != nil {
 		return nil, err
@@ -781,7 +782,7 @@ func (s *federatedServer) callClose(ctx context.Context, spoke string, req *prot
 	return resp, nil
 }
 
-func (s *federatedServer) callRemove(ctx context.Context, spoke string, req *proto.RemoveRequest) (*proto.RemoveResponse, error) {
+func (s *Server) callRemove(ctx context.Context, spoke string, req *proto.RemoveRequest) (*proto.RemoveResponse, error) {
 	tunnel, err := s.requireTunnel(spoke)
 	if err != nil {
 		return nil, err
@@ -793,7 +794,7 @@ func (s *federatedServer) callRemove(ctx context.Context, spoke string, req *pro
 	return resp, nil
 }
 
-func (s *federatedServer) callRename(ctx context.Context, spoke string, req *proto.RenameRequest) (*proto.RenameResponse, error) {
+func (s *Server) callRename(ctx context.Context, spoke string, req *proto.RenameRequest) (*proto.RenameResponse, error) {
 	tunnel, err := s.requireTunnel(spoke)
 	if err != nil {
 		return nil, err
@@ -805,7 +806,7 @@ func (s *federatedServer) callRename(ctx context.Context, spoke string, req *pro
 	return resp, nil
 }
 
-func (s *federatedServer) callGetScreen(ctx context.Context, spoke string, req *proto.GetScreenRequest) (*proto.GetScreenResponse, error) {
+func (s *Server) callGetScreen(ctx context.Context, spoke string, req *proto.GetScreenRequest) (*proto.GetScreenResponse, error) {
 	tunnel, err := s.requireTunnel(spoke)
 	if err != nil {
 		return nil, err
@@ -817,7 +818,7 @@ func (s *federatedServer) callGetScreen(ctx context.Context, spoke string, req *
 	return resp, nil
 }
 
-func (s *federatedServer) callGrep(ctx context.Context, spoke string, req *proto.GrepRequest) (*proto.GrepResponse, error) {
+func (s *Server) callGrep(ctx context.Context, spoke string, req *proto.GrepRequest) (*proto.GrepResponse, error) {
 	tunnel, err := s.requireTunnel(spoke)
 	if err != nil {
 		return nil, err
@@ -829,7 +830,7 @@ func (s *federatedServer) callGrep(ctx context.Context, spoke string, req *proto
 	return resp, nil
 }
 
-func (s *federatedServer) callSendText(ctx context.Context, spoke string, req *proto.SendTextRequest) (*proto.SendTextResponse, error) {
+func (s *Server) callSendText(ctx context.Context, spoke string, req *proto.SendTextRequest) (*proto.SendTextResponse, error) {
 	tunnel, err := s.requireTunnel(spoke)
 	if err != nil {
 		return nil, err
@@ -841,7 +842,7 @@ func (s *federatedServer) callSendText(ctx context.Context, spoke string, req *p
 	return resp, nil
 }
 
-func (s *federatedServer) callSendKey(ctx context.Context, spoke string, req *proto.SendKeyRequest) (*proto.SendKeyResponse, error) {
+func (s *Server) callSendKey(ctx context.Context, spoke string, req *proto.SendKeyRequest) (*proto.SendKeyResponse, error) {
 	tunnel, err := s.requireTunnel(spoke)
 	if err != nil {
 		return nil, err
@@ -853,7 +854,7 @@ func (s *federatedServer) callSendKey(ctx context.Context, spoke string, req *pr
 	return resp, nil
 }
 
-func (s *federatedServer) callSendBytes(ctx context.Context, spoke string, req *proto.SendBytesRequest) (*proto.SendBytesResponse, error) {
+func (s *Server) callSendBytes(ctx context.Context, spoke string, req *proto.SendBytesRequest) (*proto.SendBytesResponse, error) {
 	tunnel, err := s.requireTunnel(spoke)
 	if err != nil {
 		return nil, err
@@ -865,7 +866,7 @@ func (s *federatedServer) callSendBytes(ctx context.Context, spoke string, req *
 	return resp, nil
 }
 
-func (s *federatedServer) callResize(ctx context.Context, spoke string, req *proto.ResizeRequest) (*proto.ResizeResponse, error) {
+func (s *Server) callResize(ctx context.Context, spoke string, req *proto.ResizeRequest) (*proto.ResizeResponse, error) {
 	tunnel, err := s.requireTunnel(spoke)
 	if err != nil {
 		return nil, err
@@ -877,7 +878,7 @@ func (s *federatedServer) callResize(ctx context.Context, spoke string, req *pro
 	return resp, nil
 }
 
-func (s *federatedServer) callWaitFor(ctx context.Context, spoke string, req *proto.WaitForRequest) (*proto.WaitForResponse, error) {
+func (s *Server) callWaitFor(ctx context.Context, spoke string, req *proto.WaitForRequest) (*proto.WaitForResponse, error) {
 	tunnel, err := s.requireTunnel(spoke)
 	if err != nil {
 		return nil, err
@@ -889,7 +890,7 @@ func (s *federatedServer) callWaitFor(ctx context.Context, spoke string, req *pr
 	return resp, nil
 }
 
-func (s *federatedServer) callWaitForIdle(ctx context.Context, spoke string, req *proto.WaitForIdleRequest) (*proto.WaitForIdleResponse, error) {
+func (s *Server) callWaitForIdle(ctx context.Context, spoke string, req *proto.WaitForIdleRequest) (*proto.WaitForIdleResponse, error) {
 	tunnel, err := s.requireTunnel(spoke)
 	if err != nil {
 		return nil, err
@@ -901,7 +902,7 @@ func (s *federatedServer) callWaitForIdle(ctx context.Context, spoke string, req
 	return resp, nil
 }
 
-func (s *federatedServer) callDumpAsciinema(ctx context.Context, spoke string, req *proto.DumpAsciinemaRequest) (*proto.DumpAsciinemaResponse, error) {
+func (s *Server) callDumpAsciinema(ctx context.Context, spoke string, req *proto.DumpAsciinemaRequest) (*proto.DumpAsciinemaResponse, error) {
 	tunnel, err := s.requireTunnel(spoke)
 	if err != nil {
 		return nil, err
@@ -1061,7 +1062,7 @@ func waitOrDone(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-func (s *federatedServer) watchSpokeSessions(ctx context.Context, target spokeTarget, excludeExited bool, state *federatedSessionState, signal *updateSignal) {
+func (s *Server) watchSpokeSessions(ctx context.Context, target spokeTarget, excludeExited bool, state *federatedSessionState, signal *updateSignal) {
 	backoff := time.Second
 	for {
 		if ctx.Err() != nil {
@@ -1108,7 +1109,7 @@ func (s *federatedServer) watchSpokeSessions(ctx context.Context, target spokeTa
 	}
 }
 
-func (s *federatedServer) watchRegistry(ctx context.Context, excludeExited bool, state *federatedSessionState, signal *updateSignal) {
+func (s *Server) watchRegistry(ctx context.Context, excludeExited bool, state *federatedSessionState, signal *updateSignal) {
 	if s.registry == nil {
 		return
 	}
@@ -1208,3 +1209,28 @@ func (s *localSessionsStream) SendHeader(metadata.MD) error { return nil }
 func (s *localSessionsStream) SetTrailer(metadata.MD)       {}
 func (s *localSessionsStream) SendMsg(interface{}) error    { return nil }
 func (s *localSessionsStream) RecvMsg(interface{}) error    { return nil }
+
+func parseSessionRef(value string) (string, string, bool) {
+	parts := strings.SplitN(value, ":", 2)
+	if len(parts) != 2 {
+		return "", "", false
+	}
+	coord := strings.TrimSpace(parts[0])
+	session := strings.TrimSpace(parts[1])
+	if coord == "" || session == "" {
+		return "", "", false
+	}
+	return coord, session, true
+}
+
+func hubName(value string) string {
+	host, _, err := net.SplitHostPort(value)
+	if err != nil {
+		return value
+	}
+	host = strings.Trim(host, "[]")
+	if host == "" {
+		return value
+	}
+	return host
+}
