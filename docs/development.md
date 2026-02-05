@@ -19,6 +19,7 @@ Common tasks:
 
 - `mise run build` - build `bin/vtr`
 - `mise run test` - run Go tests
+- `mise run proto-ts` - regenerate web TS protobuf stubs from `proto/*.proto`
 - `mise run web-build` - build `web/dist`
 - `mise run build-multi` - build release artifacts into `dist/`
 - `mise run dev` - run hub + Vite dev server

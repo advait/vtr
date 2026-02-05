@@ -1,137 +1,5 @@
-import protobuf from "protobufjs";
-
-const anyProto = `
-syntax = "proto3";
-package google.protobuf;
-message Any {
-  string type_url = 1;
-  bytes value = 2;
-}
-`;
-
-const statusProto = `
-syntax = "proto3";
-package google.rpc;
-import "google/protobuf/any.proto";
-message Status {
-  int32 code = 1;
-  string message = 2;
-  repeated google.protobuf.Any details = 3;
-}
-`;
-
-const vtrProto = `
-syntax = "proto3";
-package vtr;
-
-enum SessionStatus {
-  SESSION_STATUS_UNSPECIFIED = 0;
-  SESSION_STATUS_RUNNING = 1;
-  SESSION_STATUS_CLOSING = 2;
-  SESSION_STATUS_EXITED = 3;
-}
-
-message Session {
-  string name = 1;
-  SessionStatus status = 2;
-  int32 cols = 3;
-  int32 rows = 4;
-  int32 exit_code = 5;
-  bool idle = 8;
-  uint32 order = 9;
-  string id = 10;
-}
-
-message SessionRef {
-  string id = 1;
-  string coordinator = 2;
-}
-
-message ListRequest {}
-message ListResponse { repeated Session sessions = 1; }
-
-message SubscribeSessionsRequest { bool exclude_exited = 1; }
-
-message CoordinatorSessions {
-  string name = 1;
-  string path = 2;
-  repeated Session sessions = 3;
-  string error = 4;
-}
-
-message SessionsSnapshot { repeated CoordinatorSessions coordinators = 1; }
-
-message SubscribeRequest {
-  SessionRef session = 1;
-  bool include_screen_updates = 2;
-  bool include_raw_output = 3;
-}
-
-message ScreenCell {
-  string char = 1;
-  int32 fg_color = 2;
-  int32 bg_color = 3;
-  uint32 attributes = 4;
-}
-
-message ScreenRow { repeated ScreenCell cells = 1; }
-
-message GetScreenResponse {
-  string name = 1;
-  int32 cols = 2;
-  int32 rows = 3;
-  int32 cursor_x = 4;
-  int32 cursor_y = 5;
-  repeated ScreenRow screen_rows = 6;
-  string id = 7;
-}
-
-message ScreenUpdate {
-  uint64 frame_id = 1;
-  uint64 base_frame_id = 2;
-  bool is_keyframe = 3;
-  GetScreenResponse screen = 4;
-  ScreenDelta delta = 5;
-}
-
-message ScreenDelta {
-  int32 cols = 1;
-  int32 rows = 2;
-  int32 cursor_x = 3;
-  int32 cursor_y = 4;
-  repeated RowDelta row_deltas = 5;
-}
-
-message RowDelta {
-  int32 row = 1;
-  ScreenRow row_data = 2;
-}
-
-message SessionExited { int32 exit_code = 1; string id = 2; }
-message SessionIdle { string name = 1; bool idle = 2; string id = 3; }
-
-message SubscribeEvent {
-  oneof event {
-    ScreenUpdate screen_update = 1;
-    bytes raw_output = 2;
-    SessionExited session_exited = 3;
-    SessionIdle session_idle = 4;
-  }
-}
-
-message SendTextRequest { SessionRef session = 1; string text = 2; }
-message SendKeyRequest { SessionRef session = 1; string key = 2; }
-message SendBytesRequest { SessionRef session = 1; bytes data = 2; }
-message ResizeRequest { SessionRef session = 1; int32 cols = 2; int32 rows = 3; }
-`;
-
-const root = new protobuf.Root();
-protobuf.parse(anyProto, root, { keepCase: true });
-protobuf.parse(statusProto, root, { keepCase: true });
-protobuf.parse(vtrProto, root, { keepCase: true });
-
-const AnyType = root.lookupType("google.protobuf.Any");
-const StatusType = root.lookupType("google.rpc.Status");
+import type { Long } from "protobufjs";
+import { google, vtr } from "../gen/proto.generated";
 
 export type ProtoMessageName =
   | "vtr.SubscribeRequest"
@@ -145,92 +13,69 @@ export type ProtoMessageName =
   | "vtr.SendBytesRequest"
   | "vtr.ResizeRequest";
 
-export type ScreenCell = {
-  char?: string;
-  fg_color?: number;
-  bg_color?: number;
-  attributes?: number;
-};
-
-export type Session = {
-  name?: string;
-  id?: string;
-  status?: number;
-  cols?: number;
-  rows?: number;
-  exit_code?: number;
-  idle?: boolean;
-  order?: number;
-};
-
-export type ScreenRow = { cells?: ScreenCell[] };
-
-export type GetScreenResponse = {
-  name?: string;
-  id?: string;
-  cols?: number;
-  rows?: number;
-  cursor_x?: number;
-  cursor_y?: number;
-  screen_rows?: ScreenRow[];
-};
-
-export type ScreenDelta = {
-  cols?: number;
-  rows?: number;
-  cursor_x?: number;
-  cursor_y?: number;
-  row_deltas?: { row?: number; row_data?: ScreenRow }[];
-};
-
+export type ScreenCell = vtr.IScreenCell;
+export type Session = vtr.ISession;
+export type ScreenRow = vtr.IScreenRow;
+export type GetScreenResponse = vtr.IGetScreenResponse;
+export type ScreenDelta = vtr.IScreenDelta;
 export type ScreenUpdate = {
-  frame_id?: number | protobuf.Long;
-  base_frame_id?: number | protobuf.Long;
-  is_keyframe?: boolean;
+  frame_id?: number | Long | null;
+  base_frame_id?: number | Long | null;
+  is_keyframe?: boolean | null;
   screen?: GetScreenResponse | null;
   delta?: ScreenDelta | null;
 };
+export type SubscribeEvent = vtr.ISubscribeEvent;
+export type CoordinatorSessions = vtr.ICoordinatorSessions;
+export type SessionsSnapshot = vtr.ISessionsSnapshot;
+export type Status = google.rpc.IStatus;
 
-export type SubscribeEvent = {
-  screen_update?: ScreenUpdate | null;
-  raw_output?: Uint8Array;
-  session_exited?: { exit_code?: number; id?: string } | null;
-  session_idle?: { name?: string; idle?: boolean; id?: string } | null;
+type OutboundMessageCtor = {
+  create(payload?: Record<string, unknown>): unknown;
+  encode(message: unknown): { finish(): Uint8Array };
 };
 
-export type CoordinatorSessions = {
-  name?: string;
-  path?: string;
-  sessions?: Session[];
-  error?: string;
+type DecodedMessage = Status | SubscribeEvent | SessionsSnapshot;
+
+const outboundTypes: Record<ProtoMessageName, OutboundMessageCtor> = {
+  "vtr.SubscribeRequest": vtr.SubscribeRequest,
+  "vtr.SubscribeEvent": vtr.SubscribeEvent,
+  "vtr.ListRequest": vtr.ListRequest,
+  "vtr.ListResponse": vtr.ListResponse,
+  "vtr.SubscribeSessionsRequest": vtr.SubscribeSessionsRequest,
+  "vtr.SessionsSnapshot": vtr.SessionsSnapshot,
+  "vtr.SendTextRequest": vtr.SendTextRequest,
+  "vtr.SendKeyRequest": vtr.SendKeyRequest,
+  "vtr.SendBytesRequest": vtr.SendBytesRequest,
+  "vtr.ResizeRequest": vtr.ResizeRequest,
 };
 
-export type SessionsSnapshot = {
-  coordinators?: CoordinatorSessions[];
+const inboundDecoders: Record<string, (value: Uint8Array) => DecodedMessage> = {
+  "vtr.SubscribeEvent": (value) => vtr.SubscribeEvent.decode(value),
+  "vtr.SessionsSnapshot": (value) => vtr.SessionsSnapshot.decode(value),
 };
-
-export type Status = { code?: number; message?: string };
 
 export function encodeAny(typeName: ProtoMessageName, payload: Record<string, unknown>) {
-  const type = root.lookupType(typeName);
-  const message = type.create(payload);
-  const value = type.encode(message).finish();
-  const any = AnyType.create({
+  const messageType = outboundTypes[typeName];
+  const value = messageType.encode(messageType.create(payload)).finish();
+  const any = google.protobuf.Any.create({
     type_url: `type.googleapis.com/${typeName}`,
     value,
   });
-  return AnyType.encode(any).finish();
+  return google.protobuf.Any.encode(any).finish();
 }
 
 export function decodeAny(buffer: Uint8Array) {
-  const any = AnyType.decode(buffer) as { type_url?: string; value?: Uint8Array };
+  const any = google.protobuf.Any.decode(buffer);
   const typeUrl = any.type_url || "";
   const typeName = typeUrl.replace("type.googleapis.com/", "");
   if (typeName === "google.rpc.Status") {
-    const status = StatusType.decode(any.value ?? new Uint8Array()) as Status;
+    const status = google.rpc.Status.decode(any.value ?? new Uint8Array()) as Status;
     return { typeName, message: status };
   }
-  const type = root.lookupType(typeName);
-  const message = type.decode(any.value ?? new Uint8Array());
-  return { typeName, message };
+  const decode = inboundDecoders[typeName];
+  if (!decode) {
+    throw new Error(`unsupported Any type: ${typeName}`);
+  }
+  return { typeName, message: decode(any.value ?? new Uint8Array()) };
 }

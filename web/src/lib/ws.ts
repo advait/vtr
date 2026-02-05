@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { CoordinatorInfo, SessionInfo } from "../components/CoordinatorTree";
+import {
+  decodeAny,
+  encodeAny,
+  type ProtoMessageName,
+  type Session,
+  type SessionsSnapshot,
+  type SubscribeEvent,
+} from "./proto";
 import type { SessionRef } from "./session";
-import { decodeAny, encodeAny, type Session, type SessionsSnapshot, type SubscribeEvent } from "./proto";
 
 export type StreamStatus = "idle" | "connecting" | "open" | "reconnecting" | "error" | "closed";
 
@@ -26,7 +33,7 @@ function defaultSessionsWsUrl() {
   return `${wsProto}//${host}/api/ws/sessions`;
 }
 
-function sessionStatusFromProto(status?: number): SessionInfo["status"] {
+function sessionStatusFromProto(status?: number | null): SessionInfo["status"] {
   switch (status) {
     case 1:
       return "running";
@@ -48,7 +55,7 @@ function normalizeSession(session: Session): SessionInfo {
     rows: session.rows ?? 0,
     idle: session.idle ?? false,
     order: session.order ?? 0,
-    exitCode: session.exit_code,
+    exitCode: session.exit_code ?? undefined,
   };
 }
 
@@ -89,11 +96,11 @@ export function useVtrStream(sessionRef: SessionRef | null, options: StreamOptio
     }
   }, []);
 
-  const sendProto = useCallback((typeName: string, payload: Record<string, unknown>) => {
+  const sendProto = useCallback((typeName: ProtoMessageName, payload: Record<string, unknown>) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
       return;
     }
-    const data = encodeAny(typeName as never, payload);
+    const data = encodeAny(typeName, payload);
     wsRef.current.send(data);
   }, []);
 
@@ -113,7 +120,10 @@ export function useVtrStream(sessionRef: SessionRef | null, options: StreamOptio
   const sendKey = useCallback(
     (key: string) => {
       if (!sessionId) return;
-      sendProto("vtr.SendKeyRequest", { session: { id: sessionId, coordinator: sessionCoordinator }, key });
+      sendProto("vtr.SendKeyRequest", {
+        session: { id: sessionId, coordinator: sessionCoordinator },
+        key,
+      });
     },
     [sendProto, sessionCoordinator, sessionId],
   );
@@ -145,7 +155,10 @@ export function useVtrStream(sessionRef: SessionRef | null, options: StreamOptio
   const sendBytes = useCallback(
     (data: Uint8Array) => {
       if (!sessionId) return;
-      sendProto("vtr.SendBytesRequest", { session: { id: sessionId, coordinator: sessionCoordinator }, data });
+      sendProto("vtr.SendBytesRequest", {
+        session: { id: sessionId, coordinator: sessionCoordinator },
+        data,
+      });
     },
     [sendProto, sessionCoordinator, sessionId],
   );

@@ -3,6 +3,14 @@
 `proto/vtr.proto` is the source of truth. This document summarizes the contract
 and current implementation status.
 
+For the web client, TS protobuf stubs are generated from this schema into:
+- `web/src/gen/proto.generated.js`
+- `web/src/gen/proto.generated.d.ts`
+
+Regenerate them with:
+- `mise run proto-ts`
+- or `cd web && bun run proto:gen`
+
 ## Services
 
 `service VTR` includes:

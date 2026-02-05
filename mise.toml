@@ -61,7 +61,21 @@ run = "protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grp
 sources = ["proto/vtr.proto"]
 outputs = ["proto/vtr.pb.go", "proto/vtr_grpc.pb.go"]
 
+[tasks.proto-ts]
+run = "cd web && bun install && bun run proto:gen"
+sources = [
+  "proto/vtr.proto",
+  "proto/google/rpc/status.proto",
+  "web/package.json",
+  "web/bun.lock",
+]
+outputs = [
+  "web/src/gen/proto.generated.js",
+  "web/src/gen/proto.generated.d.ts",
+]
+
 [tasks.web-build]
+depends = ["proto-ts"]
 run = "cd web && bun install && bun run build"
 sources = [
   "web/index.html",
@@ -203,4 +217,4 @@ depends = [
 depends = ["build", "test"]
 
 [tasks.clean]
-run = "rm -rf bin/ && rm -f proto/*.pb.go"
+run = "rm -rf bin/ && rm -f proto/*.pb.go web/src/gen/proto.generated.js web/src/gen/proto.generated.d.ts"

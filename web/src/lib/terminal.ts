@@ -172,7 +172,7 @@ export function protoCellToCell(cell?: ProtoCell): Cell {
   };
 }
 
-function toNumber(value: number | Long | undefined) {
+function toNumber(value: number | Long | null | undefined) {
   if (value == null) {
     return undefined;
   }
