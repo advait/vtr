@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -838,7 +838,12 @@ func handleWebInput(ctx context.Context, conn *websocket.Conn, client proto.VTRC
 			}
 		case *proto.ResizeRequest:
 			if logResize {
-				log.Printf("resize web session=%s cols=%d rows=%d", sessionRef.GetId(), m.GetCols(), m.GetRows())
+				slog.Info(
+					"resize web",
+					"session", sessionRef.GetId(),
+					"cols", m.GetCols(),
+					"rows", m.GetRows(),
+				)
 			}
 			if err := resizeSession(ctx, client, sessionRef, m.GetCols(), m.GetRows(), timeout); err != nil {
 				return err

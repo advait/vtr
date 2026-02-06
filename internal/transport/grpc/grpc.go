@@ -5,7 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"image/color"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -657,7 +657,15 @@ func (s *GRPCServer) Resize(ctx context.Context, req *proto.ResizeRequest) (*pro
 			prevCols = int(info.Cols)
 			prevRows = int(info.Rows)
 		}
-		log.Printf("resize grpc id=%s cols=%d rows=%d prev=%dx%d peer=%s", sessionID, cols, rows, prevCols, prevRows, peerAddr)
+		slog.Info(
+			"resize grpc",
+			"id", sessionID,
+			"cols", cols,
+			"rows", rows,
+			"prev_cols", prevCols,
+			"prev_rows", prevRows,
+			"peer", peerAddr,
+		)
 	}
 	if err := s.coord.Resize(sessionID, cols, rows); err != nil {
 		return nil, mapCoordinatorErr(err)
