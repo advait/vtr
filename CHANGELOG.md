@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.0.7 - 2026-02-10
+- Internal refactor: move server core, gRPC transport, federation, and web transport into `internal/*` packages.
+- CLI/agent: add `send --wait-for-idle`, improve help examples, and remove the systemd service command.
+- TUI: add render profiling (`vtr tui --profile`) and simplify status glyphs/tab order behavior.
+- Web/proto: regenerate TypeScript protobuf stubs from `proto/*` and add `google/rpc/status.proto`.
+- Logging/docs: switch resize logging paths to `slog` and add an architecture review document.
+
 ## v0.0.6 - 2026-02-02
 - Tracing: add hub JSONL sink with spoke spooling and tunnel propagation; JSONL-only sink with named spool files.
 - CLI/agent: `idle` supports multiple sessions and optional `--screen` snapshots; accept `coordinator:session` refs; document `send --submit`.
