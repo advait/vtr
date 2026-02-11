@@ -801,11 +801,10 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.err != nil {
-			if errors.Is(msg.err, io.EOF) || errors.Is(msg.err, context.Canceled) {
-				return m, nil
+			if !errors.Is(msg.err, io.EOF) && !errors.Is(msg.err, context.Canceled) {
+				m.statusMsg = fmt.Sprintf("sessions stream: %v", msg.err)
+				m.statusUntil = time.Now().Add(2 * time.Second)
 			}
-			m.statusMsg = fmt.Sprintf("sessions stream: %v", msg.err)
-			m.statusUntil = time.Now().Add(2 * time.Second)
 			if m.sessionsStreamCancel != nil {
 				m.sessionsStreamCancel()
 				m.sessionsStreamCancel = nil

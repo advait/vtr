@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"io"
 	"testing"
 	"time"
 
@@ -333,6 +335,53 @@ func TestUpdateTickDowngradesReceivingState(t *testing.T) {
 	}
 	if next.streamState != "connected" {
 		t.Fatalf("expected connected state after stale tick, got %q", next.streamState)
+	}
+}
+
+func TestSessionsSnapshotEOFSchedulesRetry(t *testing.T) {
+	canceled := false
+	model := attachModel{
+		sessionsStreamID:     5,
+		sessionsBackoff:      time.Second,
+		sessionsStreamCancel: func() { canceled = true },
+	}
+	updated, cmd := model.Update(sessionsSnapshotMsg{streamID: 5, err: io.EOF})
+	next, ok := updated.(attachModel)
+	if !ok {
+		t.Fatalf("expected attachModel update result, got %T", updated)
+	}
+	if cmd == nil {
+		t.Fatalf("expected retry command on EOF")
+	}
+	if !canceled {
+		t.Fatalf("expected existing sessions stream to be canceled")
+	}
+	if next.sessionsStreamID != 6 {
+		t.Fatalf("expected incremented sessions stream id, got %d", next.sessionsStreamID)
+	}
+	if next.sessionsStreamCancel != nil {
+		t.Fatalf("expected cleared sessions stream cancel function")
+	}
+	if next.sessionsStream != nil {
+		t.Fatalf("expected cleared sessions stream")
+	}
+}
+
+func TestSessionsSnapshotCanceledSchedulesRetry(t *testing.T) {
+	model := attachModel{
+		sessionsStreamID: 2,
+		sessionsBackoff:  time.Second,
+	}
+	updated, cmd := model.Update(sessionsSnapshotMsg{streamID: 2, err: context.Canceled})
+	next, ok := updated.(attachModel)
+	if !ok {
+		t.Fatalf("expected attachModel update result, got %T", updated)
+	}
+	if cmd == nil {
+		t.Fatalf("expected retry command on canceled stream")
+	}
+	if next.sessionsStreamID != 3 {
+		t.Fatalf("expected incremented sessions stream id, got %d", next.sessionsStreamID)
 	}
 }
 
