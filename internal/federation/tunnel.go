@@ -232,6 +232,18 @@ func (e *tunnelEndpoint) send(frame *proto.TunnelFrame) error {
 	return e.stream.Send(frame)
 }
 
+func (e *tunnelEndpoint) sendCancel(callID, reason string) error {
+	if e == nil || strings.TrimSpace(callID) == "" {
+		return nil
+	}
+	return e.send(&proto.TunnelFrame{
+		CallId: callID,
+		Kind: &proto.TunnelFrame_Cancel{
+			Cancel: &proto.TunnelCancel{Reason: reason},
+		},
+	})
+}
+
 func (e *tunnelEndpoint) startCall(stream bool) (*tunnelCall, error) {
 	if e == nil {
 		return nil, errors.New("tunnel endpoint is nil")
@@ -290,6 +302,7 @@ func (e *tunnelEndpoint) dispatch(frame *proto.TunnelFrame) {
 			)
 		}
 		if call.stream {
+			_ = e.sendCancel(callID, tunnelBacklogDropReason)
 			call.fail(status.Error(codes.Unavailable, tunnelBacklogDropReason))
 			e.mu.Lock()
 			delete(e.calls, callID)
@@ -472,6 +485,8 @@ func (e *tunnelEndpoint) CallStream(ctx context.Context, method string, req gopr
 			if event := frame.GetEvent(); event != nil {
 				if onEvent != nil {
 					if err := onEvent(event.Payload); err != nil {
+						_ = e.sendCancel(call.id, err.Error())
+						e.endCall(call.id)
 						return err
 					}
 				}
