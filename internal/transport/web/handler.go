@@ -74,12 +74,39 @@ var wsForcedCloseCount atomic.Int64
 var wsOwnedSessionDeleteCount atomic.Int64
 var webOwnedSessions sync.Map
 
-func markWebOwnedSession(id string) {
+type webOwnedSessionState struct {
+	mu     sync.Mutex
+	owned  bool
+	active int
+}
+
+func webOwnedSessionStateFor(id string, create bool) *webOwnedSessionState {
 	sessionID := strings.TrimSpace(id)
 	if sessionID == "" {
+		return nil
+	}
+	if stateAny, ok := webOwnedSessions.Load(sessionID); ok {
+		if state, ok := stateAny.(*webOwnedSessionState); ok {
+			return state
+		}
+	}
+	if !create {
+		return nil
+	}
+	initial := &webOwnedSessionState{}
+	actual, _ := webOwnedSessions.LoadOrStore(sessionID, initial)
+	state, _ := actual.(*webOwnedSessionState)
+	return state
+}
+
+func markWebOwnedSession(id string) {
+	state := webOwnedSessionStateFor(id, true)
+	if state == nil {
 		return
 	}
-	webOwnedSessions.Store(sessionID, struct{}{})
+	state.mu.Lock()
+	state.owned = true
+	state.mu.Unlock()
 }
 
 func clearWebOwnedSession(id string) {
@@ -91,12 +118,42 @@ func clearWebOwnedSession(id string) {
 }
 
 func isWebOwnedSession(id string) bool {
-	sessionID := strings.TrimSpace(id)
-	if sessionID == "" {
+	state := webOwnedSessionStateFor(id, false)
+	if state == nil {
 		return false
 	}
-	_, ok := webOwnedSessions.Load(sessionID)
-	return ok
+	state.mu.Lock()
+	owned := state.owned
+	state.mu.Unlock()
+	return owned
+}
+
+func acquireWebOwnedSession(id string) bool {
+	state := webOwnedSessionStateFor(id, false)
+	if state == nil {
+		return false
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if !state.owned {
+		return false
+	}
+	state.active++
+	return true
+}
+
+func releaseWebOwnedSession(id string) bool {
+	state := webOwnedSessionStateFor(id, false)
+	if state == nil {
+		return false
+	}
+	state.mu.Lock()
+	if state.active > 0 {
+		state.active--
+	}
+	shouldRemove := state.owned && state.active == 0
+	state.mu.Unlock()
+	return shouldRemove
 }
 
 func (s *wsSender) sendProto(ctx context.Context, msg goproto.Message) error {
@@ -270,8 +327,12 @@ func handleWebsocket(d deps) http.HandlerFunc {
 				"delete_count", deleteCount,
 			)
 		}
-		if isWebOwnedSession(sessionID) {
-			defer removeOwnedSession("ws_closed_remove_session")
+		if acquireWebOwnedSession(sessionID) {
+			defer func() {
+				if releaseWebOwnedSession(sessionID) {
+					removeOwnedSession("ws_closed_remove_session")
+				}
+			}()
 		}
 
 		streamCtx, streamCancel := context.WithCancel(ctx)
