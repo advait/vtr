@@ -53,6 +53,7 @@ function streamStatusBadge(status: string, receiving?: boolean) {
 
 const sessionHashKey = "session";
 const sessionCoordHashKey = "coord";
+const maxPendingScreenUpdates = 2;
 const initialPreferences = loadPreferences();
 
 function readSessionHash(): SessionRef | null {
@@ -647,6 +648,9 @@ export default function App() {
     setEventHandler((event) => {
       if (event.screen_update) {
         pendingUpdates.current.push(event);
+        if (pendingUpdates.current.length > maxPendingScreenUpdates) {
+          pendingUpdates.current = pendingUpdates.current.slice(-maxPendingScreenUpdates);
+        }
         if (!rafRef.current) {
           rafRef.current = window.requestAnimationFrame(applyPending);
         }
