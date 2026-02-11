@@ -29,6 +29,20 @@ function baseState(frame = 10) {
 }
 
 describe("applyScreenUpdate", () => {
+  it("enters waiting state when delta arrives before first keyframe", () => {
+    const next = applyScreenUpdate(null, {
+      frame_id: 11,
+      base_frame_id: 10,
+      is_keyframe: false,
+      delta: { cols: 2, rows: 1, row_deltas: [] },
+    } as any);
+    expect(next).not.toBeNull();
+    expect(next?.waitingForKeyframe).toBe(true);
+    expect(next?.frameId).toBe(0);
+    expect(next?.cols).toBe(2);
+    expect(next?.rows).toBe(1);
+  });
+
   it("marks desync when delta base frame is missing", () => {
     const prev = baseState();
     const next = applyScreenUpdate(prev, {

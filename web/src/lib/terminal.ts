@@ -97,7 +97,7 @@ export function applyScreenUpdate(
 
   const delta = update.delta as ScreenDelta;
   if (!prev) {
-    return prev;
+    return waitingForKeyframeState(delta);
   }
 
   const baseFrame = toNumber(update.base_frame_id) ?? 0;
@@ -166,6 +166,26 @@ export function applyScreenUpdate(
     frameId: frame,
     waitingForKeyframe: false,
     rowsData: nextRows,
+  };
+}
+
+function waitingForKeyframeState(delta: ScreenDelta): ScreenState {
+  const cols = Math.max(0, delta.cols ?? 0);
+  const rows = Math.max(0, delta.rows ?? 0);
+  const rowsData: Cell[][] = [];
+  for (let r = 0; r < rows; r += 1) {
+    rowsData.push(Array.from({ length: cols }, emptyCell));
+  }
+  return {
+    cols,
+    rows,
+    cursorX: 0,
+    cursorY: 0,
+    cursorVisible: false,
+    cursorStyle: "block",
+    frameId: 0,
+    waitingForKeyframe: true,
+    rowsData,
   };
 }
 
