@@ -937,9 +937,12 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 	info := session.Info()
 		if info.State == SessionExited {
 			if includeRaw {
-				data, nextOffset, nextCh := session.OutputSnapshot(offset)
+				data, nextOffset, nextCh, dropped := session.OutputSnapshot(offset)
 				offset = nextOffset
 				outputCh = nextCh
+				if dropped {
+					return status.Error(codes.ResourceExhausted, "raw output gap detected")
+				}
 				if err := appendRaw(data); err != nil {
 					return err
 				}
@@ -999,9 +1002,12 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 			setLatestIdle(&proto.SessionIdle{Name: sessionLabel(), Idle: idleState, Id: sessionID})
 			case <-session.ExitCh():
 				if includeRaw {
-					data, nextOffset, nextCh := session.OutputSnapshot(offset)
+					data, nextOffset, nextCh, dropped := session.OutputSnapshot(offset)
 					offset = nextOffset
 					outputCh = nextCh
+					if dropped {
+						return status.Error(codes.ResourceExhausted, "raw output gap detected")
+					}
 					if err := appendRaw(data); err != nil {
 						return err
 					}
@@ -1031,13 +1037,16 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 			}
 			return err
 			case <-outputCh:
-				if includeRaw {
-					data, nextOffset, nextCh := session.OutputSnapshot(offset)
-					offset = nextOffset
-					outputCh = nextCh
-					if err := appendRaw(data); err != nil {
-						return err
-					}
+			if includeRaw {
+				data, nextOffset, nextCh, dropped := session.OutputSnapshot(offset)
+				offset = nextOffset
+				outputCh = nextCh
+				if dropped {
+					return status.Error(codes.ResourceExhausted, "raw output gap detected")
+				}
+				if err := appendRaw(data); err != nil {
+					return err
+				}
 				} else {
 				total, nextCh, _ := session.OutputState()
 				offset = total

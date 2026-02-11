@@ -36,11 +36,13 @@ func (s *Session) OutputState() (int64, <-chan struct{}, time.Time) {
 	return s.outputState()
 }
 
-func (s *Session) outputSnapshot(offset int64) ([]byte, int64, <-chan struct{}) {
+func (s *Session) outputSnapshot(offset int64) ([]byte, int64, <-chan struct{}, bool) {
 	s.outputMu.Lock()
 	start := s.outputTotal - int64(len(s.outputBuf))
+	dropped := false
 	if offset < start {
 		offset = start
+		dropped = true
 	}
 	idx := offset - start
 	if idx < 0 {
@@ -50,9 +52,9 @@ func (s *Session) outputSnapshot(offset int64) ([]byte, int64, <-chan struct{}) 
 	total := s.outputTotal
 	ch := s.outputCh
 	s.outputMu.Unlock()
-	return data, total, ch
+	return data, total, ch, dropped
 }
 
-func (s *Session) OutputSnapshot(offset int64) ([]byte, int64, <-chan struct{}) {
+func (s *Session) OutputSnapshot(offset int64) ([]byte, int64, <-chan struct{}, bool) {
 	return s.outputSnapshot(offset)
 }

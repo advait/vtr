@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+var ErrOutputGap = errors.New("output gap detected")
+
 // WaitFor waits until the pattern matches output emitted after the call begins.
 func (c *Coordinator) WaitFor(ctx context.Context, name string, re *regexp.Regexp, timeout time.Duration) (bool, string, bool, error) {
 	if re == nil {
@@ -45,7 +47,10 @@ func (s *Session) waitForPattern(ctx context.Context, re *regexp.Regexp, timeout
 	offset, _, _ := s.outputState()
 	pending := ""
 	for {
-		data, newOffset, ch := s.outputSnapshot(offset)
+		data, newOffset, ch, dropped := s.outputSnapshot(offset)
+		if dropped {
+			return false, "", false, ErrOutputGap
+		}
 		if len(data) > 0 {
 			offset = newOffset
 			pending += string(data)
