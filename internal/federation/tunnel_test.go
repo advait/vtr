@@ -114,7 +114,7 @@ func TestTunnelDispatchDropFailsStreamingCall(t *testing.T) {
 	}
 }
 
-func TestTunnelDispatchSingleDropDoesNotFailStreamingCall(t *testing.T) {
+func TestTunnelDispatchSingleDropFailsStreamingCall(t *testing.T) {
 	stream := &fakeTunnelServerStream{ctx: context.Background()}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	endpoint := newTunnelEndpoint("spoke-a", stream, logger)
@@ -141,17 +141,17 @@ func TestTunnelDispatchSingleDropDoesNotFailStreamingCall(t *testing.T) {
 		},
 	})
 
-	if terminal := call.terminalErr(); terminal != nil {
-		t.Fatalf("expected stream to remain active after one drop, got %v", terminal)
+	if st := status.Code(call.terminalErr()); st != codes.Unavailable {
+		t.Fatalf("expected unavailable terminal error after drop, got %v (%v)", st, call.terminalErr())
 	}
-	if hasCancelFrame(stream.sentFrames(), call.id, tunnelBacklogDropReason) {
-		t.Fatalf("did not expect cancel frame for single backlog drop")
+	if !hasCancelFrame(stream.sentFrames(), call.id, tunnelBacklogDropReason) {
+		t.Fatalf("expected cancel frame for single backlog drop")
 	}
 	endpoint.mu.Lock()
 	_, stillPresent := endpoint.calls[call.id]
 	endpoint.mu.Unlock()
-	if !stillPresent {
-		t.Fatalf("expected call to remain registered after a single drop")
+	if stillPresent {
+		t.Fatalf("expected call to be removed after a single drop")
 	}
 }
 

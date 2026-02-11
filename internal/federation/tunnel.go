@@ -46,7 +46,7 @@ const (
 
 const tunnelSlowCallThreshold = time.Second
 const tunnelBacklogDropReason = "tunnel_backlog_drop"
-const tunnelBacklogDropCancelThreshold = 4
+const tunnelBacklogDropCancelThreshold = 1
 const tunnelBacklogDropWindow = 250 * time.Millisecond
 
 var tunnelBacklogDropCount atomic.Int64
@@ -333,6 +333,29 @@ func (e *tunnelEndpoint) dispatch(frame *proto.TunnelFrame) {
 			return
 		}
 	case tunnelSendFailed:
+		if call.stream {
+			dropCount := tunnelBacklogDropCount.Add(1)
+			streamDrops, shouldCancel := call.noteBacklogDrop(time.Now())
+			if e.logger != nil {
+				e.logger.Warn(
+					"tunnel stream enqueue failed",
+					"spoke", e.name,
+					"call_id", callID,
+					"kind", tunnelFrameKind(frame),
+					"reason", tunnelBacklogDropReason,
+					"drop_count", dropCount,
+					"stream_drop_count", streamDrops,
+				)
+			}
+			if shouldCancel {
+				_ = e.sendCancel(callID, tunnelBacklogDropReason)
+				call.fail(status.Error(codes.Unavailable, tunnelBacklogDropReason))
+				e.mu.Lock()
+				delete(e.calls, callID)
+				e.mu.Unlock()
+				return
+			}
+		}
 		if terminal {
 			e.endCall(callID)
 		}
