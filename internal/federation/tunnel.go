@@ -46,6 +46,8 @@ const (
 
 const tunnelSlowCallThreshold = time.Second
 const tunnelBacklogDropReason = "tunnel_backlog_drop"
+const tunnelBacklogDropCancelThreshold = 4
+const tunnelBacklogDropWindow = 250 * time.Millisecond
 
 var tunnelBacklogDropCount atomic.Int64
 
@@ -131,6 +133,9 @@ type tunnelCall struct {
 	mu     sync.Mutex
 	closed bool
 	err    error
+
+	backlogDrops      int
+	lastBacklogDropAt time.Time
 }
 
 type tunnelSendResult int
@@ -157,6 +162,8 @@ func (c *tunnelCall) send(frame *proto.TunnelFrame) tunnelSendResult {
 	}
 	select {
 	case c.ch <- frame:
+		c.backlogDrops = 0
+		c.lastBacklogDropAt = time.Time{}
 		return tunnelSendOk
 	default:
 	}
@@ -171,6 +178,20 @@ func (c *tunnelCall) send(frame *proto.TunnelFrame) tunnelSendResult {
 	default:
 		return tunnelSendFailed
 	}
+}
+
+func (c *tunnelCall) noteBacklogDrop(now time.Time) (int, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return c.backlogDrops, true
+	}
+	if c.lastBacklogDropAt.IsZero() || now.Sub(c.lastBacklogDropAt) > tunnelBacklogDropWindow {
+		c.backlogDrops = 0
+	}
+	c.backlogDrops++
+	c.lastBacklogDropAt = now
+	return c.backlogDrops, c.stream && c.backlogDrops >= tunnelBacklogDropCancelThreshold
 }
 
 func (c *tunnelCall) close() {
@@ -290,6 +311,7 @@ func (e *tunnelEndpoint) dispatch(frame *proto.TunnelFrame) {
 	switch call.send(frame) {
 	case tunnelSendDroppedOldest:
 		dropCount := tunnelBacklogDropCount.Add(1)
+		streamDrops, shouldCancel := call.noteBacklogDrop(time.Now())
 		if e.logger != nil {
 			e.logger.Warn(
 				"tunnel call backlog drop",
@@ -299,9 +321,10 @@ func (e *tunnelEndpoint) dispatch(frame *proto.TunnelFrame) {
 				"stream", call.stream,
 				"reason", tunnelBacklogDropReason,
 				"drop_count", dropCount,
+				"stream_drop_count", streamDrops,
 			)
 		}
-		if call.stream {
+		if shouldCancel {
 			_ = e.sendCancel(callID, tunnelBacklogDropReason)
 			call.fail(status.Error(codes.Unavailable, tunnelBacklogDropReason))
 			e.mu.Lock()

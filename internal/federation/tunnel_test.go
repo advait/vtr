@@ -88,12 +88,14 @@ func TestTunnelDispatchDropFailsStreamingCall(t *testing.T) {
 	}
 
 	prevDropCount := tunnelBacklogDropCount.Load()
-	endpoint.dispatch(&proto.TunnelFrame{
-		CallId: call.id,
-		Kind: &proto.TunnelFrame_Event{
-			Event: &proto.TunnelStreamEvent{Payload: []byte("overflow")},
-		},
-	})
+	for i := 0; i < tunnelBacklogDropCancelThreshold; i++ {
+		endpoint.dispatch(&proto.TunnelFrame{
+			CallId: call.id,
+			Kind: &proto.TunnelFrame_Event{
+				Event: &proto.TunnelStreamEvent{Payload: []byte("overflow")},
+			},
+		})
+	}
 	if tunnelBacklogDropCount.Load() <= prevDropCount {
 		t.Fatalf("expected backlog drop counter increment")
 	}
@@ -109,6 +111,47 @@ func TestTunnelDispatchDropFailsStreamingCall(t *testing.T) {
 	endpoint.mu.Unlock()
 	if stillPresent {
 		t.Fatalf("expected dropped stream call to be removed from endpoint call map")
+	}
+}
+
+func TestTunnelDispatchSingleDropDoesNotFailStreamingCall(t *testing.T) {
+	stream := &fakeTunnelServerStream{ctx: context.Background()}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	endpoint := newTunnelEndpoint("spoke-a", stream, logger)
+
+	call, err := endpoint.startCall(true)
+	if err != nil {
+		t.Fatalf("startCall: %v", err)
+	}
+	for i := 0; i < cap(call.ch); i++ {
+		if result := call.send(&proto.TunnelFrame{
+			CallId: call.id,
+			Kind: &proto.TunnelFrame_Event{
+				Event: &proto.TunnelStreamEvent{Payload: []byte("seed")},
+			},
+		}); result != tunnelSendOk {
+			t.Fatalf("expected tunnelSendOk while priming queue, got %v", result)
+		}
+	}
+
+	endpoint.dispatch(&proto.TunnelFrame{
+		CallId: call.id,
+		Kind: &proto.TunnelFrame_Event{
+			Event: &proto.TunnelStreamEvent{Payload: []byte("overflow")},
+		},
+	})
+
+	if terminal := call.terminalErr(); terminal != nil {
+		t.Fatalf("expected stream to remain active after one drop, got %v", terminal)
+	}
+	if hasCancelFrame(stream.sentFrames(), call.id, tunnelBacklogDropReason) {
+		t.Fatalf("did not expect cancel frame for single backlog drop")
+	}
+	endpoint.mu.Lock()
+	_, stillPresent := endpoint.calls[call.id]
+	endpoint.mu.Unlock()
+	if !stillPresent {
+		t.Fatalf("expected call to remain registered after a single drop")
 	}
 }
 
