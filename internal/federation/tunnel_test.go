@@ -49,6 +49,39 @@ func (f *fakeTunnelServerStream) sentFrames() []*proto.TunnelFrame {
 	return frames
 }
 
+type fakeTunnelClientStream struct {
+	ctx context.Context
+
+	mu   sync.Mutex
+	sent []*proto.TunnelFrame
+}
+
+func (f *fakeTunnelClientStream) Send(frame *proto.TunnelFrame) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sent = append(f.sent, frame)
+	return nil
+}
+
+func (f *fakeTunnelClientStream) Recv() (*proto.TunnelFrame, error) {
+	return nil, io.EOF
+}
+
+func (f *fakeTunnelClientStream) Header() (metadata.MD, error) { return nil, nil }
+func (f *fakeTunnelClientStream) Trailer() metadata.MD         { return nil }
+func (f *fakeTunnelClientStream) CloseSend() error             { return nil }
+func (f *fakeTunnelClientStream) Context() context.Context     { return f.ctx }
+func (f *fakeTunnelClientStream) SendMsg(interface{}) error    { return nil }
+func (f *fakeTunnelClientStream) RecvMsg(interface{}) error    { return nil }
+
+func (f *fakeTunnelClientStream) sentFrames() []*proto.TunnelFrame {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	frames := make([]*proto.TunnelFrame, len(f.sent))
+	copy(frames, f.sent)
+	return frames
+}
+
 func hasCancelFrame(frames []*proto.TunnelFrame, callID, reasonContains string) bool {
 	for _, frame := range frames {
 		if frame == nil || frame.GetCallId() != callID {
@@ -278,5 +311,40 @@ func TestTunnelCallStreamOnEventErrorSendsCancelAndEndsCall(t *testing.T) {
 	endpoint.mu.Unlock()
 	if stillPresent {
 		t.Fatalf("expected call %q to be removed after callback error", call.id)
+	}
+}
+
+func TestTunnelSpokeFinishStreamPropagatesContextCancellation(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		code codes.Code
+	}{
+		{name: "canceled", err: context.Canceled, code: codes.Canceled},
+		{name: "deadline", err: context.DeadlineExceeded, code: codes.DeadlineExceeded},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			stream := &fakeTunnelClientStream{ctx: context.Background()}
+			spoke := &tunnelSpoke{
+				stream: stream,
+				logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+				calls:  make(map[string]context.CancelFunc),
+			}
+
+			spoke.finishStream("call-1", tc.err)
+			frames := stream.sentFrames()
+			if len(frames) != 1 {
+				t.Fatalf("expected exactly one frame, got %d", len(frames))
+			}
+			errFrame := frames[0].GetError()
+			if errFrame == nil {
+				t.Fatalf("expected error frame, got %+v", frames[0])
+			}
+			if got := codes.Code(errFrame.GetCode()); got != tc.code {
+				t.Fatalf("expected code %v, got %v", tc.code, got)
+			}
+		})
 	}
 }

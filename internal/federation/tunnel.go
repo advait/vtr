@@ -1006,8 +1006,15 @@ func (t *tunnelSpoke) handleStream(ctx context.Context, callID string, req *prot
 }
 
 func (t *tunnelSpoke) finishStream(callID string, err error) {
-	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-		t.sendError(callID, err)
+	if err != nil {
+		switch {
+		case errors.Is(err, context.Canceled):
+			t.sendError(callID, status.Error(codes.Canceled, err.Error()))
+		case errors.Is(err, context.DeadlineExceeded):
+			t.sendError(callID, status.Error(codes.DeadlineExceeded, err.Error()))
+		default:
+			t.sendError(callID, err)
+		}
 		return
 	}
 	_ = t.send(&proto.TunnelFrame{
