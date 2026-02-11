@@ -295,8 +295,8 @@ func handleWebsocket(d deps) http.HandlerFunc {
 		}()
 
 		err = <-errCh
-		cancel()
 		if err == nil || errors.Is(err, context.Canceled) || isNormalWSClose(err) {
+			cancel()
 			return
 		}
 		reason := wsCloseReason(err)
@@ -308,7 +308,8 @@ func handleWebsocket(d deps) http.HandlerFunc {
 			"err", err,
 			"forced_close_count", forcedCloseCount,
 		)
-		_ = sendWSError(ctx, sender, err)
+		_ = sendWSErrorDetached(sender, err, d.opts.RPCTimeout)
+		cancel()
 		_ = conn.Close(websocket.StatusPolicyViolation, reason)
 	}
 }
@@ -358,11 +359,12 @@ func handleWebSessionsStream(d deps) http.HandlerFunc {
 		}
 
 		err = streamSessionsToWeb(ctx, sender, stream)
-		cancel()
 		if err == nil || errors.Is(err, context.Canceled) || isNormalWSClose(err) {
+			cancel()
 			return
 		}
-		_ = sendWSError(ctx, sender, err)
+		_ = sendWSErrorDetached(sender, err, d.opts.RPCTimeout)
+		cancel()
 	}
 }
 
@@ -960,6 +962,20 @@ func sendWSError(ctx context.Context, sender *wsSender, err error) error {
 		return nil
 	}
 	return sender.sendProto(ctx, status)
+}
+
+const defaultWSErrorWriteTimeout = 2 * time.Second
+
+func sendWSErrorDetached(sender *wsSender, err error, timeout time.Duration) error {
+	if sender == nil {
+		return nil
+	}
+	if timeout <= 0 {
+		timeout = defaultWSErrorWriteTimeout
+	}
+	writeCtx, writeCancel := context.WithTimeout(context.Background(), timeout)
+	defer writeCancel()
+	return sendWSError(writeCtx, sender, err)
 }
 
 func wsErrorStatus(err error) *statuspb.Status {
