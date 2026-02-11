@@ -24,6 +24,22 @@ type StreamState = {
 
 const receivingStaleMs = 2000;
 
+export function isTerminalStatusCode(code?: number | null) {
+  switch (code) {
+    case 3: // InvalidArgument
+    case 5: // NotFound
+    case 6: // AlreadyExists
+    case 7: // PermissionDenied
+    case 9: // FailedPrecondition
+    case 11: // OutOfRange
+    case 12: // Unimplemented
+    case 16: // Unauthenticated
+      return true;
+    default:
+      return false;
+  }
+}
+
 function defaultWsUrl() {
   const { protocol, host } = window.location;
   const wsProto = protocol === "https:" ? "wss:" : "ws:";
@@ -79,6 +95,7 @@ export function useVtrStream(sessionRef: SessionRef | null, options: StreamOptio
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectRef = useRef<{ attempts: number; timer?: number }>({ attempts: 0 });
   const closedByUser = useRef(false);
+  const terminalStatusRef = useRef(false);
   const lastScreenEventAtRef = useRef(0);
   const receivingTimerRef = useRef<number | null>(null);
   const sessionId = sessionRef?.id?.trim() ?? "";
@@ -194,6 +211,7 @@ export function useVtrStream(sessionRef: SessionRef | null, options: StreamOptio
 
     let cancelled = false;
     closedByUser.current = false;
+    terminalStatusRef.current = false;
     pendingEventsRef.current = [];
     lastScreenEventAtRef.current = 0;
 
@@ -211,6 +229,7 @@ export function useVtrStream(sessionRef: SessionRef | null, options: StreamOptio
 
       ws.addEventListener("open", () => {
         reconnectRef.current.attempts = 0;
+        terminalStatusRef.current = false;
         if (cancelled) {
           return;
         }
@@ -231,6 +250,7 @@ export function useVtrStream(sessionRef: SessionRef | null, options: StreamOptio
           const decoded = decodeAny(new Uint8Array(buffer));
           if (decoded.typeName === "google.rpc.Status") {
             const status = decoded.message as { code?: number; message?: string };
+            terminalStatusRef.current = isTerminalStatusCode(status.code);
             setState({
               status: "error",
               error: status.message || "stream error",
@@ -273,6 +293,9 @@ export function useVtrStream(sessionRef: SessionRef | null, options: StreamOptio
       ws.addEventListener("close", () => {
         if (cancelled || closedByUser.current) {
           setState({ status: "closed", receiving: false });
+          return;
+        }
+        if (terminalStatusRef.current) {
           return;
         }
         const attempts = reconnectRef.current.attempts + 1;
@@ -346,6 +369,7 @@ export function useVtrSessionsStream(options: { excludeExited?: boolean } = {}) 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectRef = useRef<{ attempts: number; timer?: number }>({ attempts: 0 });
   const closedByUser = useRef(false);
+  const terminalStatusRef = useRef(false);
 
   const close = useCallback(() => {
     closedByUser.current = true;
@@ -357,6 +381,7 @@ export function useVtrSessionsStream(options: { excludeExited?: boolean } = {}) 
   useEffect(() => {
     let cancelled = false;
     closedByUser.current = false;
+    terminalStatusRef.current = false;
 
     const connect = () => {
       if (cancelled) {
@@ -371,6 +396,7 @@ export function useVtrSessionsStream(options: { excludeExited?: boolean } = {}) 
 
       ws.addEventListener("open", () => {
         reconnectRef.current.attempts = 0;
+        terminalStatusRef.current = false;
         if (cancelled) {
           return;
         }
@@ -389,6 +415,7 @@ export function useVtrSessionsStream(options: { excludeExited?: boolean } = {}) 
           const decoded = decodeAny(new Uint8Array(buffer));
           if (decoded.typeName === "google.rpc.Status") {
             const status = decoded.message as { code?: number; message?: string };
+            terminalStatusRef.current = isTerminalStatusCode(status.code);
             setState({ status: "error", error: status.message || "stream error" });
             ws.close();
             return;
@@ -415,6 +442,9 @@ export function useVtrSessionsStream(options: { excludeExited?: boolean } = {}) 
       ws.addEventListener("close", () => {
         if (cancelled || closedByUser.current) {
           setState({ status: "closed" });
+          return;
+        }
+        if (terminalStatusRef.current) {
           return;
         }
         const attempts = reconnectRef.current.attempts + 1;
