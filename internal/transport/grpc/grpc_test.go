@@ -1,6 +1,7 @@
 package transportgrpc
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -167,6 +168,59 @@ func (s *blockingSubscribeStream) SetTrailer(metadata.MD)       {}
 func (s *blockingSubscribeStream) Context() context.Context     { return s.ctx }
 func (s *blockingSubscribeStream) SendMsg(interface{}) error    { return nil }
 func (s *blockingSubscribeStream) RecvMsg(interface{}) error    { return nil }
+
+type blockingRawSubscribeStream struct {
+	ctx       context.Context
+	blockCh   chan struct{}
+	unblockCh chan struct{}
+	events    chan *proto.SubscribeEvent
+
+	mu      sync.Mutex
+	blocked bool
+}
+
+func newBlockingRawSubscribeStream(ctx context.Context) *blockingRawSubscribeStream {
+	return &blockingRawSubscribeStream{
+		ctx:       ctx,
+		blockCh:   make(chan struct{}),
+		unblockCh: make(chan struct{}),
+		events:    make(chan *proto.SubscribeEvent, 32),
+	}
+}
+
+func (s *blockingRawSubscribeStream) Send(ev *proto.SubscribeEvent) error {
+	if ev == nil {
+		return nil
+	}
+	if len(ev.GetRawOutput()) > 0 {
+		s.mu.Lock()
+		shouldBlock := !s.blocked
+		if shouldBlock {
+			s.blocked = true
+		}
+		s.mu.Unlock()
+		if shouldBlock {
+			close(s.blockCh)
+			select {
+			case <-s.unblockCh:
+			case <-s.ctx.Done():
+				return s.ctx.Err()
+			}
+		}
+	}
+	select {
+	case s.events <- ev:
+	default:
+	}
+	return nil
+}
+
+func (s *blockingRawSubscribeStream) SetHeader(metadata.MD) error  { return nil }
+func (s *blockingRawSubscribeStream) SendHeader(metadata.MD) error { return nil }
+func (s *blockingRawSubscribeStream) SetTrailer(metadata.MD)       {}
+func (s *blockingRawSubscribeStream) Context() context.Context     { return s.ctx }
+func (s *blockingRawSubscribeStream) SendMsg(interface{}) error    { return nil }
+func (s *blockingRawSubscribeStream) RecvMsg(interface{}) error    { return nil }
 
 func waitForScreenUpdateEvent(t *testing.T, events <-chan *proto.SubscribeEvent, timeout time.Duration) *proto.ScreenUpdate {
 	t.Helper()
@@ -1321,6 +1375,64 @@ func TestGRPCSubscribeRawOutput(t *testing.T) {
 	if !sawRaw {
 		t.Fatalf("expected raw output event containing %q", "raw-output")
 	}
+}
+
+func TestGRPCSubscribeRawOverflowSignalsClient(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty tests not supported on windows")
+	}
+
+	coord := newTestCoordinator()
+	defer coord.CloseAll()
+
+	info, err := coord.Spawn("grpc-subscribe-raw-overflow", SpawnOptions{
+		Command: []string{"cat"},
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	sessionID := info.ID
+
+	server := NewGRPCServer(coord)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream := newBlockingRawSubscribeStream(ctx)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- server.Subscribe(&proto.SubscribeRequest{
+			Session:              &proto.SessionRef{Id: sessionID},
+			IncludeScreenUpdates: false,
+			IncludeRawOutput:     true,
+		}, stream)
+	}()
+
+	if err := coord.Send(sessionID, []byte("warmup\n")); err != nil {
+		t.Fatalf("Send warmup: %v", err)
+	}
+	select {
+	case <-stream.blockCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for blocked raw send")
+	}
+
+	chunk := bytes.Repeat([]byte("x"), 64*1024)
+	for i := 0; i < 20; i++ {
+		if err := coord.Send(sessionID, chunk); err != nil {
+			t.Fatalf("Send chunk %d: %v", i, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	select {
+	case err := <-errCh:
+		if status.Code(err) != codes.ResourceExhausted {
+			t.Fatalf("expected ResourceExhausted on raw overflow, got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for raw overflow error")
+	}
+	close(stream.unblockCh)
 }
 
 func TestGRPCSubscribeExitEvent(t *testing.T) {

@@ -847,21 +847,22 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 
 	var rawMu sync.Mutex
 	var pendingRaw []byte
-	appendRaw := func(data []byte) {
+	appendRaw := func(data []byte) error {
 		if len(data) == 0 {
-			return
+			return nil
 		}
 		rawMu.Lock()
-		pendingRaw = append(pendingRaw, data...)
-		if len(pendingRaw) > core.MaxOutputBuffer {
-			drop := len(pendingRaw) - core.MaxOutputBuffer
-			pendingRaw = pendingRaw[drop:]
+		if len(pendingRaw)+len(data) > core.MaxOutputBuffer {
+			rawMu.Unlock()
+			return status.Errorf(codes.ResourceExhausted, "raw output overflow exceeds %d bytes", core.MaxOutputBuffer)
 		}
+		pendingRaw = append(pendingRaw, data...)
 		rawMu.Unlock()
 		select {
 		case rawSignal <- struct{}{}:
 		default:
 		}
+		return nil
 	}
 	drainRaw := func() []byte {
 		rawMu.Lock()
@@ -935,13 +936,15 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 	_, idleCh := session.IdleState()
 
 	info := session.Info()
-	if info.State == SessionExited {
-		if includeRaw {
-			data, nextOffset, nextCh := session.OutputSnapshot(offset)
-			offset = nextOffset
-			outputCh = nextCh
-			appendRaw(data)
-		}
+		if info.State == SessionExited {
+			if includeRaw {
+				data, nextOffset, nextCh := session.OutputSnapshot(offset)
+				offset = nextOffset
+				outputCh = nextCh
+				if err := appendRaw(data); err != nil {
+					return err
+				}
+			}
 		var finalScreen *subscribeScreenSnapshot
 		if includeScreen {
 			snapshot, err := makeScreenSnapshot(true, "session_already_exited")
@@ -995,13 +998,15 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 			idleState, nextCh := session.IdleState()
 			idleCh = nextCh
 			setLatestIdle(&proto.SessionIdle{Name: sessionLabel(), Idle: idleState, Id: sessionID})
-		case <-session.ExitCh():
-			if includeRaw {
-				data, nextOffset, nextCh := session.OutputSnapshot(offset)
-				offset = nextOffset
-				outputCh = nextCh
-				appendRaw(data)
-			} else {
+			case <-session.ExitCh():
+				if includeRaw {
+					data, nextOffset, nextCh := session.OutputSnapshot(offset)
+					offset = nextOffset
+					outputCh = nextCh
+					if err := appendRaw(data); err != nil {
+						return err
+					}
+				} else {
 				total, nextCh, _ := session.OutputState()
 				offset = total
 				outputCh = nextCh
@@ -1026,13 +1031,15 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 				return nil
 			}
 			return err
-		case <-outputCh:
-			if includeRaw {
-				data, nextOffset, nextCh := session.OutputSnapshot(offset)
-				offset = nextOffset
-				outputCh = nextCh
-				appendRaw(data)
-			} else {
+			case <-outputCh:
+				if includeRaw {
+					data, nextOffset, nextCh := session.OutputSnapshot(offset)
+					offset = nextOffset
+					outputCh = nextCh
+					if err := appendRaw(data); err != nil {
+						return err
+					}
+				} else {
 				total, nextCh, _ := session.OutputState()
 				offset = total
 				outputCh = nextCh
