@@ -1183,6 +1183,59 @@ func TestGRPCSubscribeSkipsCachedKeyframeWhenOutputTotalChanged(t *testing.T) {
 	}
 }
 
+func TestGRPCCachedKeyframeReturnsIndependentClones(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty tests not supported on windows")
+	}
+
+	coord := newTestCoordinator()
+	defer coord.CloseAll()
+
+	info, err := coord.Spawn("grpc-subscribe-cache-clone", SpawnOptions{
+		Command: []string{"cat"},
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	sessionID := info.ID
+
+	server := NewGRPCServer(coord)
+	session, err := coord.GetSession(sessionID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	snap, err := session.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	original := keyframeUpdateFromSnapshot(session, sessionID, session.Label(), snap)
+	if original == nil || !original.GetIsKeyframe() {
+		t.Fatalf("expected keyframe update, got %+v", original)
+	}
+	total, _, _ := session.OutputState()
+	server.cacheKeyframe(sessionID, original, total)
+
+	cachedA := server.cachedKeyframe(session, sessionID)
+	cachedB := server.cachedKeyframe(session, sessionID)
+	if cachedA == nil || cachedB == nil {
+		t.Fatalf("expected cached keyframe clones")
+	}
+	if cachedA == original || cachedB == original {
+		t.Fatalf("expected cached keyframes to be clones, not original pointers")
+	}
+	if cachedA == cachedB {
+		t.Fatalf("expected each cached lookup to return a fresh clone")
+	}
+	cachedA.Screen.Name = "mutated"
+	cachedC := server.cachedKeyframe(session, sessionID)
+	if cachedC == nil {
+		t.Fatalf("expected cached keyframe after mutation")
+	}
+	if cachedC.GetScreen().GetName() == "mutated" {
+		t.Fatalf("expected cached entry to be immutable across clone mutations")
+	}
+}
+
 func TestGRPCSubscribeLatestOnlyBackpressure(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("pty tests not supported on windows")

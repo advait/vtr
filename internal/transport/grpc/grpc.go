@@ -26,6 +26,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
+	goproto "google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -1435,6 +1436,10 @@ func (s *GRPCServer) cacheKeyframe(id string, update *proto.ScreenUpdate, output
 	if update == nil || !update.IsKeyframe {
 		return
 	}
+	cached := cloneScreenUpdate(update)
+	if cached == nil {
+		return
+	}
 	s.keyframeMu.Lock()
 	ring := s.keyframeRing[id]
 	if ring == nil {
@@ -1442,7 +1447,7 @@ func (s *GRPCServer) cacheKeyframe(id string, update *proto.ScreenUpdate, output
 		s.keyframeRing[id] = ring
 	}
 	ring.Add(keyframeEntry{
-		update:      update,
+		update:      cached,
 		outputTotal: outputTotal,
 		at:          time.Now(),
 	})
@@ -1473,7 +1478,7 @@ func (s *GRPCServer) cachedKeyframe(session *Session, id string) *proto.ScreenUp
 	if entry.outputTotal != total {
 		return nil
 	}
-	return entry.update
+	return cloneScreenUpdate(entry.update)
 }
 
 func (s *GRPCServer) clearKeyframes(id string) {
@@ -1611,6 +1616,17 @@ func keyframeUpdateFromSnapshot(session *Session, id, label string, snap *Snapsh
 		IsKeyframe:  true,
 		Screen:      screenResponseFromSnapshot(id, label, snap),
 	}
+}
+
+func cloneScreenUpdate(update *proto.ScreenUpdate) *proto.ScreenUpdate {
+	if update == nil {
+		return nil
+	}
+	cloned, ok := goproto.Clone(update).(*proto.ScreenUpdate)
+	if !ok {
+		return nil
+	}
+	return cloned
 }
 
 func durationFromProto(dur *durationpb.Duration) (time.Duration, error) {
