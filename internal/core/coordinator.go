@@ -334,7 +334,7 @@ func (c *Coordinator) Snapshot(id string) (*Snapshot, error) {
 	if err != nil {
 		return nil, err
 	}
-	return session.vt.Snapshot()
+	return session.Snapshot()
 }
 
 // Dump returns a text dump of the requested scope.
@@ -552,9 +552,11 @@ type Session struct {
 	state    SessionState
 	exitCode int
 	exitedAt time.Time
+	finalSnapshot *Snapshot
 
 	exitCh   chan struct{}
 	exitOnce sync.Once
+	closeOnce sync.Once
 	ioDone   <-chan struct{}
 
 	outputMu    sync.Mutex
@@ -623,6 +625,7 @@ func (s *Session) markExited(code int) {
 			s.onListChange()
 		}
 		close(s.exitCh)
+		go s.closeAndCaptureSnapshot(500 * time.Millisecond)
 	})
 }
 
@@ -748,21 +751,72 @@ func (s *Session) ExitCh() <-chan struct{} {
 }
 
 func (s *Session) Snapshot() (*Snapshot, error) {
-	if s == nil || s.vt == nil {
+	if s == nil {
 		return nil, errors.New("session: terminal not available")
 	}
-	return s.vt.Snapshot()
+	if s.vt != nil {
+		if snap, err := s.vt.Snapshot(); err == nil {
+			return snap, nil
+		}
+	}
+	s.mu.Lock()
+	final := cloneSnapshot(s.finalSnapshot)
+	s.mu.Unlock()
+	if final != nil {
+		return final, nil
+	}
+	return nil, errors.New("session: terminal not available")
 }
 
 func (s *Session) Close(ioTimeout time.Duration) {
-	_ = s.pty.Close()
-	if s.ioDone != nil {
-		select {
-		case <-s.ioDone:
-		case <-time.After(ioTimeout):
-		}
+	s.closeAndCaptureSnapshot(ioTimeout)
+}
+
+func (s *Session) closeAndCaptureSnapshot(ioTimeout time.Duration) *Snapshot {
+	if s == nil {
+		return nil
 	}
-	_ = s.vt.Close()
+	var captured *Snapshot
+	s.closeOnce.Do(func() {
+		if s.pty != nil {
+			_ = s.pty.Close()
+		}
+		if s.ioDone != nil {
+			select {
+			case <-s.ioDone:
+			case <-time.After(ioTimeout):
+			}
+		}
+		if s.vt != nil {
+			if snap, err := s.vt.Snapshot(); err == nil {
+				captured = cloneSnapshot(snap)
+			}
+			_ = s.vt.Close()
+		}
+		if captured != nil {
+			s.mu.Lock()
+			s.finalSnapshot = cloneSnapshot(captured)
+			s.mu.Unlock()
+		}
+	})
+	if captured != nil {
+		return cloneSnapshot(captured)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneSnapshot(s.finalSnapshot)
+}
+
+func cloneSnapshot(snap *Snapshot) *Snapshot {
+	if snap == nil {
+		return nil
+	}
+	cloned := *snap
+	if len(snap.Cells) > 0 {
+		cloned.Cells = make([]Cell, len(snap.Cells))
+		copy(cloned.Cells, snap.Cells)
+	}
+	return &cloned
 }
 
 func exitCodeFromErr(err error, state *os.ProcessState) int {

@@ -214,6 +214,49 @@ func TestScreenCapture(t *testing.T) {
 	}
 }
 
+func TestSnapshotPreservedAfterExitAndVTClosed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty tests not supported on windows")
+	}
+
+	coord := newTestCoordinator()
+	defer coord.CloseAll()
+
+	info, err := coord.Spawn("snapshot-after-exit", SpawnOptions{
+		Command: []string{"/bin/sh", "-c", "printf 'done'; exit 0"},
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	sessionID := info.ID
+
+	waitForState(t, coord, sessionID, SessionExited, 2*time.Second)
+	session, err := coord.GetSession(sessionID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		_, snapErr := session.vt.Snapshot()
+		if snapErr != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for VT close after exit")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	snap, err := coord.Snapshot(sessionID)
+	if err != nil {
+		t.Fatalf("Snapshot after exit: %v", err)
+	}
+	if snap == nil || snap.Cols <= 0 || snap.Rows <= 0 {
+		t.Fatalf("expected preserved snapshot after exit, got %+v", snap)
+	}
+}
+
 func TestMergeEnvOverrides(t *testing.T) {
 	base := []string{"PATH=/bin", "FOO=bar"}
 	extra := []string{"FOO=baz", "NEW=1"}
