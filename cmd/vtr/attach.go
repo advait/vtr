@@ -2477,6 +2477,14 @@ func applyScreenUpdate(m attachModel, update *proto.ScreenUpdate) (attachModel, 
 		if screenID != "" {
 			if m.sessionID != "" && screenID != m.sessionID {
 				m.sessionID = screenID
+				if coord, ok := sessionCoordinatorForID(m.sessionItems, screenID); ok {
+					m.sessionCoord = coord
+					if resolved, found := coordinatorByName(m.coords, coord); found {
+						m.coordinator = resolved
+					} else {
+						m.coordinator.Name = coord
+					}
+				}
 				m.frameID = 0
 				return resubscribe(m, "session id changed")
 			}
@@ -2525,6 +2533,23 @@ func applySessionLabelUpdate(m attachModel, id, label string) attachModel {
 	m.sessionItems = updateSessionLabel(m.sessionItems, id, label, m.coordinator.Name)
 	m.sessionItems = ensureSessionItem(m.sessionItems, id, label, m.exited, m.exitCode, m.coordinator.Name)
 	return m
+}
+
+func sessionCoordinatorForID(items []sessionListItem, id string) (string, bool) {
+	if id == "" {
+		return "", false
+	}
+	for _, item := range items {
+		if item.id != id {
+			continue
+		}
+		coord := strings.TrimSpace(item.coord)
+		if coord != "" {
+			return coord, true
+		}
+		break
+	}
+	return "", false
 }
 
 func updateSessionLabel(items []sessionListItem, id, label string, fallbackCoord string) []sessionListItem {

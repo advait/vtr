@@ -449,6 +449,44 @@ func TestApplyScreenUpdateSessionIDChangeAdoptsNewID(t *testing.T) {
 	}
 }
 
+func TestApplyScreenUpdateSessionIDChangeUpdatesCoordinatorRoute(t *testing.T) {
+	model := attachModel{
+		sessionID:    "session-old",
+		sessionCoord: "hub-a",
+		coordinator:  coordinatorRef{Name: "hub-a"},
+		coords: []coordinatorRef{
+			{Name: "hub-a"},
+			{Name: "hub-b"},
+		},
+		sessionItems: []sessionListItem{
+			{id: "session-new", coord: "hub-b", label: "hub-b:renamed"},
+		},
+		streamID: 3,
+		frameID:  7,
+	}
+	update := &proto.ScreenUpdate{
+		IsKeyframe: true,
+		FrameId:    8,
+		Screen: &proto.GetScreenResponse{
+			Id:   "session-new",
+			Name: "renamed",
+			Cols: 2,
+			Rows: 1,
+		},
+	}
+
+	next, cmd := applyScreenUpdate(model, update)
+	if cmd == nil {
+		t.Fatalf("expected resubscribe command for session id change")
+	}
+	if next.sessionCoord != "hub-b" {
+		t.Fatalf("expected session coordinator hub-b, got %q", next.sessionCoord)
+	}
+	if next.coordinator.Name != "hub-b" {
+		t.Fatalf("expected active coordinator hub-b, got %q", next.coordinator.Name)
+	}
+}
+
 func TestApplyScreenUpdateKeyframeWithoutScreenResubscribes(t *testing.T) {
 	model := attachModel{
 		sessionID: "session-1",
