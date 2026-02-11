@@ -168,6 +168,24 @@ func (s *blockingSubscribeStream) Context() context.Context     { return s.ctx }
 func (s *blockingSubscribeStream) SendMsg(interface{}) error    { return nil }
 func (s *blockingSubscribeStream) RecvMsg(interface{}) error    { return nil }
 
+func waitForScreenUpdateEvent(t *testing.T, events <-chan *proto.SubscribeEvent, timeout time.Duration) *proto.ScreenUpdate {
+	t.Helper()
+	deadline := time.After(timeout)
+	for {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for screen update")
+		case event := <-events:
+			if event == nil {
+				continue
+			}
+			if update := event.GetScreenUpdate(); update != nil {
+				return update
+			}
+		}
+	}
+}
+
 func waitForSessionStatus(t *testing.T, client proto.VTRClient, id string, want proto.SessionStatus, timeout time.Duration) *proto.Session {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -968,6 +986,147 @@ func TestGRPCSubscribeNoPeriodicKeyframe(t *testing.T) {
 		}
 	}
 	cancel()
+}
+
+func TestGRPCSubscribeUsesCachedKeyframeWhenAvailable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty tests not supported on windows")
+	}
+
+	coord := newTestCoordinator()
+	defer coord.CloseAll()
+
+	info, err := coord.Spawn("grpc-subscribe-cached-keyframe", SpawnOptions{
+		Command: []string{"cat"},
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	sessionID := info.ID
+
+	server := NewGRPCServer(coord)
+	session, err := coord.GetSession(sessionID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	snap, err := session.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	cached := keyframeUpdateFromSnapshot(session, sessionID, session.Label(), snap)
+	if cached == nil || !cached.GetIsKeyframe() {
+		t.Fatalf("expected cached keyframe update, got %+v", cached)
+	}
+	total, _, _ := session.OutputState()
+	server.cacheKeyframe(sessionID, cached, total)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stream := newBlockingSubscribeStream(ctx)
+	close(stream.unblockCh)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- server.Subscribe(&proto.SubscribeRequest{
+			Session:              &proto.SessionRef{Id: sessionID},
+			IncludeScreenUpdates: true,
+			IncludeRawOutput:     false,
+		}, stream)
+	}()
+
+	first := waitForScreenUpdateEvent(t, stream.events, 2*time.Second)
+	if !first.GetIsKeyframe() {
+		cancel()
+		_ = <-errCh
+		t.Fatalf("expected keyframe event, got %+v", first)
+	}
+	if first.GetFrameId() != cached.GetFrameId() {
+		cancel()
+		_ = <-errCh
+		t.Fatalf("expected cached frame id %d, got %d", cached.GetFrameId(), first.GetFrameId())
+	}
+
+	cancel()
+	if err := <-errCh; err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("Subscribe: %v", err)
+	}
+}
+
+func TestGRPCSubscribeSkipsCachedKeyframeWhenOutputTotalChanged(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty tests not supported on windows")
+	}
+
+	coord := newTestCoordinator()
+	defer coord.CloseAll()
+
+	info, err := coord.Spawn("grpc-subscribe-cache-invalid", SpawnOptions{
+		Command: []string{"cat"},
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	sessionID := info.ID
+
+	server := NewGRPCServer(coord)
+	session, err := coord.GetSession(sessionID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	snap, err := session.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	cached := keyframeUpdateFromSnapshot(session, sessionID, session.Label(), snap)
+	if cached == nil || !cached.GetIsKeyframe() {
+		t.Fatalf("expected cached keyframe update, got %+v", cached)
+	}
+	totalBefore, _, _ := session.OutputState()
+	server.cacheKeyframe(sessionID, cached, totalBefore)
+
+	if err := coord.Send(sessionID, []byte("invalidate-cache\n")); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		total, _, _ := session.OutputState()
+		if total != totalBefore {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for output total change")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stream := newBlockingSubscribeStream(ctx)
+	close(stream.unblockCh)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- server.Subscribe(&proto.SubscribeRequest{
+			Session:              &proto.SessionRef{Id: sessionID},
+			IncludeScreenUpdates: true,
+			IncludeRawOutput:     false,
+		}, stream)
+	}()
+
+	first := waitForScreenUpdateEvent(t, stream.events, 2*time.Second)
+	if !first.GetIsKeyframe() {
+		cancel()
+		_ = <-errCh
+		t.Fatalf("expected keyframe event, got %+v", first)
+	}
+	if first.GetFrameId() == cached.GetFrameId() {
+		cancel()
+		_ = <-errCh
+		t.Fatalf("expected cache miss to send a newer keyframe than %d", cached.GetFrameId())
+	}
+
+	cancel()
+	if err := <-errCh; err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("Subscribe: %v", err)
+	}
 }
 
 func TestGRPCSubscribeLatestOnlyBackpressure(t *testing.T) {

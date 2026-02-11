@@ -893,6 +893,28 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 	}
 
 	screenBuilder := newSubscribeScreenBuilder(s, session, sessionID, sessionLabel)
+	sentCachedKeyframe := false
+	if includeScreen {
+		if cached := s.cachedKeyframe(session, sessionID); cached != nil {
+			if err := stream.Send(&proto.SubscribeEvent{
+				Event: &proto.SubscribeEvent_ScreenUpdate{
+					ScreenUpdate: cached,
+				},
+			}); err != nil {
+				return err
+			}
+			sentCachedKeyframe = true
+			snap, snapErr := session.Snapshot()
+			if snapErr != nil {
+				slog.Warn(
+					"subscribe cache prime fallback",
+					"session_id", sessionID,
+					"err", snapErr,
+				)
+			}
+			screenBuilder.primeFromKeyframe(cached, snap)
+		}
+	}
 
 	go func() {
 		sendErrCh <- runSubscribeSender(
@@ -938,7 +960,7 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 		return err
 	}
 
-	if includeScreen {
+	if includeScreen && !sentCachedKeyframe {
 		initial, err := makeScreenSnapshot(true, "initial_subscribe")
 		if err != nil {
 			return mapCoordinatorErr(err)
@@ -1159,6 +1181,15 @@ func newSubscribeScreenBuilder(server *GRPCServer, session *Session, sessionID s
 		sessionID:    sessionID,
 		sessionLabel: sessionLabel,
 	}
+}
+
+func (b *subscribeScreenBuilder) primeFromKeyframe(update *proto.ScreenUpdate, snapshot *Snapshot) {
+	if b == nil || update == nil || !update.GetIsKeyframe() {
+		return
+	}
+	b.firstKeyframeSent = true
+	b.lastFrameID = update.GetFrameId()
+	b.lastSnapshot = snapshot
 }
 
 func (b *subscribeScreenBuilder) Build(payload *subscribeScreenSnapshot) (*proto.ScreenUpdate, error) {
