@@ -101,15 +101,25 @@ export function applyScreenUpdate(
   }
 
   const baseFrame = toNumber(update.base_frame_id) ?? 0;
-  if (baseFrame && baseFrame !== prev.frameId) {
+  const frame = toNumber(update.frame_id) ?? 0;
+  if (baseFrame === 0 || frame === 0) {
+    return { ...prev, waitingForKeyframe: true };
+  }
+  if (baseFrame !== prev.frameId) {
     return { ...prev, waitingForKeyframe: true };
   }
   if (prev.waitingForKeyframe) {
     return prev;
   }
+  if (frame <= baseFrame || frame <= prev.frameId) {
+    return { ...prev, waitingForKeyframe: true };
+  }
 
   const cols = delta.cols ?? prev.cols;
   const rows = delta.rows ?? prev.rows;
+  if (cols !== prev.cols || rows !== prev.rows) {
+    return { ...prev, waitingForKeyframe: true };
+  }
   const nextRows: Cell[][] = [];
   for (let r = 0; r < rows; r += 1) {
     if (r < prev.rows) {
@@ -153,7 +163,7 @@ export function applyScreenUpdate(
     cursorY,
     cursorVisible,
     cursorStyle,
-    frameId: toNumber(update.frame_id) ?? prev.frameId,
+    frameId: frame,
     waitingForKeyframe: false,
     rowsData: nextRows,
   };
