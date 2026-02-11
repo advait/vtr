@@ -643,13 +643,30 @@ func (s *Server) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Subscri
 	if err != nil {
 		return err
 	}
-	return tunnel.CallStream(stream.Context(), tunnelMethodSubscribe, &reqCopy, func(payload []byte) error {
+	err = tunnel.CallStream(stream.Context(), tunnelMethodSubscribe, &reqCopy, func(payload []byte) error {
 		event := &proto.SubscribeEvent{}
 		if err := goproto.Unmarshal(payload, event); err != nil {
 			return err
 		}
 		return stream.Send(event)
 	})
+	if err != nil {
+		reason := "stream_error"
+		if st, ok := status.FromError(err); ok && strings.TrimSpace(st.Message()) != "" {
+			reason = strings.TrimSpace(st.Message())
+		}
+		if s.logger != nil {
+			s.logger.Warn(
+				"hub subscribe stream failed",
+				"spoke", spoke,
+				"session_id", sessionID,
+				"reason", reason,
+				"err", err,
+			)
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *Server) DumpAsciinema(ctx context.Context, req *proto.DumpAsciinemaRequest) (*proto.DumpAsciinemaResponse, error) {

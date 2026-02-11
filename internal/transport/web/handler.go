@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	proto "github.com/advait/vtrpc/proto"
@@ -67,6 +68,35 @@ func (e wsProtocolError) Error() string {
 type wsSender struct {
 	conn *websocket.Conn
 	mu   sync.Mutex
+}
+
+var wsForcedCloseCount atomic.Int64
+var wsOwnedSessionDeleteCount atomic.Int64
+var webOwnedSessions sync.Map
+
+func markWebOwnedSession(id string) {
+	sessionID := strings.TrimSpace(id)
+	if sessionID == "" {
+		return
+	}
+	webOwnedSessions.Store(sessionID, struct{}{})
+}
+
+func clearWebOwnedSession(id string) {
+	sessionID := strings.TrimSpace(id)
+	if sessionID == "" {
+		return
+	}
+	webOwnedSessions.Delete(sessionID)
+}
+
+func isWebOwnedSession(id string) bool {
+	sessionID := strings.TrimSpace(id)
+	if sessionID == "" {
+		return false
+	}
+	_, ok := webOwnedSessions.Load(sessionID)
+	return ok
 }
 
 func (s *wsSender) sendProto(ctx context.Context, msg goproto.Message) error {
@@ -218,6 +248,32 @@ func handleWebsocket(d deps) http.HandlerFunc {
 		defer grpcConn.Close()
 
 		client := proto.NewVTRClient(grpcConn)
+		removeOwnedSession := func(reason string) {
+			removeCtx, removeCancel := context.WithTimeout(context.Background(), d.opts.RPCTimeout)
+			defer removeCancel()
+			_, removeErr := client.Remove(removeCtx, &proto.RemoveRequest{Session: sessionRef})
+			if removeErr != nil && status.Code(removeErr) != codes.NotFound {
+				slog.Warn(
+					"ws owned session remove failed",
+					"session_id", sessionID,
+					"reason", reason,
+					"err", removeErr,
+				)
+				return
+			}
+			clearWebOwnedSession(sessionID)
+			deleteCount := wsOwnedSessionDeleteCount.Add(1)
+			slog.Info(
+				"ws owned session removed",
+				"session_id", sessionID,
+				"reason", reason,
+				"delete_count", deleteCount,
+			)
+		}
+		if isWebOwnedSession(sessionID) {
+			defer removeOwnedSession("ws_closed_remove_session")
+		}
+
 		streamCtx, streamCancel := context.WithCancel(ctx)
 		defer streamCancel()
 		stream, err := client.Subscribe(streamCtx, &proto.SubscribeRequest{
@@ -243,7 +299,17 @@ func handleWebsocket(d deps) http.HandlerFunc {
 		if err == nil || errors.Is(err, context.Canceled) || isNormalWSClose(err) {
 			return
 		}
+		reason := wsCloseReason(err)
+		forcedCloseCount := wsForcedCloseCount.Add(1)
+		slog.Warn(
+			"ws stream forced close",
+			"session_id", sessionID,
+			"reason", reason,
+			"err", err,
+			"forced_close_count", forcedCloseCount,
+		)
 		_ = sendWSError(ctx, sender, err)
+		_ = conn.Close(websocket.StatusPolicyViolation, reason)
 	}
 }
 
@@ -523,6 +589,7 @@ func handleWebSessionCreate(w http.ResponseWriter, r *http.Request, d deps) {
 	if coordName == "" {
 		coordName = hubTarget.Name
 	}
+	markWebOwnedSession(resp.GetSession().GetId())
 	writeWebJSON(w, webSessionCreateResponse{
 		Coordinator: coordName,
 		Session:     webSessionFromProto(resp.GetSession()),
@@ -619,6 +686,9 @@ func handleWebSessionAction(d deps) http.HandlerFunc {
 		if err != nil {
 			writeWebError(w, err)
 			return
+		}
+		if action == "remove" {
+			clearWebOwnedSession(targetID)
 		}
 
 		writeWebJSON(w, webSessionActionResponse{OK: true})
@@ -926,4 +996,24 @@ func isNormalWSClose(err error) bool {
 	default:
 		return false
 	}
+}
+
+func wsCloseReason(err error) string {
+	if err == nil {
+		return "stream_error"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "context_canceled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "context_deadline"
+	}
+	if st, ok := status.FromError(err); ok {
+		msg := strings.TrimSpace(st.Message())
+		if msg != "" {
+			return msg
+		}
+		return strings.ToLower(st.Code().String())
+	}
+	return "stream_error"
 }

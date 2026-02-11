@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -38,6 +39,7 @@ type GrepMatch = core.GrepMatch
 type SpokeRegistry = core.SpokeRegistry
 type SpokeRecord = core.SpokeRecord
 type Snapshot = core.Snapshot
+type Cell = core.Cell
 
 const (
 	SessionRunning SessionState = core.SessionRunning
@@ -64,7 +66,9 @@ const (
 
 const grpcGracefulShutdownTimeout = 5 * time.Second
 
-var keyframeInterval = 5 * time.Second
+// Deprecated: periodic keyframes were removed from healthy subscribe streams.
+// The variable remains for compatibility with older tests and callers.
+var keyframeInterval = time.Duration(0)
 var logResize = strings.TrimSpace(os.Getenv("VTR_LOG_RESIZE")) != ""
 var grpcKeepaliveParams = keepalive.ServerParameters{
 	Time:    30 * time.Second,
@@ -74,6 +78,13 @@ var grpcKeepalivePolicy = keepalive.EnforcementPolicy{
 	MinTime:             10 * time.Second,
 	PermitWithoutStream: true,
 }
+
+const screenReceiveStaleThreshold = 2 * time.Second
+
+var subscribeStreamStartedCount atomic.Int64
+var subscribeStreamEndedCount atomic.Int64
+var subscribeFirstKeyframeCount atomic.Int64
+var subscribeDeltaFrameCount atomic.Int64
 
 // GRPCServer implements the vtr gRPC service.
 type GRPCServer struct {
@@ -750,7 +761,7 @@ func (s *GRPCServer) WaitForIdle(ctx context.Context, req *proto.WaitForIdleRequ
 	return resp, nil
 }
 
-func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_SubscribeServer) error {
+func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_SubscribeServer) (retErr error) {
 	if req == nil {
 		return status.Error(codes.InvalidArgument, "session id is required")
 	}
@@ -763,6 +774,28 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 		return err
 	}
 	sessionID := session.ID()
+	startedAt := time.Now()
+	startCount := subscribeStreamStartedCount.Add(1)
+	slog.Info(
+		"subscribe stream start",
+		"session_id", sessionID,
+		"include_screen", req.IncludeScreenUpdates,
+		"include_raw", req.IncludeRawOutput,
+		"stream_started_count", startCount,
+	)
+	defer func() {
+		endCount := subscribeStreamEndedCount.Add(1)
+		attrs := []any{
+			"session_id", sessionID,
+			"reason", subscribeStreamEndReason(retErr),
+			"duration", time.Since(startedAt),
+			"stream_ended_count", endCount,
+		}
+		if retErr != nil && !errors.Is(retErr, context.Canceled) && !errors.Is(retErr, context.DeadlineExceeded) {
+			attrs = append(attrs, "err", retErr)
+		}
+		slog.Info("subscribe stream end", attrs...)
+	}()
 	sessionLabel := func() string {
 		return session.Label()
 	}
@@ -777,38 +810,38 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 	idleSignal := make(chan struct{}, 1)
 	sendErrCh := make(chan error, 1)
 	exitSignal := make(chan exitPayload, 1)
-	makeKeyframe := func() (*proto.ScreenUpdate, error) {
+	makeScreenSnapshot := func(forceKeyframe bool, reason string) (*subscribeScreenSnapshot, error) {
 		snap, err := session.Snapshot()
 		if err != nil {
 			return nil, err
 		}
-		label := sessionLabel()
-		update := keyframeUpdateFromSnapshot(session, sessionID, label, snap)
-		total, _, _ := session.OutputState()
-		s.cacheKeyframe(sessionID, update, total)
-		return update, nil
+		return &subscribeScreenSnapshot{
+			snapshot:      snap,
+			forceKeyframe: forceKeyframe,
+			forceReason:   reason,
+		}, nil
 	}
 
 	var screenMu sync.Mutex
-	var latestScreen *proto.ScreenUpdate
-	setLatestScreen := func(update *proto.ScreenUpdate) {
-		if update == nil {
+	var latestScreen *subscribeScreenSnapshot
+	setLatestScreen := func(snapshot *subscribeScreenSnapshot) {
+		if snapshot == nil {
 			return
 		}
 		screenMu.Lock()
-		latestScreen = update
+		latestScreen = snapshot
 		screenMu.Unlock()
 		select {
 		case screenSignal <- struct{}{}:
 		default:
 		}
 	}
-	drainLatestScreen := func() *proto.ScreenUpdate {
+	drainLatestScreen := func() *subscribeScreenSnapshot {
 		screenMu.Lock()
-		update := latestScreen
+		snapshot := latestScreen
 		latestScreen = nil
 		screenMu.Unlock()
-		return update
+		return snapshot
 	}
 
 	var rawMu sync.Mutex
@@ -859,10 +892,13 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 		return update
 	}
 
+	screenBuilder := newSubscribeScreenBuilder(s, session, sessionID, sessionLabel)
+
 	go func() {
 		sendErrCh <- runSubscribeSender(
 			ctx,
 			stream,
+			screenBuilder,
 			screenSignal,
 			rawSignal,
 			idleSignal,
@@ -883,13 +919,13 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 			outputCh = nextCh
 			appendRaw(data)
 		}
-		var finalScreen *proto.ScreenUpdate
+		var finalScreen *subscribeScreenSnapshot
 		if includeScreen {
-			update, err := makeKeyframe()
+			snapshot, err := makeScreenSnapshot(true, "session_already_exited")
 			if err != nil {
 				return mapCoordinatorErr(err)
 			}
-			finalScreen = update
+			finalScreen = snapshot
 		}
 		exitSignal <- exitPayload{
 			exit:        &proto.SessionExited{ExitCode: int32(info.ExitCode), Id: sessionID},
@@ -903,37 +939,25 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 	}
 
 	if includeScreen {
-		if cached := s.cachedKeyframe(session, sessionID); cached != nil {
-			setLatestScreen(cached)
-		} else {
-			update, err := makeKeyframe()
-			if err != nil {
-				return mapCoordinatorErr(err)
-			}
-			setLatestScreen(update)
+		initial, err := makeScreenSnapshot(true, "initial_subscribe")
+		if err != nil {
+			return mapCoordinatorErr(err)
 		}
+		setLatestScreen(initial)
 	}
 
 	var ticker *time.Ticker
 	var tick <-chan time.Time
-	var keyframeTicker *time.Ticker
-	var keyframeTick <-chan time.Time
 	if includeScreen {
 		ticker = time.NewTicker(time.Second / 30)
 		tick = ticker.C
-		if keyframeInterval > 0 {
-			keyframeTicker = time.NewTicker(keyframeInterval)
-			keyframeTick = keyframeTicker.C
-		}
 	}
 	if ticker != nil {
 		defer ticker.Stop()
 	}
-	if keyframeTicker != nil {
-		defer keyframeTicker.Stop()
-	}
 
 	pendingScreen := false
+	forceKeyframe := false
 
 	for {
 		select {
@@ -960,13 +984,13 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 				outputCh = nextCh
 			}
 
-			var finalScreen *proto.ScreenUpdate
+			var finalScreen *subscribeScreenSnapshot
 			if includeScreen {
-				update, err := makeKeyframe()
+				snapshot, err := makeScreenSnapshot(false, "session_exit")
 				if err != nil {
 					return mapCoordinatorErr(err)
 				}
-				finalScreen = update
+				finalScreen = snapshot
 			}
 
 			info := session.Info()
@@ -996,20 +1020,22 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 		case <-resizeCh:
 			if includeScreen {
 				pendingScreen = true
+				forceKeyframe = true
 			}
 			resizeCh = session.ResizeState()
 		case <-tick:
 			if includeScreen && pendingScreen {
-				update, err := makeKeyframe()
+				reason := "output_update"
+				if forceKeyframe {
+					reason = "resize"
+				}
+				snapshot, err := makeScreenSnapshot(forceKeyframe, reason)
 				if err != nil {
 					return mapCoordinatorErr(err)
 				}
-				setLatestScreen(update)
+				setLatestScreen(snapshot)
 				pendingScreen = false
-			}
-		case <-keyframeTick:
-			if includeScreen {
-				pendingScreen = true
+				forceKeyframe = false
 			}
 		}
 	}
@@ -1017,21 +1043,29 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 
 type exitPayload struct {
 	exit        *proto.SessionExited
-	finalScreen *proto.ScreenUpdate
+	finalScreen *subscribeScreenSnapshot
 }
 
 func runSubscribeSender(
 	ctx context.Context,
 	stream proto.VTR_SubscribeServer,
+	screenBuilder *subscribeScreenBuilder,
 	screenSignal <-chan struct{},
 	rawSignal <-chan struct{},
 	idleSignal <-chan struct{},
 	exitSignal <-chan exitPayload,
-	drainScreen func() *proto.ScreenUpdate,
+	drainScreen func() *subscribeScreenSnapshot,
 	drainRaw func() []byte,
 	drainIdle func() *proto.SessionIdle,
 ) error {
-	sendScreen := func(update *proto.ScreenUpdate) error {
+	sendScreen := func(snapshot *subscribeScreenSnapshot) error {
+		if snapshot == nil || screenBuilder == nil {
+			return nil
+		}
+		update, err := screenBuilder.Build(snapshot)
+		if err != nil {
+			return err
+		}
 		if update == nil {
 			return nil
 		}
@@ -1098,6 +1132,218 @@ func runSubscribeSender(
 				return err
 			}
 		}
+	}
+}
+
+type subscribeScreenSnapshot struct {
+	snapshot      *Snapshot
+	forceKeyframe bool
+	forceReason   string
+}
+
+type subscribeScreenBuilder struct {
+	server       *GRPCServer
+	session      *Session
+	sessionID    string
+	sessionLabel func() string
+
+	lastSnapshot      *Snapshot
+	lastFrameID       uint64
+	firstKeyframeSent bool
+}
+
+func newSubscribeScreenBuilder(server *GRPCServer, session *Session, sessionID string, sessionLabel func() string) *subscribeScreenBuilder {
+	return &subscribeScreenBuilder{
+		server:       server,
+		session:      session,
+		sessionID:    sessionID,
+		sessionLabel: sessionLabel,
+	}
+}
+
+func (b *subscribeScreenBuilder) Build(payload *subscribeScreenSnapshot) (*proto.ScreenUpdate, error) {
+	if b == nil || payload == nil || payload.snapshot == nil || b.session == nil {
+		return nil, nil
+	}
+	forceKeyframe := payload.forceKeyframe || !b.firstKeyframeSent || b.lastSnapshot == nil || b.lastFrameID == 0
+	if !forceKeyframe && !snapshotDeltaSafe(b.lastSnapshot, payload.snapshot) {
+		forceKeyframe = true
+	}
+	if forceKeyframe {
+		return b.buildKeyframe(payload.snapshot, payload.forceReason), nil
+	}
+	delta, changedRows, err := screenDeltaFromSnapshots(b.lastSnapshot, payload.snapshot)
+	if err != nil {
+		slog.Warn(
+			"subscribe delta fallback keyframe",
+			"session_id", b.sessionID,
+			"reason", "stream_desync",
+			"err", err,
+		)
+		return b.buildKeyframe(payload.snapshot, "stream_desync"), nil
+	}
+	frameID := b.session.NextFrameID()
+	update := &proto.ScreenUpdate{
+		FrameId:     frameID,
+		BaseFrameId: b.lastFrameID,
+		IsKeyframe:  false,
+		Delta:       delta,
+	}
+	b.lastSnapshot = payload.snapshot
+	b.lastFrameID = frameID
+	deltaCount := subscribeDeltaFrameCount.Add(1)
+	slog.Debug(
+		"subscribe delta sent",
+		"session_id", b.sessionID,
+		"frame_id", update.FrameId,
+		"base_frame_id", update.BaseFrameId,
+		"changed_rows", changedRows,
+		"delta_count", deltaCount,
+	)
+	return update, nil
+}
+
+func (b *subscribeScreenBuilder) buildKeyframe(snap *Snapshot, reason string) *proto.ScreenUpdate {
+	if b == nil || b.session == nil {
+		return nil
+	}
+	label := ""
+	if b.sessionLabel != nil {
+		label = b.sessionLabel()
+	}
+	update := keyframeUpdateFromSnapshot(b.session, b.sessionID, label, snap)
+	if b.server != nil {
+		total, _, _ := b.session.OutputState()
+		b.server.cacheKeyframe(b.sessionID, update, total)
+	}
+	b.lastSnapshot = snap
+	if update != nil {
+		b.lastFrameID = update.FrameId
+	}
+	if !b.firstKeyframeSent {
+		b.firstKeyframeSent = true
+		firstKeyframes := subscribeFirstKeyframeCount.Add(1)
+		slog.Info(
+			"subscribe first keyframe sent",
+			"session_id", b.sessionID,
+			"frame_id", b.lastFrameID,
+			"reason", reason,
+			"first_keyframe_count", firstKeyframes,
+		)
+	}
+	return update
+}
+
+func snapshotDeltaSafe(prev, curr *Snapshot) bool {
+	if prev == nil || curr == nil {
+		return false
+	}
+	if prev.Cols <= 0 || prev.Rows <= 0 || curr.Cols <= 0 || curr.Rows <= 0 {
+		return false
+	}
+	if prev.Cols != curr.Cols || prev.Rows != curr.Rows {
+		return false
+	}
+	requiredCells := curr.Cols * curr.Rows
+	if len(prev.Cells) < requiredCells || len(curr.Cells) < requiredCells {
+		return false
+	}
+	return true
+}
+
+func screenDeltaFromSnapshots(prev, curr *Snapshot) (*proto.ScreenDelta, int, error) {
+	if !snapshotDeltaSafe(prev, curr) {
+		return nil, 0, errors.New("delta snapshots are not compatible")
+	}
+	cols := curr.Cols
+	rows := curr.Rows
+	delta := &proto.ScreenDelta{
+		Cols:    int32(cols),
+		Rows:    int32(rows),
+		CursorX: int32(curr.CursorX),
+		CursorY: int32(curr.CursorY),
+	}
+	changedRows := 0
+	for row := 0; row < rows; row++ {
+		if !snapshotRowChangedForProto(prev, curr, row, cols) {
+			continue
+		}
+		rowData, err := screenRowFromSnapshot(curr, row)
+		if err != nil {
+			return nil, 0, err
+		}
+		delta.RowDeltas = append(delta.RowDeltas, &proto.RowDelta{
+			Row:     int32(row),
+			RowData: rowData,
+		})
+		changedRows++
+	}
+	return delta, changedRows, nil
+}
+
+func snapshotRowChangedForProto(prev, curr *Snapshot, row, cols int) bool {
+	if prev == nil || curr == nil || row < 0 || cols <= 0 {
+		return true
+	}
+	start := row * cols
+	end := start + cols
+	if start < 0 || end > len(prev.Cells) || end > len(curr.Cells) {
+		return true
+	}
+	for idx := start; idx < end; idx++ {
+		if !snapshotCellEqualForProto(prev.Cells[idx], curr.Cells[idx]) {
+			return true
+		}
+	}
+	return false
+}
+
+func snapshotCellEqualForProto(left, right Cell) bool {
+	return left.Rune == right.Rune && left.Fg == right.Fg && left.Bg == right.Bg && left.Attrs == right.Attrs
+}
+
+func screenRowFromSnapshot(snap *Snapshot, row int) (*proto.ScreenRow, error) {
+	if snap == nil {
+		return nil, errors.New("snapshot is nil")
+	}
+	if row < 0 || row >= snap.Rows {
+		return nil, errors.New("snapshot row out of range")
+	}
+	if snap.Cols <= 0 {
+		return nil, errors.New("snapshot cols must be positive")
+	}
+	start := row * snap.Cols
+	end := start + snap.Cols
+	if end > len(snap.Cells) {
+		return nil, errors.New("snapshot cell bounds out of range")
+	}
+	cells := make([]*proto.ScreenCell, snap.Cols)
+	for col := start; col < end; col++ {
+		cell := snap.Cells[col]
+		ch := " "
+		if cell.Rune != 0 {
+			ch = string(cell.Rune)
+		}
+		cells[col-start] = &proto.ScreenCell{
+			Char:       ch,
+			FgColor:    packRGB(cell.Fg),
+			BgColor:    packRGB(cell.Bg),
+			Attributes: uint32(cell.Attrs),
+		}
+	}
+	return &proto.ScreenRow{Cells: cells}, nil
+}
+
+func subscribeStreamEndReason(err error) string {
+	switch {
+	case err == nil:
+		return "completed"
+	case errors.Is(err, context.Canceled):
+		return "context_canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "context_deadline"
+	default:
+		return "error"
 	}
 }
 

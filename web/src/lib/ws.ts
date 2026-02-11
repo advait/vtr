@@ -19,7 +19,10 @@ type StreamOptions = {
 type StreamState = {
   status: StreamStatus;
   error?: string;
+  receiving?: boolean;
 };
+
+const receivingStaleMs = 2000;
 
 function defaultWsUrl() {
   const { protocol, host } = window.location;
@@ -75,6 +78,8 @@ export function useVtrStream(sessionRef: SessionRef | null, options: StreamOptio
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectRef = useRef<{ attempts: number; timer?: number }>({ attempts: 0 });
   const closedByUser = useRef(false);
+  const lastScreenEventAtRef = useRef(0);
+  const receivingTimerRef = useRef<number | null>(null);
   const sessionId = sessionRef?.id?.trim() ?? "";
   const sessionCoordinator = sessionRef?.coordinator?.trim() ?? "";
 
@@ -184,6 +189,7 @@ export function useVtrStream(sessionRef: SessionRef | null, options: StreamOptio
     let cancelled = false;
     closedByUser.current = false;
     pendingEventsRef.current = [];
+    lastScreenEventAtRef.current = 0;
 
     const connect = () => {
       if (cancelled) {
@@ -194,6 +200,7 @@ export function useVtrStream(sessionRef: SessionRef | null, options: StreamOptio
       wsRef.current = ws;
       setState((prev) => ({
         status: prev.status === "reconnecting" ? "reconnecting" : "connecting",
+        receiving: false,
       }));
 
       ws.addEventListener("open", () => {
@@ -207,7 +214,7 @@ export function useVtrStream(sessionRef: SessionRef | null, options: StreamOptio
           include_raw_output: options.includeRawOutput ?? false,
         });
         ws.send(hello);
-        setState({ status: "open" });
+        setState({ status: "open", receiving: false });
       });
 
       ws.addEventListener("message", (event) => {
@@ -218,12 +225,25 @@ export function useVtrStream(sessionRef: SessionRef | null, options: StreamOptio
           const decoded = decodeAny(new Uint8Array(buffer));
           if (decoded.typeName === "google.rpc.Status") {
             const status = decoded.message as { code?: number; message?: string };
-            setState({ status: "error", error: status.message || "stream error" });
+            setState({
+              status: "error",
+              error: status.message || "stream error",
+              receiving: false,
+            });
             ws.close();
             return;
           }
           if (decoded.typeName === "vtr.SubscribeEvent") {
             const msg = decoded.message as SubscribeEvent;
+            if (msg.screen_update) {
+              lastScreenEventAtRef.current = Date.now();
+              setState((prev) => {
+                if (prev.status === "open" && prev.receiving) {
+                  return prev;
+                }
+                return { ...prev, status: "open", receiving: true };
+              });
+            }
             if (eventRef.current) {
               eventRef.current(msg);
             } else {
@@ -246,13 +266,14 @@ export function useVtrStream(sessionRef: SessionRef | null, options: StreamOptio
 
       ws.addEventListener("close", () => {
         if (cancelled || closedByUser.current) {
-          setState({ status: "closed" });
+          setState({ status: "closed", receiving: false });
           return;
         }
         const attempts = reconnectRef.current.attempts + 1;
         reconnectRef.current.attempts = attempts;
         const delay = Math.min(5000, 500 * attempts + attempts * 200);
-        setState({ status: "reconnecting" });
+        setState({ status: "reconnecting", receiving: false });
+        console.info("vtr stream reconnecting", { attempt: attempts, delay_ms: delay });
         reconnectRef.current.timer = window.setTimeout(connect, delay);
       });
 
@@ -260,16 +281,37 @@ export function useVtrStream(sessionRef: SessionRef | null, options: StreamOptio
         if (cancelled) {
           return;
         }
-        setState({ status: "error", error: "websocket error" });
+        setState({ status: "error", error: "websocket error", receiving: false });
       });
     };
 
     connect();
 
+    receivingTimerRef.current = window.setInterval(() => {
+      if (cancelled) {
+        return;
+      }
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        return;
+      }
+      const isReceiving = Date.now() - lastScreenEventAtRef.current <= receivingStaleMs;
+      setState((prev) => {
+        if (prev.status !== "open" || prev.receiving === isReceiving) {
+          return prev;
+        }
+        return { ...prev, receiving: isReceiving };
+      });
+    }, 400);
+
     return () => {
       cancelled = true;
       if (reconnectRef.current.timer) {
         window.clearTimeout(reconnectRef.current.timer);
+      }
+      if (receivingTimerRef.current) {
+        window.clearInterval(receivingTimerRef.current);
+        receivingTimerRef.current = null;
       }
       if (wsRef.current) {
         wsRef.current.close();

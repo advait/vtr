@@ -196,17 +196,20 @@ test("DOM cursor aligns with rendered text width", async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 720 });
   await page.goto(baseURL);
 
-  await page.getByRole("button", { name: new RegExp(sessionName) }).first().click();
-  await expect(page.locator("header").getByText("live", { exact: true })).toBeVisible();
+  await page
+    .getByRole("button", { name: new RegExp(sessionName) })
+    .first()
+    .click();
+  await expect(
+    page.locator("header").getByText(/connected(\+receiving)?/, { exact: false }),
+  ).toBeVisible();
 
   await sendCommandLine("export PS1='' ");
   await waitForOutput("export PS1");
   await sendCommandLine("stty -echo; printf '__echo_off__'");
   await waitForOutput("__echo_off__");
 
-  await sendCommandLine(
-    "printf $'\\x1b[2J\\x1b[H\\x1b[1mWWWWW\\x1b[0mABCDE'",
-  );
+  await sendCommandLine("printf $'\\x1b[2J\\x1b[H\\x1b[1mWWWWW\\x1b[0mABCDE'");
   await waitForOutput("ABCDE");
 
   const screen = await getScreen();
@@ -287,8 +290,13 @@ test("Canvas cursor aligns with vertically centered glyphs", async ({ page }) =>
   await page.setViewportSize({ width: 900, height: 720 });
   await page.goto(baseURL);
 
-  await page.getByRole("button", { name: new RegExp(sessionName) }).first().click();
-  await expect(page.locator("header").getByText("live", { exact: true })).toBeVisible();
+  await page
+    .getByRole("button", { name: new RegExp(sessionName) })
+    .first()
+    .click();
+  await expect(
+    page.locator("header").getByText(/connected(\+receiving)?/, { exact: false }),
+  ).toBeVisible();
 
   await sendCommandLine("export PS1='' ");
   await waitForOutput("export PS1");
@@ -311,7 +319,6 @@ test("Canvas cursor aligns with vertically centered glyphs", async ({ page }) =>
         return null;
       }
       const dpr = window.devicePixelRatio || 1;
-      const canvasRect = canvas.getBoundingClientRect();
       const cursorStyle = getComputedStyle(cursor);
       const cellHeight = Number.parseFloat(cursorStyle.height || "0");
       const cellWidth = Number.parseFloat(cursorStyle.width || "0");

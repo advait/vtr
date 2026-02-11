@@ -21,10 +21,18 @@ In practice today:
 - Hub routes List/Info/Send/Subscribe/Wait via tunnel-connected spokes.
 - Tunnel mode works without any spoke-side listeners.
 - Hub aggregates session lists across spokes.
+- Stream calls now fail deterministically with `Unavailable` when tunnel backlog drops them.
+- Hub logs subscribe tunnel failures with explicit reason strings.
 
 ## What is not implemented yet
 
 - Persistent federation configuration or policy.
+
+## Reliability notes
+
+- The tunnel send queue is latest-bounded; under sustained pressure, oldest queued calls can be dropped.
+- When a dropped call is a streaming call, the pending request is failed immediately (`codes.Unavailable`, reason `tunnel_backlog_drop`) instead of hanging.
+- Unary calls continue to use existing timeout/error behavior.
 
 ## Planned direction
 

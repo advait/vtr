@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image/color"
 	"net"
 	"runtime"
 	"strings"
@@ -781,8 +782,10 @@ func TestGRPCSubscribeFrameIDMonotonic(t *testing.T) {
 		t.Fatalf("Subscribe: %v", err)
 	}
 
-	var frames []uint64
-	for len(frames) < 2 {
+	var lastFrame uint64
+	sawFirstKeyframe := false
+	sawDelta := false
+	for !sawDelta {
 		event, err := stream.Recv()
 		if err != nil {
 			cancel()
@@ -792,15 +795,33 @@ func TestGRPCSubscribeFrameIDMonotonic(t *testing.T) {
 		if update == nil {
 			continue
 		}
-		if !update.IsKeyframe || update.BaseFrameId != 0 || update.FrameId == 0 {
-			cancel()
-			t.Fatalf("expected keyframe with frame_id set, got %+v", update)
+		if !sawFirstKeyframe {
+			if !update.IsKeyframe || update.BaseFrameId != 0 || update.FrameId == 0 {
+				cancel()
+				t.Fatalf("expected first keyframe with frame_id set, got %+v", update)
+			}
+			sawFirstKeyframe = true
+			lastFrame = update.FrameId
+			continue
 		}
-		frames = append(frames, update.FrameId)
+		if update.IsKeyframe {
+			cancel()
+			t.Fatalf("expected delta after first keyframe in healthy stream, got %+v", update)
+		}
+		if update.BaseFrameId != lastFrame {
+			cancel()
+			t.Fatalf("expected base frame %d, got %d", lastFrame, update.BaseFrameId)
+		}
+		if update.FrameId <= update.BaseFrameId {
+			cancel()
+			t.Fatalf("expected frame_id > base_frame_id, got frame=%d base=%d", update.FrameId, update.BaseFrameId)
+		}
+		lastFrame = update.FrameId
+		sawDelta = true
 	}
 	cancel()
-	if frames[1] <= frames[0] {
-		t.Fatalf("expected frame IDs to increase, got %v", frames)
+	if !sawFirstKeyframe || !sawDelta {
+		t.Fatalf("expected keyframe then delta, got keyframe=%v delta=%v", sawFirstKeyframe, sawDelta)
 	}
 }
 
@@ -886,16 +907,10 @@ func TestGRPCSubscribeResizeKeyframe(t *testing.T) {
 	}
 }
 
-func TestGRPCSubscribePeriodicKeyframe(t *testing.T) {
+func TestGRPCSubscribeNoPeriodicKeyframe(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("pty tests not supported on windows")
 	}
-
-	oldInterval := keyframeInterval
-	keyframeInterval = 200 * time.Millisecond
-	t.Cleanup(func() {
-		keyframeInterval = oldInterval
-	})
 
 	client, cleanup := startGRPCTestServer(t)
 	defer cleanup()
@@ -903,7 +918,7 @@ func TestGRPCSubscribePeriodicKeyframe(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	spawnResp, err := client.Spawn(ctx, &proto.SpawnRequest{
 		Name:    "grpc-subscribe-periodic",
-		Command: "sleep 1",
+		Command: "sleep 2",
 	})
 	cancel()
 	if err != nil {
@@ -911,7 +926,7 @@ func TestGRPCSubscribePeriodicKeyframe(t *testing.T) {
 	}
 	sessionID := spawnResp.GetSession().GetId()
 
-	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel = context.WithTimeout(context.Background(), 900*time.Millisecond)
 	stream, err := client.Subscribe(ctx, &proto.SubscribeRequest{
 		Session:              &proto.SessionRef{Id: sessionID},
 		IncludeScreenUpdates: true,
@@ -934,48 +949,31 @@ func TestGRPCSubscribePeriodicKeyframe(t *testing.T) {
 	}
 	initialFrame := update.FrameId
 
-	var periodic *proto.ScreenUpdate
-	deadline := time.After(1 * time.Second)
-	for periodic == nil {
-		select {
-		case <-deadline:
-			cancel()
-			t.Fatalf("expected periodic keyframe update")
-		default:
-		}
+	for {
 		event, err := stream.Recv()
 		if err != nil {
+			if status.Code(err) == codes.Canceled || status.Code(err) == codes.DeadlineExceeded || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				break
+			}
 			cancel()
 			t.Fatalf("Recv: %v", err)
 		}
 		update := event.GetScreenUpdate()
-		if update == nil || update.Screen == nil {
-			if event.GetSessionExited() != nil {
-				cancel()
-				t.Fatalf("session exited before periodic keyframe")
-			}
+		if update == nil {
 			continue
 		}
 		if update.FrameId > initialFrame {
-			periodic = update
+			cancel()
+			t.Fatalf("unexpected periodic screen update in healthy steady-state: %+v", update)
 		}
 	}
 	cancel()
-	if !periodic.IsKeyframe || periodic.BaseFrameId != 0 || periodic.FrameId == 0 {
-		t.Fatalf("expected keyframe with frame_id set, got %+v", periodic)
-	}
 }
 
 func TestGRPCSubscribeLatestOnlyBackpressure(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("pty tests not supported on windows")
 	}
-
-	oldInterval := keyframeInterval
-	keyframeInterval = 0
-	t.Cleanup(func() {
-		keyframeInterval = oldInterval
-	})
 
 	coord := newTestCoordinator()
 	defer coord.CloseAll()
@@ -1020,6 +1018,8 @@ func TestGRPCSubscribeLatestOnlyBackpressure(t *testing.T) {
 
 	var updates int
 	var lastScreen string
+	var currentScreen *proto.GetScreenResponse
+	var lastFrame uint64
 	timeout := time.After(2 * time.Second)
 	for {
 		select {
@@ -1027,16 +1027,27 @@ func TestGRPCSubscribeLatestOnlyBackpressure(t *testing.T) {
 			if event == nil {
 				continue
 			}
-			if update := event.GetScreenUpdate(); update != nil && update.Screen != nil {
+			if update := event.GetScreenUpdate(); update != nil {
+				nextScreen, nextFrame, err := applyTestScreenUpdate(currentScreen, lastFrame, update)
+				if err != nil {
+					cancel()
+					_ = <-errCh
+					t.Fatalf("apply update: %v", err)
+				}
+				currentScreen = nextScreen
+				lastFrame = nextFrame
+				if currentScreen == nil {
+					continue
+				}
 				updates++
-				lastScreen = screenToString(update.Screen)
+				lastScreen = screenToString(currentScreen)
 				if strings.Contains(lastScreen, "line4") {
 					cancel()
 					err := <-errCh
 					if err != nil && !errors.Is(err, context.Canceled) {
 						t.Fatalf("Subscribe: %v", err)
 					}
-					if updates > 2 {
+					if updates > 4 {
 						t.Fatalf("expected latest-only updates, got %d updates", updates)
 					}
 					return
@@ -1140,6 +1151,9 @@ func TestGRPCSubscribeExitEvent(t *testing.T) {
 	var lastScreen string
 	var sawScreen bool
 	var exitCode int32
+	var currentScreen *proto.GetScreenResponse
+	var lastFrame uint64
+	var sawFirstKeyframe bool
 	for {
 		event, err := stream.Recv()
 		if err != nil {
@@ -1147,10 +1161,21 @@ func TestGRPCSubscribeExitEvent(t *testing.T) {
 			t.Fatalf("Recv: %v", err)
 		}
 		if update := event.GetScreenUpdate(); update != nil {
-			if !update.IsKeyframe || update.BaseFrameId != 0 || update.FrameId == 0 {
-				t.Fatalf("expected keyframe with frame_id set, got %+v", update)
+			if !sawFirstKeyframe {
+				if !update.IsKeyframe || update.BaseFrameId != 0 || update.FrameId == 0 {
+					t.Fatalf("expected first keyframe with frame_id set, got %+v", update)
+				}
+				sawFirstKeyframe = true
 			}
-			lastScreen = screenToString(update.Screen)
+			nextScreen, nextFrame, err := applyTestScreenUpdate(currentScreen, lastFrame, update)
+			if err != nil {
+				t.Fatalf("apply update: %v", err)
+			}
+			currentScreen = nextScreen
+			lastFrame = nextFrame
+			if currentScreen != nil {
+				lastScreen = screenToString(currentScreen)
+			}
 			sawScreen = true
 			continue
 		}
@@ -1168,6 +1193,163 @@ func TestGRPCSubscribeExitEvent(t *testing.T) {
 	}
 	if !strings.Contains(lastScreen, "done") {
 		t.Fatalf("expected final screen to contain done, got %q", lastScreen)
+	}
+}
+
+func applyTestScreenUpdate(screen *proto.GetScreenResponse, lastFrame uint64, update *proto.ScreenUpdate) (*proto.GetScreenResponse, uint64, error) {
+	if update == nil {
+		return screen, lastFrame, nil
+	}
+	if update.GetScreen() != nil {
+		if update.GetFrameId() == 0 || update.GetBaseFrameId() != 0 {
+			return nil, 0, fmt.Errorf("invalid keyframe metadata frame=%d base=%d", update.GetFrameId(), update.GetBaseFrameId())
+		}
+		return update.GetScreen(), update.GetFrameId(), nil
+	}
+	delta := update.GetDelta()
+	if delta == nil {
+		return screen, lastFrame, nil
+	}
+	if screen == nil {
+		return nil, 0, fmt.Errorf("delta without base screen")
+	}
+	if lastFrame == 0 || update.GetBaseFrameId() != lastFrame {
+		return nil, 0, fmt.Errorf("delta base mismatch: got=%d want=%d", update.GetBaseFrameId(), lastFrame)
+	}
+	if update.GetFrameId() <= update.GetBaseFrameId() {
+		return nil, 0, fmt.Errorf("delta frame must increase: frame=%d base=%d", update.GetFrameId(), update.GetBaseFrameId())
+	}
+	next, err := applyTestScreenDelta(screen, delta)
+	if err != nil {
+		return nil, 0, err
+	}
+	return next, update.GetFrameId(), nil
+}
+
+func applyTestScreenDelta(screen *proto.GetScreenResponse, delta *proto.ScreenDelta) (*proto.GetScreenResponse, error) {
+	if screen == nil || delta == nil {
+		return nil, fmt.Errorf("missing screen or delta")
+	}
+	cols := int(delta.GetCols())
+	rows := int(delta.GetRows())
+	if cols <= 0 || rows <= 0 {
+		return nil, fmt.Errorf("invalid delta size")
+	}
+	if int(screen.GetCols()) != cols || int(screen.GetRows()) != rows || len(screen.GetScreenRows()) != rows {
+		return nil, fmt.Errorf("delta size mismatch")
+	}
+	screen.Cols = int32(cols)
+	screen.Rows = int32(rows)
+	screen.CursorX = delta.GetCursorX()
+	screen.CursorY = delta.GetCursorY()
+	for _, rowDelta := range delta.GetRowDeltas() {
+		rowIdx := int(rowDelta.GetRow())
+		if rowIdx < 0 || rowIdx >= rows {
+			return nil, fmt.Errorf("row delta out of range")
+		}
+		screen.ScreenRows[rowIdx] = rowDelta.GetRowData()
+	}
+	return screen, nil
+}
+
+func TestScreenDeltaFromSnapshotsUnchanged(t *testing.T) {
+	prev := makeTestSnapshot(4, 2, 'a')
+	curr := makeTestSnapshot(4, 2, 'a')
+	curr.CursorX = 1
+	curr.CursorY = 1
+	delta, changedRows, err := screenDeltaFromSnapshots(prev, curr)
+	if err != nil {
+		t.Fatalf("screenDeltaFromSnapshots: %v", err)
+	}
+	if changedRows != 0 {
+		t.Fatalf("expected no changed rows, got %d", changedRows)
+	}
+	if len(delta.GetRowDeltas()) != 0 {
+		t.Fatalf("expected no row deltas, got %d", len(delta.GetRowDeltas()))
+	}
+	if delta.GetCursorX() != 1 || delta.GetCursorY() != 1 {
+		t.Fatalf("expected cursor update, got %d,%d", delta.GetCursorX(), delta.GetCursorY())
+	}
+}
+
+func TestScreenDeltaFromSnapshotsChangedRows(t *testing.T) {
+	prev := makeTestSnapshot(4, 2, 'a')
+	curr := makeTestSnapshot(4, 2, 'a')
+	curr.Cells[4].Rune = 'z'
+	delta, changedRows, err := screenDeltaFromSnapshots(prev, curr)
+	if err != nil {
+		t.Fatalf("screenDeltaFromSnapshots: %v", err)
+	}
+	if changedRows != 1 {
+		t.Fatalf("expected one changed row, got %d", changedRows)
+	}
+	if len(delta.GetRowDeltas()) != 1 {
+		t.Fatalf("expected one row delta, got %d", len(delta.GetRowDeltas()))
+	}
+	if delta.GetRowDeltas()[0].GetRow() != 1 {
+		t.Fatalf("expected changed row 1, got %d", delta.GetRowDeltas()[0].GetRow())
+	}
+}
+
+func TestScreenDeltaFromSnapshotsCursorOnly(t *testing.T) {
+	prev := makeTestSnapshot(3, 2, 'x')
+	curr := makeTestSnapshot(3, 2, 'x')
+	curr.CursorX = 2
+	curr.CursorY = 1
+	delta, changedRows, err := screenDeltaFromSnapshots(prev, curr)
+	if err != nil {
+		t.Fatalf("screenDeltaFromSnapshots: %v", err)
+	}
+	if changedRows != 0 {
+		t.Fatalf("expected no changed rows, got %d", changedRows)
+	}
+	if len(delta.GetRowDeltas()) != 0 {
+		t.Fatalf("expected no row deltas, got %d", len(delta.GetRowDeltas()))
+	}
+	if delta.GetCursorX() != 2 || delta.GetCursorY() != 1 {
+		t.Fatalf("expected cursor update, got %d,%d", delta.GetCursorX(), delta.GetCursorY())
+	}
+}
+
+func TestSubscribeScreenBuilderResizeForcesKeyframe(t *testing.T) {
+	session := &Session{}
+	builder := newSubscribeScreenBuilder(nil, session, "s-1", func() string { return "demo" })
+	first := makeTestSnapshot(3, 2, 'a')
+	second := makeTestSnapshot(4, 2, 'a')
+
+	initial, err := builder.Build(&subscribeScreenSnapshot{snapshot: first, forceKeyframe: true, forceReason: "initial"})
+	if err != nil {
+		t.Fatalf("Build initial: %v", err)
+	}
+	if initial == nil || !initial.GetIsKeyframe() {
+		t.Fatalf("expected initial keyframe, got %+v", initial)
+	}
+
+	resized, err := builder.Build(&subscribeScreenSnapshot{snapshot: second, forceKeyframe: false, forceReason: "resize"})
+	if err != nil {
+		t.Fatalf("Build resized: %v", err)
+	}
+	if resized == nil || !resized.GetIsKeyframe() || resized.GetBaseFrameId() != 0 {
+		t.Fatalf("expected resize keyframe, got %+v", resized)
+	}
+}
+
+func makeTestSnapshot(cols, rows int, fill rune) *Snapshot {
+	cells := make([]Cell, cols*rows)
+	for i := range cells {
+		cells[i] = Cell{
+			Rune:  fill,
+			Fg:    color.RGBA{R: 255, G: 255, B: 255, A: 255},
+			Bg:    color.RGBA{A: 255},
+			Attrs: 0,
+		}
+	}
+	return &Snapshot{
+		Cols:    cols,
+		Rows:    rows,
+		CursorX: 0,
+		CursorY: 0,
+		Cells:   cells,
 	}
 }
 

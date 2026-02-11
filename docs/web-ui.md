@@ -43,6 +43,7 @@ Frames are protobuf `google.protobuf.Any` messages.
 2. Server streams `SessionsSnapshot` (Any) whenever the list changes.
 
 Errors are returned as `google.rpc.Status` (Any) and then the WebSocket closes.
+The server closes stream sockets with a policy-violation close code and a short reason string after sending the status frame.
 
 ### Session identity
 
@@ -52,9 +53,16 @@ Errors are returned as `google.rpc.Status` (Any) and then the WebSocket closes.
 ## Rendering model
 
 - The server sends structured screen updates (no ANSI parsing in the browser).
-- The client applies `ScreenUpdate` keyframes to a grid model.
-- Delta updates are supported in the client but are not emitted by the server yet.
+- The client applies keyframes and deltas to a grid model with frame-chain checks.
+- If a delta base frame does not match, the client resubscribes to recover from a fresh keyframe.
 - Wide character width uses `wcwidth` to size cells.
+
+## Stream status labels
+
+- `connecting` and `reconnecting` are shown while subscribe is being (re)established.
+- `connected` means the socket is open but no recent screen frame has arrived.
+- `connected+receiving` means a screen frame arrived within the recent receive window.
+- `error` and `closed` are terminal/non-streaming states until reconnect.
 
 ## UI stack
 

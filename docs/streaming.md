@@ -57,25 +57,25 @@ message SubscribeEvent {
 
 ## Current behavior
 
-- The server emits keyframes only (`ScreenUpdate.screen`), not deltas.
+- Screen streams start with a fresh keyframe (`ScreenUpdate.screen`) built from a live snapshot.
+- Subsequent updates emit deltas (`ScreenUpdate.delta`) when a safe base frame is available.
 - `frame_id` is monotonic; gaps are allowed.
-- Keyframes are sent on subscribe, periodically, and after resizes.
+- The server does not emit periodic keyframes in healthy steady state.
+- Keyframes are forced on first frame, resize, and any unsafe delta condition.
 - Raw output is buffered up to 1MB for subscribers that request it.
 
-## Delta format (supported, not emitted)
+## Delta format (emitted)
 
-`ScreenDelta` and `RowDelta` exist in the proto and are handled by the web client,
-but the server currently does not emit deltas.
-
-If deltas are introduced:
-- `base_frame_id` must match the client's current `frame_id`.
-- If the base is missing, clients must wait for a keyframe.
+- `ScreenDelta.base_frame_id` must match the client-applied `frame_id`.
+- `RowDelta` entries carry full replacement row data for changed rows only.
+- Cursor-only movement may produce a delta with no `row_deltas`.
+- When server-side base chaining is unsafe (missing base, size mismatch, or non-comparable data), the server falls back to a keyframe.
 
 ## Backpressure and coalescing
 
 - Screen updates are output-driven and throttled (approx 30fps max).
 - Latest-only policy: per subscriber, only the most recent pending update is kept.
-- Keyframes are cached for resync when a client falls behind.
+- If a client falls out of delta chain, it must wait for/trigger a new keyframe.
 
 ## Session list snapshots
 

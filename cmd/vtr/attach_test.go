@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"time"
 
 	proto "github.com/advait/vtrpc/proto"
 )
@@ -264,11 +265,104 @@ func TestNormalizeSessionSwitchResolvesCoordFromItems(t *testing.T) {
 
 func TestNormalizeSessionSwitchUsesSingleCoordinatorFallback(t *testing.T) {
 	model := attachModel{
-		hub:   coordinatorRef{Name: "hub"},
+		hub:    coordinatorRef{Name: "hub"},
 		coords: []coordinatorRef{{Name: "spoke-a"}},
 	}
 	msg := normalizeSessionSwitch(model, sessionSwitchMsg{id: "id-2", label: "demo"})
 	if msg.coord != "spoke-a" {
 		t.Fatalf("expected fallback coord spoke-a, got %q", msg.coord)
+	}
+}
+
+func TestScheduleSubscribeRetryWithoutSessionStops(t *testing.T) {
+	model := attachModel{
+		streamID:    9,
+		streamState: "reconnecting",
+	}
+	next, cmd := scheduleSubscribeRetry(model)
+	if cmd != nil {
+		t.Fatalf("expected no retry command without session")
+	}
+	if next.streamID != 9 {
+		t.Fatalf("expected stream id unchanged, got %d", next.streamID)
+	}
+	if next.streamState != "disconnected" {
+		t.Fatalf("expected disconnected state, got %q", next.streamState)
+	}
+}
+
+func TestScheduleSubscribeRetrySchedulesRetry(t *testing.T) {
+	model := attachModel{
+		sessionID:     "session-1",
+		streamID:      2,
+		streamBackoff: time.Millisecond,
+	}
+	next, cmd := scheduleSubscribeRetry(model)
+	if cmd == nil {
+		t.Fatalf("expected retry command")
+	}
+	if next.streamID != 3 {
+		t.Fatalf("expected stream id increment, got %d", next.streamID)
+	}
+	if next.streamState != "reconnecting" {
+		t.Fatalf("expected reconnecting state, got %q", next.streamState)
+	}
+	if next.streamBackoff <= time.Millisecond {
+		t.Fatalf("expected backoff growth, got %s", next.streamBackoff)
+	}
+	msg := cmd()
+	retry, ok := msg.(subscribeRetryMsg)
+	if !ok {
+		t.Fatalf("expected subscribeRetryMsg, got %T", msg)
+	}
+	if retry.streamID != 3 {
+		t.Fatalf("expected retry stream id 3, got %d", retry.streamID)
+	}
+}
+
+func TestUpdateTickDowngradesReceivingState(t *testing.T) {
+	now := time.Unix(1000, 0)
+	model := attachModel{
+		streamState:  "receiving",
+		lastScreenAt: now.Add(-3 * time.Second),
+	}
+	updated, _ := model.Update(tickMsg(now))
+	next, ok := updated.(attachModel)
+	if !ok {
+		t.Fatalf("expected attachModel update result, got %T", updated)
+	}
+	if next.streamState != "connected" {
+		t.Fatalf("expected connected state after stale tick, got %q", next.streamState)
+	}
+}
+
+func TestStreamStateLabelDefaults(t *testing.T) {
+	tests := []struct {
+		name     string
+		model    attachModel
+		expected string
+	}{
+		{
+			name:     "known state",
+			model:    attachModel{streamState: "receiving"},
+			expected: "receiving",
+		},
+		{
+			name:     "unknown no session",
+			model:    attachModel{streamState: "mystery"},
+			expected: "disconnected",
+		},
+		{
+			name:     "unknown with session",
+			model:    attachModel{streamState: "mystery", sessionID: "id-1"},
+			expected: "connecting",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := streamStateLabel(tc.model); got != tc.expected {
+				t.Fatalf("expected %q, got %q", tc.expected, got)
+			}
+		})
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	proto "github.com/advait/vtrpc/proto"
@@ -44,6 +45,9 @@ const (
 )
 
 const tunnelSlowCallThreshold = time.Second
+const tunnelBacklogDropReason = "tunnel_backlog_drop"
+
+var tunnelBacklogDropCount atomic.Int64
 
 type HubDialer func(ctx context.Context, addr string) (*grpc.ClientConn, error)
 
@@ -122,9 +126,11 @@ func tunnelNames(r *tunnelRegistry) []string {
 
 type tunnelCall struct {
 	id     string
+	stream bool
 	ch     chan *proto.TunnelFrame
 	mu     sync.Mutex
 	closed bool
+	err    error
 }
 
 type tunnelSendResult int
@@ -135,10 +141,11 @@ const (
 	tunnelSendFailed
 )
 
-func newTunnelCall(id string) *tunnelCall {
+func newTunnelCall(id string, stream bool) *tunnelCall {
 	return &tunnelCall{
-		id: id,
-		ch: make(chan *proto.TunnelFrame, 16),
+		id:     id,
+		stream: stream,
+		ch:     make(chan *proto.TunnelFrame, 16),
 	}
 }
 
@@ -176,6 +183,23 @@ func (c *tunnelCall) close() {
 	close(c.ch)
 }
 
+func (c *tunnelCall) fail(err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return
+	}
+	c.err = err
+	c.closed = true
+	close(c.ch)
+}
+
+func (c *tunnelCall) terminalErr() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.err
+}
+
 type tunnelEndpoint struct {
 	name   string
 	stream proto.VTR_TunnelServer
@@ -208,7 +232,7 @@ func (e *tunnelEndpoint) send(frame *proto.TunnelFrame) error {
 	return e.stream.Send(frame)
 }
 
-func (e *tunnelEndpoint) startCall() (*tunnelCall, error) {
+func (e *tunnelEndpoint) startCall(stream bool) (*tunnelCall, error) {
 	if e == nil {
 		return nil, errors.New("tunnel endpoint is nil")
 	}
@@ -218,7 +242,7 @@ func (e *tunnelEndpoint) startCall() (*tunnelCall, error) {
 		return nil, errors.New("tunnel endpoint is closed")
 	}
 	id := uuid.NewString()
-	call := newTunnelCall(id)
+	call := newTunnelCall(id, stream)
 	e.calls[id] = call
 	return call, nil
 }
@@ -253,8 +277,24 @@ func (e *tunnelEndpoint) dispatch(frame *proto.TunnelFrame) {
 	terminal := isTerminalTunnelFrame(frame)
 	switch call.send(frame) {
 	case tunnelSendDroppedOldest:
+		dropCount := tunnelBacklogDropCount.Add(1)
 		if e.logger != nil {
-			e.logger.Debug("tunnel call backlog drop", "spoke", e.name, "call_id", callID, "kind", tunnelFrameKind(frame))
+			e.logger.Warn(
+				"tunnel call backlog drop",
+				"spoke", e.name,
+				"call_id", callID,
+				"kind", tunnelFrameKind(frame),
+				"stream", call.stream,
+				"reason", tunnelBacklogDropReason,
+				"drop_count", dropCount,
+			)
+		}
+		if call.stream {
+			call.fail(status.Error(codes.Unavailable, tunnelBacklogDropReason))
+			e.mu.Lock()
+			delete(e.calls, callID)
+			e.mu.Unlock()
+			return
 		}
 	case tunnelSendFailed:
 		if terminal {
@@ -302,7 +342,7 @@ func (e *tunnelEndpoint) CallUnary(ctx context.Context, method string, req gopro
 	if err != nil {
 		return err
 	}
-	call, err := e.startCall()
+	call, err := e.startCall(false)
 	if err != nil {
 		return err
 	}
@@ -341,6 +381,9 @@ func (e *tunnelEndpoint) CallUnary(ctx context.Context, method string, req gopro
 			return ctx.Err()
 		case frame, ok := <-call.ch:
 			if !ok {
+				if terminalErr := call.terminalErr(); terminalErr != nil {
+					return terminalErr
+				}
 				return errors.New("tunnel closed")
 			}
 			if frame == nil {
@@ -376,7 +419,7 @@ func (e *tunnelEndpoint) CallStream(ctx context.Context, method string, req gopr
 	if err != nil {
 		return err
 	}
-	call, err := e.startCall()
+	call, err := e.startCall(true)
 	if err != nil {
 		return err
 	}
@@ -415,6 +458,9 @@ func (e *tunnelEndpoint) CallStream(ctx context.Context, method string, req gopr
 			return ctx.Err()
 		case frame, ok := <-call.ch:
 			if !ok {
+				if terminalErr := call.terminalErr(); terminalErr != nil {
+					return terminalErr
+				}
 				return errors.New("tunnel closed")
 			}
 			if frame == nil {

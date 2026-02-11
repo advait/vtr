@@ -26,19 +26,22 @@ import (
 )
 
 type attachModel struct {
-	conn         *grpc.ClientConn
-	client       proto.VTRClient
-	hub          coordinatorRef
-	coordinator  coordinatorRef
-	coords       []coordinatorRef
-	cfg          *clientConfig
-	sessionID    string
-	sessionLabel string
-	sessionCoord string
-	stream       proto.VTR_SubscribeClient
-	streamCancel context.CancelFunc
-	streamID     int
-	frameID      uint64
+	conn          *grpc.ClientConn
+	client        proto.VTRClient
+	hub           coordinatorRef
+	coordinator   coordinatorRef
+	coords        []coordinatorRef
+	cfg           *clientConfig
+	sessionID     string
+	sessionLabel  string
+	sessionCoord  string
+	stream        proto.VTR_SubscribeClient
+	streamCancel  context.CancelFunc
+	streamID      int
+	frameID       uint64
+	streamBackoff time.Duration
+	streamState   string
+	lastScreenAt  time.Time
 
 	sessionsStream       proto.VTR_SubscribeSessionsClient
 	sessionsStreamCancel context.CancelFunc
@@ -110,6 +113,10 @@ type subscribeEventMsg struct {
 	event    *proto.SubscribeEvent
 	streamID int
 	err      error
+}
+
+type subscribeRetryMsg struct {
+	streamID int
 }
 
 type sessionsSubscribeStartMsg struct {
@@ -436,6 +443,8 @@ func newTuiCmd() *cobra.Command {
 				sessionLabel:     target.Label,
 				sessionCoord:     activeCoord.Name,
 				streamID:         1,
+				streamBackoff:    time.Second,
+				streamState:      "disconnected",
 				sessionsStreamID: 1,
 				sessionList:      newSessionListModel(nil, 0, 0),
 				createInput:      newCreateInput(),
@@ -446,6 +455,9 @@ func newTuiCmd() *cobra.Command {
 				profiler:         profiler,
 				profileQuitAfter: profileDuration,
 				now:              time.Now(),
+			}
+			if strings.TrimSpace(model.sessionID) != "" || strings.TrimSpace(model.sessionLabel) != "" {
+				model.streamState = "connecting"
 			}
 
 			prog := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseAllMotion())
@@ -696,14 +708,21 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.err != nil {
-			m.err = msg.err
-			return m, tea.Quit
+			m.stream = nil
+			m.streamCancel = nil
+			m.streamState = "reconnecting"
+			m.statusMsg = fmt.Sprintf("stream: %v", msg.err)
+			m.statusUntil = time.Now().Add(2 * time.Second)
+			return scheduleSubscribeRetry(m)
 		}
 		if m.streamCancel != nil {
 			m.streamCancel()
 		}
 		m.stream = msg.stream
 		m.streamCancel = msg.cancel
+		m.streamBackoff = time.Second
+		m.streamState = "connected"
+		m.lastScreenAt = time.Time{}
 		m.exited = false
 		m.exitCode = 0
 		return m, waitSubscribeCmd(m.stream, m.streamID)
@@ -712,10 +731,21 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.err != nil {
-			m.err = msg.err
-			return m, tea.Quit
+			if m.streamCancel != nil {
+				m.streamCancel()
+				m.streamCancel = nil
+			}
+			m.stream = nil
+			m.streamState = "reconnecting"
+			if !errors.Is(msg.err, io.EOF) && !errors.Is(msg.err, context.Canceled) {
+				m.statusMsg = fmt.Sprintf("stream: %v", msg.err)
+				m.statusUntil = time.Now().Add(2 * time.Second)
+			}
+			return scheduleSubscribeRetry(m)
 		}
 		if update := msg.event.GetScreenUpdate(); update != nil {
+			m.lastScreenAt = time.Now()
+			m.streamState = "receiving"
 			next, cmd := applyScreenUpdate(m, update)
 			m = next
 			if cmd != nil {
@@ -735,11 +765,13 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.exited = true
 			m.exitCode = exited.ExitCode
 			m.leaderActive = false
+			m.streamState = "disconnected"
 			m.sessionItems = ensureSessionItem(m.sessionItems, m.sessionID, m.sessionLabel, true, exited.ExitCode, m.coordinator.Name)
 			if m.streamCancel != nil {
 				m.streamCancel()
 				m.streamCancel = nil
 			}
+			m.stream = nil
 			cmd := m.sessionList.SetItems(sessionItemsToListItems(visibleSessionItems(m), m.coords, m.coordinator.Name))
 			skipSessionListHeaders(&m.sessionList, 1)
 			return m, cmd
@@ -817,6 +849,12 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, startSessionsStreamCmd(m.client, m.sessionsStreamID)
+	case subscribeRetryMsg:
+		if msg.streamID != m.streamID {
+			return m, nil
+		}
+		m.streamState = "connecting"
+		return m, startSubscribeCmd(m.client, m.sessionID, m.sessionCoord, m.streamID)
 	case profileDoneMsg:
 		return m, tea.Quit
 	case tickMsg:
@@ -824,6 +862,9 @@ func (m attachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.statusMsg != "" && !m.statusUntil.IsZero() && m.now.After(m.statusUntil) {
 			m.statusMsg = ""
 			m.statusUntil = time.Time{}
+		}
+		if m.streamState == "receiving" && !m.lastScreenAt.IsZero() && m.now.Sub(m.lastScreenAt) > 2*time.Second {
+			m.streamState = "connected"
 		}
 		return m, tickCmd()
 	case tea.WindowSizeMsg:
@@ -975,6 +1016,7 @@ func (m attachModel) View() string {
 				width:       overlayWidth,
 				leader:      m.leaderActive,
 				statusMsg:   m.statusMsg,
+				streamState: streamStateLabel(m),
 				exited:      m.exited,
 				coordinator: m.coordinator.Name,
 				active:      activeItem,
@@ -1009,6 +1051,9 @@ func startSubscribeCmd(client proto.VTRClient, id, coordinator string, streamID 
 
 func waitSubscribeCmd(stream proto.VTR_SubscribeClient, streamID int) tea.Cmd {
 	return func() tea.Msg {
+		if stream == nil {
+			return subscribeEventMsg{err: fmt.Errorf("stream unavailable"), streamID: streamID}
+		}
 		event, err := stream.Recv()
 		if err != nil {
 			return subscribeEventMsg{err: err, streamID: streamID}
@@ -1054,6 +1099,24 @@ func scheduleSessionsRetry(m attachModel) (attachModel, tea.Cmd) {
 	m.sessionsBackoff = nextBackoff(delay)
 	return m, tea.Tick(delay, func(time.Time) tea.Msg {
 		return sessionsRetryMsg{streamID: nextID}
+	})
+}
+
+func scheduleSubscribeRetry(m attachModel) (attachModel, tea.Cmd) {
+	if strings.TrimSpace(m.sessionID) == "" || m.exited {
+		m.streamState = "disconnected"
+		return m, nil
+	}
+	delay := m.streamBackoff
+	if delay <= 0 {
+		delay = 500 * time.Millisecond
+	}
+	nextID := m.streamID + 1
+	m.streamID = nextID
+	m.streamBackoff = nextBackoff(delay)
+	m.streamState = "reconnecting"
+	return m, tea.Tick(delay, func(time.Time) tea.Msg {
+		return subscribeRetryMsg{streamID: nextID}
 	})
 }
 
@@ -2152,6 +2215,9 @@ func switchSession(m attachModel, msg sessionSwitchMsg) (attachModel, tea.Cmd) {
 		m.streamCancel = nil
 	}
 	m.streamID++
+	m.streamBackoff = time.Second
+	m.streamState = "connecting"
+	m.lastScreenAt = time.Time{}
 	m.sessionID = msg.id
 	m.sessionLabel = msg.label
 	m.sessionCoord = msg.coord
@@ -2511,6 +2577,9 @@ func resubscribe(m attachModel, reason string) (attachModel, tea.Cmd) {
 		m.streamCancel = nil
 	}
 	m.streamID++
+	m.streamBackoff = time.Second
+	m.streamState = "connecting"
+	m.lastScreenAt = time.Time{}
 	m.frameID = 0
 	if reason != "" {
 		m.statusMsg = fmt.Sprintf("resync: %s", reason)
@@ -2826,6 +2895,7 @@ type footerView struct {
 	width       int
 	leader      bool
 	statusMsg   string
+	streamState string
 	exited      bool
 	coordinator string
 	active      sessionListItem
@@ -3117,7 +3187,7 @@ func renderFooterSegments(view footerView) (string, string) {
 	if view.width <= 0 {
 		return "", ""
 	}
-	leftSegments := make([]string, 0, 3)
+	leftSegments := make([]string, 0, 4)
 	if view.coordinator != "" {
 		leftSegments = append(leftSegments, attachFooterTagStyle.Render(" "+view.coordinator+" "))
 	}
@@ -3126,6 +3196,9 @@ func renderFooterSegments(view footerView) (string, string) {
 		if state != "" {
 			leftSegments = append(leftSegments, attachFooterTagStyle.Render(" "+state+" "))
 		}
+	}
+	if view.streamState != "" {
+		leftSegments = append(leftSegments, attachFooterTagStyle.Render(" stream "+view.streamState+" "))
 	}
 	if view.statusMsg != "" {
 		leftSegments = append(leftSegments, attachStatusStyle.Render(" "+view.statusMsg+" "))
@@ -3211,6 +3284,26 @@ func sessionStateLabel(item sessionListItem) string {
 		return fmt.Sprintf("%s exited", renderSessionStatusIcon(item))
 	default:
 		return fmt.Sprintf("%s unknown", renderSessionStatusIcon(item))
+	}
+}
+
+func streamStateLabel(m attachModel) string {
+	switch strings.TrimSpace(m.streamState) {
+	case "receiving":
+		return "receiving"
+	case "connected":
+		return "connected"
+	case "reconnecting":
+		return "reconnecting"
+	case "connecting":
+		return "connecting"
+	case "disconnected":
+		return "disconnected"
+	default:
+		if strings.TrimSpace(m.sessionID) == "" {
+			return "disconnected"
+		}
+		return "connecting"
 	}
 }
 

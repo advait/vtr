@@ -8,13 +8,6 @@ import {
 } from "react";
 import { ActionTray } from "./components/ActionTray";
 import type { CoordinatorInfo, SessionInfo } from "./components/CoordinatorTree";
-import {
-  displaySessionName,
-  sessionKey,
-  sessionRefEquals,
-  sessionRefFromSession,
-  type SessionRef,
-} from "./lib/session";
 import { InputBar } from "./components/InputBar";
 import { MultiViewDashboard } from "./components/MultiViewDashboard";
 import { SessionTabs } from "./components/SessionTabs";
@@ -25,6 +18,13 @@ import { ScrollArea } from "./components/ui/ScrollArea";
 import { createSession, fetchWebInfo, sendSessionAction, type WebInfoResponse } from "./lib/api";
 import { loadPreferences, type TerminalRenderer, updatePreferences } from "./lib/preferences";
 import type { SubscribeEvent } from "./lib/proto";
+import {
+  displaySessionName,
+  type SessionRef,
+  sessionKey,
+  sessionRefEquals,
+  sessionRefFromSession,
+} from "./lib/session";
 import { applyScreenUpdate, type ScreenState } from "./lib/terminal";
 import { applyTheme, getTheme, sortedThemes } from "./lib/theme";
 import { useVtrSessionsStream, useVtrStream } from "./lib/ws";
@@ -35,11 +35,21 @@ const statusLabels: Record<
 > = {
   idle: { label: "idle", variant: "default" },
   connecting: { label: "connecting", variant: "yellow" },
-  open: { label: "live", variant: "green" },
+  open: { label: "connected", variant: "yellow" },
   reconnecting: { label: "reconnecting", variant: "yellow" },
   error: { label: "error", variant: "red" },
   closed: { label: "closed", variant: "default" },
 };
+
+function streamStatusBadge(status: string, receiving?: boolean) {
+  if (status === "open") {
+    if (receiving) {
+      return { label: "connected+receiving", variant: "green" as const };
+    }
+    return { label: "connected", variant: "yellow" as const };
+  }
+  return statusLabels[status] || statusLabels.idle;
+}
 
 const sessionHashKey = "session";
 const sessionCoordHashKey = "coord";
@@ -124,7 +134,10 @@ function formatSessionLabel(_coordinator: string, label: string) {
   return displaySessionName(label);
 }
 
-function findSessionDetails(coordinators: CoordinatorInfo[], ref: SessionRef): SessionDetails | null {
+function findSessionDetails(
+  coordinators: CoordinatorInfo[],
+  ref: SessionRef,
+): SessionDetails | null {
   const id = ref.id.trim();
   if (!id) {
     return null;
@@ -452,7 +465,9 @@ export default function App() {
     if (!selectedSession) {
       return;
     }
-    const index = tabSessions.findIndex((entry) => sessionRefEquals(entry.ref, selectedSession.ref));
+    const index = tabSessions.findIndex((entry) =>
+      sessionRefEquals(entry.ref, selectedSession.ref),
+    );
     if (index >= 0) {
       lastSelectedIndexRef.current = index;
     }
@@ -560,7 +575,9 @@ export default function App() {
     if (selectedSession.status === "exited" && !showClosedSessions) {
       return;
     }
-    const index = tabSessions.findIndex((entry) => sessionRefEquals(entry.ref, selectedSession.ref));
+    const index = tabSessions.findIndex((entry) =>
+      sessionRefEquals(entry.ref, selectedSession.ref),
+    );
     if (index >= 0) {
       return;
     }
@@ -722,68 +739,68 @@ export default function App() {
     [coordinators, sendKeyTo, sendTextTo, state.status],
   );
 
-  const handleCreateSession = useCallback(async (coordinatorOverride?: string) => {
-    if (createBusy) {
-      return;
-    }
-    const activeCoordinator =
-      (activeSession && findSessionDetails(coordinators, activeSession)?.ref.coordinator) ?? "";
-    const preferredCoordinator = coordinatorOverride?.trim() ?? "";
-    const coordinator =
-      (preferredCoordinator && coordinatorOptions.includes(preferredCoordinator)
-        ? preferredCoordinator
-        : activeCoordinator && coordinatorOptions.includes(activeCoordinator)
-          ? activeCoordinator
-          : coordinatorOptions[0]) || "";
-    if (!coordinator) {
-      window.alert("No coordinators available to create a session.");
-      return;
-    }
-    const existing = new Set<string>();
-    const coord = coordinators.find((entry) => entry.name === coordinator);
-    if (coord) {
-      for (const session of coord.sessions) {
-        existing.add(session.name);
+  const handleCreateSession = useCallback(
+    async (coordinatorOverride?: string) => {
+      if (createBusy) {
+        return;
       }
-    }
-    let index = 1;
-    let name = `session-${index}`;
-    while (existing.has(name)) {
-      index += 1;
-      name = `session-${index}`;
-    }
-    setCreateBusy(true);
-    try {
-      const result = await createSession({ name, coordinator });
-      const ref = sessionRefFromSession(result.coordinator, result.session);
-      setSelectedSession({
-        ref,
-        label: result.session.name,
-        status: result.session.status,
-        exitCode: result.session.exitCode,
-      });
-      setActiveSession(result.session.status === "exited" ? null : ref);
-      setViewMode("single");
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Unable to create session.";
-      window.alert(message);
-    } finally {
-      setCreateBusy(false);
-    }
-  }, [activeSession, coordinatorOptions, coordinators, createBusy]);
-  const runSessionAction = useCallback(
-    async (payload: Parameters<typeof sendSessionAction>[0]) => {
+      const activeCoordinator =
+        (activeSession && findSessionDetails(coordinators, activeSession)?.ref.coordinator) ?? "";
+      const preferredCoordinator = coordinatorOverride?.trim() ?? "";
+      const coordinator =
+        (preferredCoordinator && coordinatorOptions.includes(preferredCoordinator)
+          ? preferredCoordinator
+          : activeCoordinator && coordinatorOptions.includes(activeCoordinator)
+            ? activeCoordinator
+            : coordinatorOptions[0]) || "";
+      if (!coordinator) {
+        window.alert("No coordinators available to create a session.");
+        return;
+      }
+      const existing = new Set<string>();
+      const coord = coordinators.find((entry) => entry.name === coordinator);
+      if (coord) {
+        for (const session of coord.sessions) {
+          existing.add(session.name);
+        }
+      }
+      let index = 1;
+      let name = `session-${index}`;
+      while (existing.has(name)) {
+        index += 1;
+        name = `session-${index}`;
+      }
+      setCreateBusy(true);
       try {
-        await sendSessionAction(payload);
+        const result = await createSession({ name, coordinator });
+        const ref = sessionRefFromSession(result.coordinator, result.session);
+        setSelectedSession({
+          ref,
+          label: result.session.name,
+          status: result.session.status,
+          exitCode: result.session.exitCode,
+        });
+        setActiveSession(result.session.status === "exited" ? null : ref);
+        setViewMode("single");
       } catch (err) {
-        const message = err instanceof Error ? err.message : "Session action failed.";
+        const message = err instanceof Error ? err.message : "Unable to create session.";
         window.alert(message);
       } finally {
-        setContextMenu(null);
+        setCreateBusy(false);
       }
     },
-    [],
+    [activeSession, coordinatorOptions, coordinators, createBusy],
   );
+  const runSessionAction = useCallback(async (payload: Parameters<typeof sendSessionAction>[0]) => {
+    try {
+      await sendSessionAction(payload);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Session action failed.";
+      window.alert(message);
+    } finally {
+      setContextMenu(null);
+    }
+  }, []);
 
   const handleRenameSubmit = async () => {
     if (!contextMenu || renameBusy) {
@@ -887,14 +904,17 @@ export default function App() {
     [openContextMenuAt],
   );
 
+  const activeStreamStatus = useMemo(() => {
+    return streamStatusBadge(state.status, state.receiving);
+  }, [state.receiving, state.status]);
+
   const statusBadge = useMemo(() => {
     if (selectedSession?.status === "exited") {
       const label = exitCode !== null ? `exited (${exitCode})` : "exited";
       return <Badge variant="red">{label}</Badge>;
     }
-    const status = statusLabels[state.status] || statusLabels.idle;
-    return <Badge variant={status.variant}>{status.label}</Badge>;
-  }, [exitCode, selectedSession?.status, state.status]);
+    return <Badge variant={activeStreamStatus.variant}>{activeStreamStatus.label}</Badge>;
+  }, [activeStreamStatus.label, activeStreamStatus.variant, exitCode, selectedSession?.status]);
 
   const showExit = exitCode !== null && selectedSession?.status !== "exited";
   const displayStatus = selectedSession?.status === "exited" ? "exited" : state.status;
@@ -903,7 +923,6 @@ export default function App() {
     : "";
   const contextRunning = contextMenu?.status === "running" || contextMenu?.status === "closing";
   const sessionsStreamStatus = statusLabels[sessionsState.status] || statusLabels.idle;
-  const activeStreamStatus = statusLabels[state.status] || statusLabels.idle;
   const webAddress = typeof window === "undefined" ? "" : window.location.host;
   const hubName = webInfo?.hub?.name?.trim() || "";
   const hubPath = webInfo?.hub?.path?.trim() || "";
@@ -1100,21 +1119,21 @@ export default function App() {
                   isFocused={terminalFocused}
                 />
                 <div className="flex-1 min-h-[360px] md:min-h-[420px]">
-                <TerminalView
-                  screen={screen}
-                  status={displayStatus}
-                  onResize={onResize}
-                  onSendKey={onSendKey}
-                  onSendText={onSendText}
-                  onPaste={onSendText}
-                  autoFocus={isDesktop}
-                  focusKey={selectedSession?.ref.id}
-                  autoResize={autoResize}
-                  minRows={isDesktop ? 50 : undefined}
-                  onFocusChange={setTerminalFocused}
-                  renderer={terminalRenderer}
-                  themeKey={activeTheme.id}
-                />
+                  <TerminalView
+                    screen={screen}
+                    status={displayStatus}
+                    onResize={onResize}
+                    onSendKey={onSendKey}
+                    onSendText={onSendText}
+                    onPaste={onSendText}
+                    autoFocus={isDesktop}
+                    focusKey={selectedSession?.ref.id}
+                    autoResize={autoResize}
+                    minRows={isDesktop ? 50 : undefined}
+                    onFocusChange={setTerminalFocused}
+                    renderer={terminalRenderer}
+                    themeKey={activeTheme.id}
+                  />
                 </div>
               </div>
               {!isDesktop && (
@@ -1167,9 +1186,7 @@ export default function App() {
                 <span id="hub-info-title" className="text-sm font-semibold text-tn-text">
                   Hub Info
                 </span>
-                <Badge variant={sessionsStreamStatus.variant}>
-                  {sessionsStreamStatus.label}
-                </Badge>
+                <Badge variant={sessionsStreamStatus.variant}>{sessionsStreamStatus.label}</Badge>
               </div>
               <Button
                 type="button"
@@ -1199,18 +1216,14 @@ export default function App() {
                     </div>
                     <div>
                       <div className="text-tn-text-dim">Hub path</div>
-                      <div className="mt-1 font-mono text-tn-text break-all">
-                        {hubPath || "—"}
-                      </div>
+                      <div className="mt-1 font-mono text-tn-text break-all">{hubPath || "—"}</div>
                     </div>
                     <div className="flex items-center justify-between gap-3">
                       <span>vtr version</span>
                       <span className="font-mono text-tn-text">{webInfo?.version || "—"}</span>
                     </div>
                     {hubError && (
-                      <div className="text-[11px] text-tn-orange">
-                        Hub info error: {hubError}
-                      </div>
+                      <div className="text-[11px] text-tn-orange">Hub info error: {hubError}</div>
                     )}
                     {sessionsState.error && (
                       <div className="text-[11px] text-tn-orange">
@@ -1275,9 +1288,7 @@ export default function App() {
                       <div>running</div>
                     </div>
                     <div className="rounded-md border border-tn-border bg-tn-panel px-2 py-2">
-                      <div className="text-sm font-semibold text-tn-text">
-                        {sessionStats.idle}
-                      </div>
+                      <div className="text-sm font-semibold text-tn-text">{sessionStats.idle}</div>
                       <div>idle</div>
                     </div>
                     <div className="rounded-md border border-tn-border bg-tn-panel px-2 py-2">

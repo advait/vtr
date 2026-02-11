@@ -97,15 +97,7 @@ test.beforeAll(async () => {
     await runCommand("bun", ["run", "build"], path.join(repoRoot, "web"));
   }
   await runCommand("go", ["build", "-o", vtrBinary, "./cmd/vtr"], repoRoot);
-  hubProc = startProcess(
-    vtrBinary,
-    [
-      "hub",
-      "--addr",
-      hubAddr,
-    ],
-    repoRoot,
-  );
+  hubProc = startProcess(vtrBinary, ["hub", "--addr", hubAddr], repoRoot);
   await waitForHttp(baseURL, bootTimeoutMs);
   await runCommand(
     vtrBinary,
@@ -140,8 +132,13 @@ test("streams ANSI output, attributes, and recovers after offline", async ({ pag
   await page.setViewportSize({ width: 900, height: 720 });
   await page.goto(baseURL);
 
-  await page.getByRole("button", { name: new RegExp(sessionName) }).first().click();
-  await expect(page.locator("header").getByText("live", { exact: true })).toBeVisible();
+  await page
+    .getByRole("button", { name: new RegExp(sessionName) })
+    .first()
+    .click();
+  await expect(
+    page.locator("header").getByText(/connected(\+receiving)?/, { exact: false }),
+  ).toBeVisible();
   await runCommand(
     vtrBinary,
     ["agent", "resize", "--hub", hubAddr, sessionName, "120", "40"],
@@ -196,7 +193,9 @@ test("streams ANSI output, attributes, and recovers after offline", async ({ pag
   await page.waitForTimeout(1000);
   await page.context().setOffline(false);
   await waitForHttp(baseURL, 20_000);
-  await expect(page.locator("header").getByText("live", { exact: true })).toBeVisible();
+  await expect(
+    page.locator("header").getByText(/connected(\+receiving)?/, { exact: false }),
+  ).toBeVisible();
 
   await sendCommand('echo "after reconnect"');
   await waitForOutput("after reconnect");
