@@ -115,6 +115,10 @@ export function useVtrStream(sessionRef: SessionRef | null, options: StreamOptio
 
   const close = useCallback(() => {
     closedByUser.current = true;
+    if (reconnectRef.current.timer) {
+      window.clearTimeout(reconnectRef.current.timer);
+      reconnectRef.current.timer = undefined;
+    }
     if (wsRef.current) {
       wsRef.current.close();
     }
@@ -382,6 +386,10 @@ export function useVtrSessionsStream(options: { excludeExited?: boolean } = {}) 
 
   const close = useCallback(() => {
     closedByUser.current = true;
+    if (reconnectRef.current.timer) {
+      window.clearTimeout(reconnectRef.current.timer);
+      reconnectRef.current.timer = undefined;
+    }
     if (wsRef.current) {
       wsRef.current.close();
     }
