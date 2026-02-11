@@ -546,6 +546,11 @@ export default function App() {
   const selectedSessionId = selectedSession?.ref.id ?? null;
 
   useEffect(() => {
+    pendingUpdates.current = [];
+    if (rafRef.current) {
+      window.cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
     if (!selectedSessionId) {
       setScreen(null);
       return;
