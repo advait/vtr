@@ -80,8 +80,15 @@ export function applyScreenUpdate(
   prev: ScreenState | null,
   update: ScreenUpdate,
 ): ScreenState | null {
+  const isKeyframe = update.is_keyframe === true;
   const hasScreen = !!update.screen;
   if (hasScreen) {
+    if (!isKeyframe) {
+      if (!prev) {
+        return null;
+      }
+      return { ...prev, waitingForKeyframe: true };
+    }
     const next = screenFromSnapshot(update.screen);
     if (!next) {
       return prev;
@@ -89,6 +96,13 @@ export function applyScreenUpdate(
     next.frameId = toNumber(update.frame_id) ?? prev?.frameId ?? 0;
     next.waitingForKeyframe = false;
     return next;
+  }
+
+  if (isKeyframe) {
+    if (!prev) {
+      return null;
+    }
+    return { ...prev, waitingForKeyframe: true };
   }
 
   if (!update.delta) {

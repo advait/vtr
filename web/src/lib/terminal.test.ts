@@ -43,6 +43,38 @@ describe("applyScreenUpdate", () => {
     expect(next?.rows).toBe(1);
   });
 
+  it("rejects non-keyframe updates carrying full screen snapshots", () => {
+    const prev = baseState();
+    const next = applyScreenUpdate(prev, {
+      frame_id: 11,
+      is_keyframe: false,
+      screen: {
+        id: "s-1",
+        name: "demo",
+        cols: 4,
+        rows: 2,
+        cursor_x: 0,
+        cursor_y: 0,
+        screen_rows: [],
+      },
+    } as any);
+    expect(next?.waitingForKeyframe).toBe(true);
+    expect(next?.cols).toBe(2);
+    expect(next?.rows).toBe(1);
+  });
+
+  it("rejects keyframe updates missing full screen snapshots", () => {
+    const prev = baseState();
+    const next = applyScreenUpdate(prev, {
+      frame_id: 11,
+      is_keyframe: true,
+      screen: undefined,
+      delta: undefined,
+    } as any);
+    expect(next?.waitingForKeyframe).toBe(true);
+    expect(next?.frameId).toBe(10);
+  });
+
   it("marks desync when delta base frame is missing", () => {
     const prev = baseState();
     const next = applyScreenUpdate(prev, {
