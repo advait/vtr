@@ -2475,6 +2475,8 @@ func applyScreenUpdate(m attachModel, update *proto.ScreenUpdate) (attachModel, 
 			screenID := strings.TrimSpace(update.Screen.Id)
 			if screenID != "" {
 				if m.sessionID != "" && screenID != m.sessionID {
+					m.sessionID = screenID
+					m.frameID = 0
 					return resubscribe(m, "session id changed")
 				}
 				if m.sessionID == "" {
@@ -2494,6 +2496,9 @@ func applyScreenUpdate(m attachModel, update *proto.ScreenUpdate) (attachModel, 
 	}
 	if m.frameID == 0 || update.BaseFrameId != m.frameID {
 		return resubscribe(m, "stream desync")
+	}
+	if update.FrameId <= update.BaseFrameId || update.FrameId <= m.frameID {
+		return resubscribe(m, "non-monotonic delta frame")
 	}
 	screen, err := applyScreenDelta(m.screen, update.Delta)
 	if err != nil {

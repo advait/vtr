@@ -366,3 +366,108 @@ func TestStreamStateLabelDefaults(t *testing.T) {
 		})
 	}
 }
+
+func TestApplyScreenUpdateSessionIDChangeAdoptsNewID(t *testing.T) {
+	model := attachModel{
+		sessionID:    "session-old",
+		sessionCoord: "hub",
+		streamID:     7,
+		frameID:      11,
+	}
+	update := &proto.ScreenUpdate{
+		IsKeyframe: true,
+		FrameId:    12,
+		Screen: &proto.GetScreenResponse{
+			Id:   "session-new",
+			Name: "renamed",
+			Cols: 2,
+			Rows: 1,
+		},
+	}
+
+	next, cmd := applyScreenUpdate(model, update)
+	if cmd == nil {
+		t.Fatalf("expected resubscribe command for session id change")
+	}
+	if next.sessionID != "session-new" {
+		t.Fatalf("expected session id to switch, got %q", next.sessionID)
+	}
+	if next.streamID != model.streamID+1 {
+		t.Fatalf("expected stream id increment, got %d", next.streamID)
+	}
+	if next.frameID != 0 {
+		t.Fatalf("expected frame id reset during resubscribe, got %d", next.frameID)
+	}
+}
+
+func TestApplyScreenUpdateRejectsDeltaFrameEqualBase(t *testing.T) {
+	model := attachModel{
+		sessionID: "session-1",
+		streamID:  3,
+		frameID:   10,
+		screen:    makeAttachTestScreen(2, 1),
+	}
+	update := &proto.ScreenUpdate{
+		BaseFrameId: 10,
+		FrameId:     10,
+		Delta: &proto.ScreenDelta{
+			Cols: 2,
+			Rows: 1,
+		},
+	}
+
+	next, cmd := applyScreenUpdate(model, update)
+	if cmd == nil {
+		t.Fatalf("expected resubscribe command for non-monotonic delta frame")
+	}
+	if next.streamID != model.streamID+1 {
+		t.Fatalf("expected stream id increment, got %d", next.streamID)
+	}
+	if next.frameID != 0 {
+		t.Fatalf("expected frame id reset, got %d", next.frameID)
+	}
+}
+
+func TestApplyScreenUpdateRejectsDeltaFrameRollback(t *testing.T) {
+	model := attachModel{
+		sessionID: "session-1",
+		streamID:  3,
+		frameID:   10,
+		screen:    makeAttachTestScreen(2, 1),
+	}
+	update := &proto.ScreenUpdate{
+		BaseFrameId: 10,
+		FrameId:     9,
+		Delta: &proto.ScreenDelta{
+			Cols: 2,
+			Rows: 1,
+		},
+	}
+
+	next, cmd := applyScreenUpdate(model, update)
+	if cmd == nil {
+		t.Fatalf("expected resubscribe command for non-monotonic delta frame")
+	}
+	if next.streamID != model.streamID+1 {
+		t.Fatalf("expected stream id increment, got %d", next.streamID)
+	}
+	if next.frameID != 0 {
+		t.Fatalf("expected frame id reset, got %d", next.frameID)
+	}
+}
+
+func makeAttachTestScreen(cols, rows int32) *proto.GetScreenResponse {
+	screenRows := make([]*proto.ScreenRow, rows)
+	for r := int32(0); r < rows; r++ {
+		cells := make([]*proto.ScreenCell, cols)
+		for c := int32(0); c < cols; c++ {
+			cells[c] = &proto.ScreenCell{Char: " "}
+		}
+		screenRows[r] = &proto.ScreenRow{Cells: cells}
+	}
+	return &proto.GetScreenResponse{
+		Cols:      cols,
+		Rows:      rows,
+		ScreenRows: screenRows,
+	}
+}
