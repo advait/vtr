@@ -813,14 +813,18 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 	sendErrCh := make(chan error, 1)
 	exitSignal := make(chan exitPayload, 1)
 	makeScreenSnapshot := func(forceKeyframe bool, reason string) (*subscribeScreenSnapshot, error) {
+		totalBefore, _, _ := session.OutputState()
 		snap, err := session.Snapshot()
 		if err != nil {
 			return nil, err
 		}
+		totalAfter, _, _ := session.OutputState()
 		return &subscribeScreenSnapshot{
 			snapshot:      snap,
 			forceKeyframe: forceKeyframe,
 			forceReason:   reason,
+			outputTotal:   totalAfter,
+			outputStable:  totalBefore == totalAfter,
 		}, nil
 	}
 
@@ -1164,6 +1168,8 @@ type subscribeScreenSnapshot struct {
 	snapshot      *Snapshot
 	forceKeyframe bool
 	forceReason   string
+	outputTotal   int64
+	outputStable  bool
 }
 
 type subscribeScreenBuilder struct {
@@ -1204,7 +1210,7 @@ func (b *subscribeScreenBuilder) Build(payload *subscribeScreenSnapshot) (*proto
 		forceKeyframe = true
 	}
 	if forceKeyframe {
-		return b.buildKeyframe(payload.snapshot, payload.forceReason), nil
+		return b.buildKeyframe(payload.snapshot, payload.forceReason, payload.outputStable, payload.outputTotal), nil
 	}
 	delta, changedRows, err := screenDeltaFromSnapshots(b.lastSnapshot, payload.snapshot)
 	if err != nil {
@@ -1214,7 +1220,7 @@ func (b *subscribeScreenBuilder) Build(payload *subscribeScreenSnapshot) (*proto
 			"reason", "stream_desync",
 			"err", err,
 		)
-		return b.buildKeyframe(payload.snapshot, "stream_desync"), nil
+		return b.buildKeyframe(payload.snapshot, "stream_desync", payload.outputStable, payload.outputTotal), nil
 	}
 	frameID := b.session.NextFrameID()
 	update := &proto.ScreenUpdate{
@@ -1237,7 +1243,7 @@ func (b *subscribeScreenBuilder) Build(payload *subscribeScreenSnapshot) (*proto
 	return update, nil
 }
 
-func (b *subscribeScreenBuilder) buildKeyframe(snap *Snapshot, reason string) *proto.ScreenUpdate {
+func (b *subscribeScreenBuilder) buildKeyframe(snap *Snapshot, reason string, outputStable bool, outputTotal int64) *proto.ScreenUpdate {
 	if b == nil || b.session == nil {
 		return nil
 	}
@@ -1246,9 +1252,11 @@ func (b *subscribeScreenBuilder) buildKeyframe(snap *Snapshot, reason string) *p
 		label = b.sessionLabel()
 	}
 	update := keyframeUpdateFromSnapshot(b.session, b.sessionID, label, snap)
-	if b.server != nil {
-		total, _, _ := b.session.OutputState()
-		b.server.cacheKeyframe(b.sessionID, update, total)
+	if b.server != nil && outputStable {
+		currentTotal, _, _ := b.session.OutputState()
+		if currentTotal == outputTotal {
+			b.server.cacheKeyframe(b.sessionID, update, outputTotal)
+		}
 	}
 	b.lastSnapshot = snap
 	if update != nil {
@@ -1452,8 +1460,7 @@ func (s *GRPCServer) cachedKeyframe(session *Session, id string) *proto.ScreenUp
 	if session == nil {
 		return nil
 	}
-	total, _, _ := session.OutputState()
-	info := session.Info()
+	totalBefore, _, _ := session.OutputState()
 	s.keyframeMu.Lock()
 	ring := s.keyframeRing[id]
 	var entry keyframeEntry
@@ -1462,6 +1469,11 @@ func (s *GRPCServer) cachedKeyframe(session *Session, id string) *proto.ScreenUp
 		entry, ok = ring.Latest()
 	}
 	s.keyframeMu.Unlock()
+	totalAfter, _, _ := session.OutputState()
+	if totalBefore != totalAfter {
+		return nil
+	}
+	info := session.Info()
 	if !ok || entry.update == nil || !entry.update.IsKeyframe || entry.update.Screen == nil {
 		return nil
 	}
@@ -1469,7 +1481,7 @@ func (s *GRPCServer) cachedKeyframe(session *Session, id string) *proto.ScreenUp
 	if screen.Cols != int32(info.Cols) || screen.Rows != int32(info.Rows) {
 		return nil
 	}
-	if entry.outputTotal != total {
+	if entry.outputTotal != totalAfter {
 		return nil
 	}
 	return cloneScreenUpdate(entry.update)

@@ -1704,6 +1704,68 @@ func TestSubscribeScreenBuilderResizeForcesKeyframe(t *testing.T) {
 	}
 }
 
+func TestSubscribeScreenBuilderCachesOnlyStableOutputTotal(t *testing.T) {
+	server := NewGRPCServer(nil)
+	session := &Session{}
+	builder := newSubscribeScreenBuilder(server, session, "session-1", func() string { return "demo" })
+	snap := makeTestSnapshot(3, 2, 'a')
+
+	_, err := builder.Build(&subscribeScreenSnapshot{
+		snapshot:      snap,
+		forceKeyframe: true,
+		forceReason:   "unstable",
+		outputTotal:   0,
+		outputStable:  false,
+	})
+	if err != nil {
+		t.Fatalf("Build unstable: %v", err)
+	}
+	if count := keyframeCacheEntryCount(server, "session-1"); count != 0 {
+		t.Fatalf("expected unstable snapshot to skip cache, got %d entries", count)
+	}
+
+	_, err = builder.Build(&subscribeScreenSnapshot{
+		snapshot:      snap,
+		forceKeyframe: true,
+		forceReason:   "mismatch",
+		outputTotal:   1,
+		outputStable:  true,
+	})
+	if err != nil {
+		t.Fatalf("Build mismatched: %v", err)
+	}
+	if count := keyframeCacheEntryCount(server, "session-1"); count != 0 {
+		t.Fatalf("expected mismatched output total to skip cache, got %d entries", count)
+	}
+
+	_, err = builder.Build(&subscribeScreenSnapshot{
+		snapshot:      snap,
+		forceKeyframe: true,
+		forceReason:   "stable",
+		outputTotal:   0,
+		outputStable:  true,
+	})
+	if err != nil {
+		t.Fatalf("Build stable: %v", err)
+	}
+	if count := keyframeCacheEntryCount(server, "session-1"); count != 1 {
+		t.Fatalf("expected stable snapshot to populate cache, got %d entries", count)
+	}
+}
+
+func keyframeCacheEntryCount(server *GRPCServer, sessionID string) int {
+	if server == nil {
+		return 0
+	}
+	server.keyframeMu.Lock()
+	defer server.keyframeMu.Unlock()
+	ring := server.keyframeRing[sessionID]
+	if ring == nil {
+		return 0
+	}
+	return ring.count
+}
+
 func makeTestSnapshot(cols, rows int, fill rune) *Snapshot {
 	cells := make([]Cell, cols*rows)
 	for i := range cells {
