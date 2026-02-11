@@ -2470,23 +2470,24 @@ func applyScreenUpdate(m attachModel, update *proto.ScreenUpdate) (attachModel, 
 		return m, nil
 	}
 	if update.IsKeyframe {
-		if update.Screen != nil {
-			screenID := strings.TrimSpace(update.Screen.Id)
-			if screenID != "" {
-				if m.sessionID != "" && screenID != m.sessionID {
-					m.sessionID = screenID
-					m.frameID = 0
-					return resubscribe(m, "session id changed")
-				}
-				if m.sessionID == "" {
-					m.sessionID = screenID
-				}
-			}
-			if label := strings.TrimSpace(update.Screen.Name); label != "" {
-				m = applySessionLabelUpdate(m, m.sessionID, label)
-			}
-			m.screen = update.Screen
+		if update.Screen == nil {
+			return resubscribe(m, "missing keyframe screen")
 		}
+		screenID := strings.TrimSpace(update.Screen.Id)
+		if screenID != "" {
+			if m.sessionID != "" && screenID != m.sessionID {
+				m.sessionID = screenID
+				m.frameID = 0
+				return resubscribe(m, "session id changed")
+			}
+			if m.sessionID == "" {
+				m.sessionID = screenID
+			}
+		}
+		if label := strings.TrimSpace(update.Screen.Name); label != "" {
+			m = applySessionLabelUpdate(m, m.sessionID, label)
+		}
+		m.screen = update.Screen
 		m.frameID = update.FrameId
 		return m, nil
 	}

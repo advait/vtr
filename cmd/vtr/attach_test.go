@@ -449,6 +449,34 @@ func TestApplyScreenUpdateSessionIDChangeAdoptsNewID(t *testing.T) {
 	}
 }
 
+func TestApplyScreenUpdateKeyframeWithoutScreenResubscribes(t *testing.T) {
+	model := attachModel{
+		sessionID: "session-1",
+		streamID:  4,
+		frameID:   9,
+		screen:    makeAttachTestScreen(2, 1),
+	}
+	update := &proto.ScreenUpdate{
+		IsKeyframe: true,
+		FrameId:    10,
+		Screen:     nil,
+	}
+
+	next, cmd := applyScreenUpdate(model, update)
+	if cmd == nil {
+		t.Fatalf("expected resubscribe command for keyframe without screen")
+	}
+	if next.streamID != model.streamID+1 {
+		t.Fatalf("expected stream id increment, got %d", next.streamID)
+	}
+	if next.frameID != 0 {
+		t.Fatalf("expected frame id reset, got %d", next.frameID)
+	}
+	if next.screen == nil {
+		t.Fatalf("expected previous screen to be preserved until resubscribe")
+	}
+}
+
 func TestApplyScreenUpdateRejectsDeltaFrameEqualBase(t *testing.T) {
 	model := attachModel{
 		sessionID: "session-1",
