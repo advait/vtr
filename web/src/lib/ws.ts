@@ -23,6 +23,7 @@ type StreamState = {
 };
 
 const receivingStaleMs = 2000;
+const maxReconnectAttempts = 20;
 
 export function isTerminalStatusCode(code?: number | null) {
   switch (code) {
@@ -299,6 +300,14 @@ export function useVtrStream(sessionRef: SessionRef | null, options: StreamOptio
           return;
         }
         const attempts = reconnectRef.current.attempts + 1;
+        if (attempts > maxReconnectAttempts) {
+          setState({
+            status: "error",
+            error: `reconnect limit reached (${maxReconnectAttempts})`,
+            receiving: false,
+          });
+          return;
+        }
         reconnectRef.current.attempts = attempts;
         const delay = Math.min(5000, 500 * attempts + attempts * 200);
         setState({ status: "reconnecting", receiving: false });
@@ -448,6 +457,10 @@ export function useVtrSessionsStream(options: { excludeExited?: boolean } = {}) 
           return;
         }
         const attempts = reconnectRef.current.attempts + 1;
+        if (attempts > maxReconnectAttempts) {
+          setState({ status: "error", error: `reconnect limit reached (${maxReconnectAttempts})` });
+          return;
+        }
         reconnectRef.current.attempts = attempts;
         const delay = Math.min(5000, 500 * attempts + attempts * 200);
         setState({ status: "reconnecting" });
