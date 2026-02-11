@@ -132,7 +132,7 @@ export function applyScreenUpdate(
   for (const rowDelta of delta.row_deltas ?? []) {
     const rowIndex = rowDelta.row ?? -1;
     if (rowIndex < 0 || rowIndex >= rows) {
-      continue;
+      return { ...prev, waitingForKeyframe: true };
     }
     const rowData = rowDelta.row_data;
     const rowCells: Cell[] = [];

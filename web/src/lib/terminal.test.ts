@@ -66,6 +66,22 @@ describe("applyScreenUpdate", () => {
     expect(next?.rows).toBe(1);
   });
 
+  it("marks desync when row delta index is out of range", () => {
+    const prev = baseState();
+    const next = applyScreenUpdate(prev, {
+      frame_id: 11,
+      base_frame_id: 10,
+      is_keyframe: false,
+      delta: {
+        cols: 2,
+        rows: 1,
+        row_deltas: [{ row: 5, row_data: { cells: [] } }],
+      },
+    } as any);
+    expect(next?.waitingForKeyframe).toBe(true);
+    expect(next?.frameId).toBe(10);
+  });
+
   it("applies valid monotonic delta", () => {
     const prev = baseState();
     const next = applyScreenUpdate(prev, {
