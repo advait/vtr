@@ -302,7 +302,7 @@ export default function App() {
     return findSessionDetails(coordinators, selectedSession.ref);
   }, [coordinators, selectedSession]);
 
-  const { state, setEventHandler, sendText, sendKey, sendTextTo, sendKeyTo, resize, close } =
+  const { state, setEventHandler, sendText, sendKey, sendTextTo, sendKeyTo, resize, close, restart } =
     useVtrStream(activeSession, {
       includeRawOutput: false,
     });
@@ -616,6 +616,27 @@ export default function App() {
       return next;
     });
   }, []);
+
+  useEffect(() => {
+    return () => {
+      if (rafRef.current) {
+        window.cancelAnimationFrame(rafRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!activeSession || !screen?.waitingForKeyframe) {
+      return;
+    }
+    pendingUpdates.current = [];
+    if (rafRef.current) {
+      window.cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    setScreen(null);
+    restart();
+  }, [activeSession, restart, screen?.waitingForKeyframe]);
 
   useEffect(() => {
     setEventHandler((event) => {

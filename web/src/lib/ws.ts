@@ -73,6 +73,7 @@ function snapshotToCoordinators(snapshot: SessionsSnapshot): CoordinatorInfo[] {
 
 export function useVtrStream(sessionRef: SessionRef | null, options: StreamOptions) {
   const [state, setState] = useState<StreamState>({ status: "idle" });
+  const [connectSeq, setConnectSeq] = useState(0);
   const eventRef = useRef<((event: SubscribeEvent) => void) | null>(null);
   const pendingEventsRef = useRef<SubscribeEvent[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
@@ -99,6 +100,11 @@ export function useVtrStream(sessionRef: SessionRef | null, options: StreamOptio
     if (wsRef.current) {
       wsRef.current.close();
     }
+  }, []);
+
+  const restart = useCallback(() => {
+    closedByUser.current = false;
+    setConnectSeq((prev) => prev + 1);
   }, []);
 
   const sendProto = useCallback((typeName: ProtoMessageName, payload: Record<string, unknown>) => {
@@ -317,12 +323,13 @@ export function useVtrStream(sessionRef: SessionRef | null, options: StreamOptio
         wsRef.current.close();
       }
     };
-  }, [sessionCoordinator, sessionId, options.includeRawOutput]);
+  }, [sessionCoordinator, sessionId, options.includeRawOutput, connectSeq]);
 
   return {
     state,
     setEventHandler,
     close,
+    restart,
     sendText,
     sendKey,
     sendTextTo,

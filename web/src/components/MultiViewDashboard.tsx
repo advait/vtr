@@ -77,7 +77,8 @@ function SessionThumbnail({
 }) {
   const streamRef =
     session.status === "running" || session.status === "closing" ? sessionRef : null;
-  const { state, setEventHandler } = useVtrStream(streamRef, { includeRawOutput: false });
+  const streamEnabled = streamRef !== null;
+  const { state, setEventHandler, restart } = useVtrStream(streamRef, { includeRawOutput: false });
   const [screen, setScreen] = useState<ScreenState | null>(null);
   const pendingUpdates = useRef<SubscribeEvent[]>([]);
   const rafRef = useRef<number | null>(null);
@@ -111,6 +112,19 @@ function SessionThumbnail({
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (!streamEnabled || !screen?.waitingForKeyframe) {
+      return;
+    }
+    pendingUpdates.current = [];
+    if (rafRef.current) {
+      window.cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    setScreen(null);
+    restart();
+  }, [restart, screen?.waitingForKeyframe, streamEnabled]);
 
   useEffect(() => {
     setEventHandler((event) => {
