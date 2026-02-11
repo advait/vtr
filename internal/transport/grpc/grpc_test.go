@@ -1220,6 +1220,52 @@ func TestGRPCSubscribeLatestOnlyBackpressure(t *testing.T) {
 	}
 }
 
+func TestGRPCSubscribeExitDoesNotHangWhenSendBlocked(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty tests not supported on windows")
+	}
+
+	coord := newTestCoordinator()
+	defer coord.CloseAll()
+
+	info, err := coord.Spawn("grpc-subscribe-exit-blocked-send", SpawnOptions{
+		Command: []string{"sh", "-c", "sleep 0.05; exit 0"},
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	sessionID := info.ID
+
+	server := NewGRPCServer(coord)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream := newBlockingSubscribeStream(ctx)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- server.Subscribe(&proto.SubscribeRequest{
+			Session:              &proto.SessionRef{Id: sessionID},
+			IncludeScreenUpdates: true,
+			IncludeRawOutput:     false,
+		}, stream)
+	}()
+
+	select {
+	case <-stream.blockCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for blocked screen send")
+	}
+
+	select {
+	case err := <-errCh:
+		if status.Code(err) != codes.DeadlineExceeded {
+			t.Fatalf("expected deadline exceeded teardown error, got %v", err)
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatal("subscribe exit path hung while sender was blocked")
+	}
+}
+
 func TestGRPCSubscribeRawOutput(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("pty tests not supported on windows")

@@ -62,6 +62,7 @@ func NewSpokeRegistry() *SpokeRegistry {
 const (
 	maxRawInputBytes = 1 << 20
 	keyframeRingSize = 4
+	subscribeSenderDrainTimeout = 2 * time.Second
 )
 
 const grpcGracefulShutdownTimeout = 5 * time.Second
@@ -953,7 +954,7 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 			exit:        &proto.SessionExited{ExitCode: int32(info.ExitCode), Id: sessionID},
 			finalScreen: finalScreen,
 		}
-		err := <-sendErrCh
+		err := waitSubscribeSenderExit(ctx, sendErrCh, subscribeSenderDrainTimeout)
 		if err == nil {
 			return nil
 		}
@@ -1020,7 +1021,7 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 				exit:        &proto.SessionExited{ExitCode: int32(info.ExitCode), Id: sessionID},
 				finalScreen: finalScreen,
 			}
-			err := <-sendErrCh
+			err := waitSubscribeSenderExit(ctx, sendErrCh, subscribeSenderDrainTimeout)
 			if err == nil {
 				return nil
 			}
@@ -1375,6 +1376,22 @@ func subscribeStreamEndReason(err error) string {
 		return "context_deadline"
 	default:
 		return "error"
+	}
+}
+
+func waitSubscribeSenderExit(ctx context.Context, sendErrCh <-chan error, timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = subscribeSenderDrainTimeout
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case err := <-sendErrCh:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return status.Error(codes.DeadlineExceeded, "subscribe sender drain timeout")
 	}
 }
 
