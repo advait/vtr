@@ -897,27 +897,21 @@ func (s *GRPCServer) Subscribe(req *proto.SubscribeRequest, stream proto.VTR_Sub
 
 	screenBuilder := newSubscribeScreenBuilder(s, session, sessionID, sessionLabel)
 	sentCachedKeyframe := false
-	if includeScreen {
-		if cached := s.cachedKeyframe(session, sessionID); cached != nil {
-			if err := stream.Send(&proto.SubscribeEvent{
-				Event: &proto.SubscribeEvent_ScreenUpdate{
-					ScreenUpdate: cached,
-				},
-			}); err != nil {
-				return err
+		if includeScreen {
+			if cached := s.cachedKeyframe(session, sessionID); cached != nil {
+				if err := stream.Send(&proto.SubscribeEvent{
+					Event: &proto.SubscribeEvent_ScreenUpdate{
+						ScreenUpdate: cached,
+					},
+				}); err != nil {
+					return err
+				}
+				sentCachedKeyframe = true
+				// Do not prime from a fresh snapshot here; it can be newer than the
+				// emitted cached keyframe and produce invalid delta bases.
+				screenBuilder.primeFromKeyframe(cached, nil)
 			}
-			sentCachedKeyframe = true
-			snap, snapErr := session.Snapshot()
-			if snapErr != nil {
-				slog.Warn(
-					"subscribe cache prime fallback",
-					"session_id", sessionID,
-					"err", snapErr,
-				)
-			}
-			screenBuilder.primeFromKeyframe(cached, snap)
 		}
-	}
 
 	go func() {
 		sendErrCh <- runSubscribeSender(
