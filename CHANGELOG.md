@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.0.8 - 2026-02-23
+- Streaming reliability: harden keyframe+delta delivery, delta base validation, and keyframe cache race handling in gRPC subscribe paths.
+- Attach/TUI recovery: improve session resubscribe and monotonic delta handling, and refresh coordinator routing on keyframe session switches.
+- Core/federation safety: surface output-gap conditions, preserve final snapshots while releasing VT resources, and tighten tunnel cancellation/deadline error handling.
+- Web UI resilience: harden delta validation/desync handling, force keyframe resync on invalid update order, and cap pending screen updates and reconnect attempts.
+- Web transport lifecycle: send websocket status errors before cancellation, clear reconnect/update timers on close/session switches, and clean up owned-session refs across clients.
+- Tests/docs: add and expand coverage across core, tunnel, gRPC, and web terminal/status behavior, with updated streaming/federation/web documentation.
+
 ## v0.0.7 - 2026-02-10
 - Internal refactor: move server core, gRPC transport, federation, and web transport into `internal/*` packages.
 - CLI/agent: add `send --wait-for-idle`, improve help examples, and remove the systemd service command.
